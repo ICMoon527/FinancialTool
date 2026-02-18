@@ -8,11 +8,33 @@ from strategy.signals import signal_generator
 from strategy.strategy_config import strategy_config
 from utils.progress_bar import create_progress_bar
 
+# 尝试导入机器学习模型
+try:
+    from ml_models.models import EnsembleModel
+    from ml_models.features import FeatureExtractor
+    ml_available = True
+except ImportError:
+    ml_available = False
+
 
 class RecommendationEngine:
     
-    def __init__(self, use_config: bool = True):
+    def __init__(self, use_config: bool = True, use_ml: bool = True):
         self.use_config = use_config
+        self.use_ml = use_ml
+        self.ml_model = None
+        self.feature_extractor = None
+        
+        # 初始化机器学习模型
+        if self.use_ml and ml_available:
+            try:
+                from ml_models.config import default_config
+                self.feature_extractor = FeatureExtractor()
+                self.ml_model = EnsembleModel()
+                log.info("机器学习模型初始化成功")
+            except Exception as e:
+                log.error(f"机器学习模型初始化失败: {e}")
+                self.use_ml = False
     
     def generate_short_term_recommendations(self, stock_data: Dict[str, pd.DataFrame], top_n: int = 5) -> List[Dict]:
         recommendations = []
@@ -111,7 +133,8 @@ class RecommendationEngine:
         return recommendations[:top_n]
     
     def _calculate_short_term_score(self, df: pd.DataFrame) -> float:
-        score = 0.0
+        # 传统技术指标评分
+        technical_score = 0.0
         
         df = df.copy()
         df = factor_library.calculate_all_factors(df)
@@ -127,39 +150,64 @@ class RecommendationEngine:
             weights = {}
         
         if current_price > ma5:
-            score += weights.get('ma5_weight', 15)
+            technical_score += weights.get('ma5_weight', 15)
         if ma5 > ma10:
-            score += weights.get('ma5_ma10_weight', 10)
+            technical_score += weights.get('ma5_ma10_weight', 10)
         if ma10 > ma20:
-            score += weights.get('ma10_ma20_weight', 10)
+            technical_score += weights.get('ma10_ma20_weight', 10)
         
         if 'MACD' in df.columns and 'MACD_signal' in df.columns:
             macd = df['MACD'].iloc[-1]
             macd_signal = df['MACD_signal'].iloc[-1]
             if macd > macd_signal and macd > 0:
-                score += weights.get('macd_positive_weight', 20)
+                technical_score += weights.get('macd_positive_weight', 20)
             elif macd > macd_signal:
-                score += weights.get('macd_cross_weight', 10)
+                technical_score += weights.get('macd_cross_weight', 10)
         
         if 'RSI' in df.columns:
             rsi = df['RSI'].iloc[-1]
             if 30 <= rsi <= 50:
-                score += weights.get('rsi_low_weight', 15)
+                technical_score += weights.get('rsi_low_weight', 15)
             elif 50 < rsi <= 70:
-                score += weights.get('rsi_mid_weight', 10)
+                technical_score += weights.get('rsi_mid_weight', 10)
         
         if 'K' in df.columns and 'D' in df.columns:
             k = df['K'].iloc[-1]
             d = df['D'].iloc[-1]
             if k > d and k < 50:
-                score += weights.get('kdj_weight', 15)
+                technical_score += weights.get('kdj_weight', 15)
         
         recent_volume = df['volume'].iloc[-5:].mean()
         prev_volume = df['volume'].iloc[-10:-5].mean()
         if recent_volume > prev_volume * 1.2:
-            score += 5
+            technical_score += 5
         
-        return min(score, 100)
+        # 机器学习模型评分
+        ml_score = 0.0
+        if self.use_ml and self.ml_model and self.feature_extractor:
+            try:
+                # 准备训练数据
+                X, y = self.feature_extractor.prepare_training_data(df)
+                if X is not None and y is not None and len(X) > 0:
+                    # 使用最新数据进行预测
+                    latest_features = X.iloc[[-1]]
+                    prediction = self.ml_model.predict(latest_features)[0]
+                    
+                    # 将预测收益率转换为评分
+                    # 假设预测收益率在 -10% 到 10% 之间
+                    ml_score = (prediction + 0.1) / 0.2 * 100
+                    ml_score = max(0, min(100, ml_score))
+            except Exception as e:
+                log.error(f"机器学习模型预测失败: {e}")
+        
+        # 加权合并评分
+        if self.use_ml and ml_score > 0:
+            # 技术指标占60%，机器学习占40%
+            final_score = technical_score * 0.6 + ml_score * 0.4
+        else:
+            final_score = technical_score
+        
+        return min(final_score, 100)
     
     def _calculate_medium_long_score(self, df: pd.DataFrame) -> float:
         score = 0.0
