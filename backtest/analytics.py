@@ -199,6 +199,9 @@ class ParameterOptimizer:
         total_combinations = np.prod([len(v) for v in param_values])
         log.info(f"开始网格搜索，共 {total_combinations} 组参数组合")
         
+        from utils.progress_bar import create_progress_bar
+        pb = create_progress_bar(total_combinations, '网格搜索参数')
+        
         for i, combination in enumerate(product(*param_values)):
             params = dict(zip(param_names, combination))
             
@@ -220,10 +223,10 @@ class ParameterOptimizer:
             except Exception as e:
                 log.error(f"参数组合 {params} 执行失败: {e}")
                 continue
-            
-            if (i + 1) % 10 == 0:
-                log.info(f"已完成 {i + 1}/{total_combinations} 组参数")
+            finally:
+                pb.update(i + 1)
         
+        pb.finish()
         log.info(f"网格搜索完成，最优参数: {best_params}, 最优{objective}: {best_score:.4f}")
         
         return {

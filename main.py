@@ -51,17 +51,31 @@ def print_menu(pool_type='core', risk_level='low', current_stock_count=80):
     pool_display = get_pool_display_name(pool_type, risk_level)
     print("\n" + "="*60)
     print("请选择操作:")
-    print(f"  1. 获取短线推荐 (5支，预计1-5个交易日，明天上涨概率最大)")
-    print(f"  2. 获取中长期推荐 (5支，预计1-3个月)")
-    print(f"  3. 获取长期推荐 (5支，预计6个月以上)")
-    print(f"  4. 历史数据回测验证")
-    print(f"  5. 推荐历史回测 - 短线")
-    print(f"  6. 推荐历史回测 - 中线")
-    print(f"  7. 推荐历史回测 - 长线")
-    print(f"  8. 策略优化 - 使用历史数据优化策略参数")
-    print(f"  9. 选择风险等级/股票池 (当前: {pool_display})")
-    print(f"  10. 设置分析股票数量 (当前: {current_stock_count}支)")
+    print(f"  1. 获取推荐股票")
+    print(f"  2. 推荐历史回测")
+    print(f"  3. 历史数据回测验证")
+    print(f"  4. 策略优化 - 使用历史数据优化策略参数")
+    print(f"  5. 选择风险等级/股票池 (当前: {pool_display})")
+    print(f"  6. 设置分析股票数量 (当前: {current_stock_count}支)")
     print(f"  0. 退出")
+    print("="*60)
+
+def print_recommendation_submenu():
+    print("\n" + "="*60)
+    print("请选择推荐周期:")
+    print("  1. 短线推荐 (5支，预计1-5个交易日，明天上涨概率最大)")
+    print("  2. 中长期推荐 (5支，预计1-3个月)")
+    print("  3. 长期推荐 (5支，预计6个月以上)")
+    print("  0. 返回")
+    print("="*60)
+
+def print_backtest_submenu():
+    print("\n" + "="*60)
+    print("请选择回测周期:")
+    print("  1. 短线推荐历史回测 (10天前推荐，查看后5个交易日表现)")
+    print("  2. 中线推荐历史回测 (45天前推荐，查看后30个交易日表现)")
+    print("  3. 长线推荐历史回测 (210天前推荐，查看后180个交易日表现)")
+    print("  0. 返回")
     print("="*60)
 
 
@@ -307,59 +321,118 @@ def main():
                 print("\n感谢使用，再见！")
                 break
             
-            elif choice == '4':
+            elif choice == '1':
+                print_recommendation_submenu()
+                sub_choice = input("\n请选择推荐周期 (0-3): ").strip()
+                
+                if sub_choice == '0':
+                    continue
+                elif sub_choice in ['1', '2', '3']:
+                    horizon_map = {
+                        '1': ('short', '短线', user_config.short_term_top_n),
+                        '2': ('medium', '中线', user_config.medium_term_top_n),
+                        '3': ('long', '长线', user_config.long_term_top_n)
+                    }
+                    
+                    horizon, name, top_n = horizon_map[sub_choice]
+                    today_str = datetime.now().strftime('%Y%m%d')
+                    
+                    use_cache = False
+                    recommendations = []
+                    
+                    if recommendation_cache.has_valid_cache(horizon, today_str):
+                        print(f"\n从缓存加载{name}推荐...")
+                        recommendations = recommendation_cache.load_recommendations(horizon, today_str, top_n=top_n)
+                        if recommendations:
+                            use_cache = True
+                    
+                    if not use_cache:
+                        if stock_data is None:
+                            pool_display = get_pool_display_name(user_config.pool_type, user_config.risk_level)
+                            print(f"\n正在准备数据 ({pool_display} - {user_config.stock_count} 支)...")
+                            stock_data = fetch_realtime_stock_data(
+                                pool_type=user_config.pool_type,
+                                risk_level=user_config.risk_level,
+                                stock_count=user_config.stock_count
+                            )
+                        else:
+                            print("\n正在预计算并缓存所有推荐结果...")
+                            horizons = [
+                                ('short', '短线', user_config.short_term_top_n),
+                                ('medium', '中线', user_config.medium_term_top_n),
+                                ('long', '长线', user_config.long_term_top_n)
+                            ]
+                            
+                            for h, n, tn in horizons:
+                                if not recommendation_cache.has_valid_cache(h, today_str):
+                                    print(f"  生成{n}推荐...")
+                                    if h == 'short':
+                                        recs = recommendation_engine.generate_short_term_recommendations(stock_data, top_n=tn)
+                                    elif h == 'medium':
+                                        recs = recommendation_engine.generate_medium_long_term_recommendations(stock_data, top_n=tn)
+                                    else:
+                                        recs = recommendation_engine.generate_long_term_recommendations(stock_data, top_n=tn)
+                                    
+                                    recommendation_cache.save_recommendations(recs, h, today_str)
+                                else:
+                                    print(f"  {n}推荐已有缓存，跳过")
+                    
+                    recommendations = recommendation_cache.load_recommendations(horizon, today_str, top_n=top_n)
+                    print_recommendations(recommendations, horizon)
+                    input("\n按回车键继续...")
+                else:
+                    print("\n无效选项")
+                    input("\n按回车键继续...")
+            
+            elif choice == '2':
+                print_backtest_submenu()
+                sub_choice = input("\n请选择回测周期 (0-3): ").strip()
+                
+                if sub_choice == '0':
+                    continue
+                elif sub_choice in ['1', '2', '3']:
+                    horizon_map = {
+                        '1': ('short', '短线'),
+                        '2': ('medium', '中线'),
+                        '3': ('long', '长线')
+                    }
+                    
+                    horizon, name = horizon_map[sub_choice]
+                    
+                    print("\n" + "="*80)
+                    print(f"【{name}推荐历史回测】")
+                    print("="*80)
+                    
+                    if horizon == 'short':
+                        print("\n说明: 寻找10天前的5个短线股票推荐，")
+                        print("      查看后5个交易日的表现\n")
+                        top_n = user_config.short_term_top_n
+                    elif horizon == 'medium':
+                        print("\n说明: 寻找45天前的5个中线股票推荐，")
+                        print("      查看后30个交易日的表现\n")
+                        top_n = user_config.medium_term_top_n
+                    else:
+                        print("\n说明: 寻找210天前的5个长期股票推荐，")
+                        print("      查看后180个交易日的表现\n")
+                        top_n = user_config.long_term_top_n
+                    
+                    recommendation_backtester.run_backtest(
+                        horizon=horizon,
+                        top_n=top_n,
+                        stock_count=user_config.stock_count,
+                        pool_type=user_config.pool_type,
+                        risk_level=user_config.risk_level
+                    )
+                    input("\n按回车键继续...")
+                else:
+                    print("\n无效选项")
+                    input("\n按回车键继续...")
+            
+            elif choice == '3':
                 run_backtest_validation()
                 input("\n按回车键继续...")
             
-            elif choice == '5':
-                print("\n" + "="*80)
-                print("【短线推荐历史回测】")
-                print("="*80)
-                print("\n说明: 寻找10天前的5个短线股票推荐，")
-                print("      查看后5个交易日的表现\n")
-                
-                recommendation_backtester.run_backtest(
-                    horizon='short',
-                    top_n=user_config.short_term_top_n,
-                    stock_count=user_config.stock_count,
-                    pool_type=user_config.pool_type,
-                    risk_level=user_config.risk_level
-                )
-                input("\n按回车键继续...")
-            
-            elif choice == '6':
-                print("\n" + "="*80)
-                print("【中线推荐历史回测】")
-                print("="*80)
-                print("\n说明: 寻找45天前的5个中线股票推荐，")
-                print("      查看后30个交易日的表现\n")
-                
-                recommendation_backtester.run_backtest(
-                    horizon='medium',
-                    top_n=user_config.medium_term_top_n,
-                    stock_count=user_config.stock_count,
-                    pool_type=user_config.pool_type,
-                    risk_level=user_config.risk_level
-                )
-                input("\n按回车键继续...")
-            
-            elif choice == '7':
-                print("\n" + "="*80)
-                print("【长线推荐历史回测】")
-                print("="*80)
-                print("\n说明: 寻找210天前的5个长期股票推荐，")
-                print("      查看后180个交易日的表现\n")
-                
-                recommendation_backtester.run_backtest(
-                    horizon='long',
-                    top_n=user_config.long_term_top_n,
-                    stock_count=user_config.stock_count,
-                    pool_type=user_config.pool_type,
-                    risk_level=user_config.risk_level
-                )
-                input("\n按回车键继续...")
-            
-            elif choice == '8':
+            elif choice == '4':
                 print("\n" + "="*80)
                 print("【策略优化】")
                 print("="*80)
@@ -378,7 +451,7 @@ def main():
                         traceback.print_exc()
                 input("\n按回车键继续...")
             
-            elif choice == '9':
+            elif choice == '5':
                 print_risk_level_menu()
                 risk_choice = input("\n请选择 (0-5): ").strip()
                 
@@ -459,7 +532,7 @@ def main():
                 
                 input("\n按回车键继续...")
             
-            elif choice == '10':
+            elif choice == '6':
                 print(f"\n正在获取当前股票池信息...")
                 
                 # 直接使用用户配置中存储的股票池最大数量
@@ -484,66 +557,6 @@ def main():
                         print(f"✗ 请输入10-{max_count}之间的数字")
                 except ValueError:
                     print("✗ 请输入有效的数字")
-                input("\n按回车键继续...")
-            
-            elif choice in ['1', '2', '3']:
-                horizon_map = {
-                    '1': ('short', '短线', user_config.short_term_top_n),
-                    '2': ('medium', '中线', user_config.medium_term_top_n),
-                    '3': ('long', '长线', user_config.long_term_top_n)
-                }
-                
-                horizon, name, top_n = horizon_map[choice]
-                today_str = datetime.now().strftime('%Y%m%d')
-                
-                use_cache = False
-                recommendations = []
-                
-                if recommendation_cache.has_valid_cache(horizon, today_str):
-                    print(f"\n从缓存加载{name}推荐...")
-                    recommendations = recommendation_cache.load_recommendations(horizon, today_str, top_n=top_n)
-                    if recommendations:
-                        use_cache = True
-                
-                if not use_cache:
-                    if stock_data is None:
-                        pool_display = get_pool_display_name(user_config.pool_type, user_config.risk_level)
-                        print(f"\n正在准备数据 ({pool_display} - {user_config.stock_count} 支)...")
-                        stock_data = fetch_realtime_stock_data(
-                            pool_type=user_config.pool_type,
-                            risk_level=user_config.risk_level,
-                            stock_count=user_config.stock_count
-                        )
-                    else:
-                        print("\n正在预计算并缓存所有推荐结果...")
-                        horizons = [
-                            ('short', '短线', user_config.short_term_top_n),
-                            ('medium', '中线', user_config.medium_term_top_n),
-                            ('long', '长线', user_config.long_term_top_n)
-                        ]
-                        
-                        for h, n, tn in horizons:
-                            if not recommendation_cache.has_valid_cache(h, today_str):
-                                print(f"  生成{n}推荐...")
-                                if h == 'short':
-                                    recs = recommendation_engine.generate_short_term_recommendations(stock_data, top_n=tn)
-                                elif h == 'medium':
-                                    recs = recommendation_engine.generate_medium_long_term_recommendations(stock_data, top_n=tn)
-                                else:
-                                    recs = recommendation_engine.generate_long_term_recommendations(stock_data, top_n=tn)
-                                
-                                recommendation_cache.save_recommendations(recs, h, today_str)
-                            else:
-                                print(f"  {n}推荐已有缓存，跳过")
-                    
-                    if choice == '1':
-                        recommendations = recommendation_cache.load_recommendations('short', today_str, top_n=top_n)
-                    elif choice == '2':
-                        recommendations = recommendation_cache.load_recommendations('medium', today_str, top_n=top_n)
-                    elif choice == '3':
-                        recommendations = recommendation_cache.load_recommendations('long', today_str, top_n=top_n)
-                
-                print_recommendations(recommendations, horizon)
                 input("\n按回车键继续...")
             
             else:
