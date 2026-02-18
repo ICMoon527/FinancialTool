@@ -1,0 +1,239 @@
+{
+  "short": {
+    "description": "短线策略（1-5个交易日）",
+    "holding_days": 5,
+    "target_return": 0.08,
+    "stop_loss": 0.04,
+    "entry_threshold": 60,
+    "weights": {
+      "ma5_weight": 20,
+      "ma5_ma10_weight": 15,
+      "ma10_ma20_weight": 15,
+      "macd_positive_weight": 20,
+      "macd_cross_weight": 15,
+      "rsi_low_weight": 20,
+      "rsi_mid_weight": 15,
+      "kdj_weight": 20
+    }
+  },
+  "medium": {
+    "description": "中线策略（1-3个月）",
+    "holding_days": 60,
+    "target_return": 0.2,
+    "stop_loss": 0.1,
+    "entry_threshold": 60,
+    "weights": {
+      "ma20_weight": 15,
+      "ma20_ma60_weight": 20,
+      "macd_weight": 20,
+      "trend_weight": 25,
+      "obv_weight": 20,
+      "volatility_weight": 20
+    }
+  },
+  "long": {
+    "description": "长线策略（6个月以上）",
+    "holding_days": 180,
+    "target_return": 0.5,
+    "stop_loss": 0.15,
+    "entry_threshold": 60,
+    "weights": {
+      "ma20_weight": 15,
+      "ma20_ma60_weight": 20,
+      "ma60_ma120_weight": 15,
+      "trend_weight": 30,
+      "near_high_weight": 20,
+      "obv_weight": 20
+    }
+  },
+  "optimization": {
+    "objective": "sharpe",
+    "stock_count": 50,
+    "data_days": 365,
+    "param_ranges": {
+      "short": {
+        "ma5_weight": [
+          10,
+          15,
+          20
+        ],
+        "ma5_ma10_weight": [
+          5,
+          10,
+          15
+        ],
+        "ma10_ma20_weight": [
+          5,
+          10,
+          15
+        ],
+        "macd_positive_weight": [
+          15,
+          20,
+          25
+        ],
+        "macd_cross_weight": [
+          5,
+          10,
+          15
+        ],
+        "rsi_low_weight": [
+          10,
+          15,
+          20
+        ],
+        "rsi_mid_weight": [
+          5,
+          10,
+          15
+        ],
+        "kdj_weight": [
+          10,
+          15,
+          20
+        ],
+        "entry_threshold": [
+          60,
+          70,
+          80
+        ]
+      },
+      "medium": {
+        "ma20_weight": [
+          5,
+          10,
+          15
+        ],
+        "ma20_ma60_weight": [
+          10,
+          15,
+          20
+        ],
+        "macd_weight": [
+          10,
+          15,
+          20
+        ],
+        "trend_weight": [
+          15,
+          20,
+          25
+        ],
+        "obv_weight": [
+          10,
+          15,
+          20
+        ],
+        "volatility_weight": [
+          10,
+          15,
+          20
+        ],
+        "entry_threshold": [
+          60,
+          70,
+          80
+        ]
+      },
+      "long": {
+        "ma20_weight": [
+          5,
+          10,
+          15
+        ],
+        "ma20_ma60_weight": [
+          10,
+          15,
+          20
+        ],
+        "ma60_ma120_weight": [
+          15,
+          20,
+          25
+        ],
+        "trend_weight": [
+          20,
+          25,
+          30
+        ],
+        "near_high_weight": [
+          10,
+          15,
+          20
+        ],
+        "obv_weight": [
+          10,
+          15,
+          20
+        ],
+        "entry_threshold": [
+          60,
+          70,
+          80
+        ]
+      }
+    }
+  },
+  "last_optimized": "2026-02-18 08:20:01",
+  "optimization_results": {
+    "short": {
+      "best_params": {
+        "ma5_weight": 20,
+        "ma5_ma10_weight": 15,
+        "ma10_ma20_weight": 15,
+        "macd_positive_weight": 20,
+        "macd_cross_weight": 15,
+        "rsi_low_weight": 20,
+        "rsi_mid_weight": 15,
+        "kdj_weight": 20,
+        "entry_threshold": 60
+      },
+      "best_performance": {
+        "avg_return": 0.013143590163950909,
+        "std_return": 0.024015621217166324,
+        "avg_win_rate": 0.5260353040098468,
+        "avg_profit_factor": 1.7033905446449282,
+        "total_trades": 215718,
+        "sharpe_ratio": 8.687651088117159
+      }
+    },
+    "medium": {
+      "best_params": {
+        "ma20_weight": 15,
+        "ma20_ma60_weight": 20,
+        "macd_weight": 20,
+        "trend_weight": 25,
+        "obv_weight": 20,
+        "volatility_weight": 20,
+        "entry_threshold": 60
+      },
+      "best_performance": {
+        "avg_return": 0.07248843203878859,
+        "std_return": 0.15165081262466157,
+        "avg_win_rate": 0.5679716332948137,
+        "avg_profit_factor": Infinity,
+        "total_trades": 223459,
+        "sharpe_ratio": 7.587896014602062
+      }
+    },
+    "long": {
+      "best_params": {
+        "ma20_weight": 15,
+        "ma20_ma60_weight": 20,
+        "ma60_ma120_weight": 15,
+        "trend_weight": 30,
+        "near_high_weight": 20,
+        "obv_weight": 20,
+        "entry_threshold": 60
+      },
+      "best_performance": {
+        "avg_return": 0.2941190708519746,
+        "std_return": 0.4698450014336994,
+        "avg_win_rate": 0.796167245747701,
+        "avg_profit_factor": Infinity,
+        "total_trades": 36637,
+        "sharpe_ratio": 9.937289004582738
+      }
+    }
+  }
+}
