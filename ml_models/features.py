@@ -3,7 +3,7 @@
 import pandas as pd
 import numpy as np
 from typing import Dict, List, Optional
-from ml_models.config import default_config
+from .config import default_config
 from strategy.factors import factor_library
 
 

@@ -13,6 +13,7 @@ class ModelConfig:
     short_term_window: int = 5  # 短期窗口大小
     medium_term_window: int = 20  # 中期窗口大小
     long_term_window: int = 60  # 长期窗口大小
+    sequence_length: int = 10  # 深度学习模型序列长度
     
     # 模型训练配置
     test_size: float = 0.2  # 测试集比例

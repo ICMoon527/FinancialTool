@@ -5,8 +5,8 @@ import joblib
 import pandas as pd
 import numpy as np
 from typing import Dict, List, Optional, Tuple
-from ml_models.models import XGBoostModel, LightGBMModel, EnsembleModel
-from ml_models.config import default_config
+from .models import XGBoostModel, LightGBMModel, EnsembleModel
+from .config import default_config
 
 
 def load_model(model_path: str) -> object:

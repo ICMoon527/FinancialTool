@@ -16,7 +16,7 @@ class StrategyConfig:
         return {
             'short': {
                 'description': '短线策略（1-5个交易日）',
-                'holding_days': 5,
+                'holding_days': 1,
                 'target_return': 0.08,
                 'stop_loss': 0.05,
                 'entry_threshold': 70,
@@ -33,7 +33,7 @@ class StrategyConfig:
             },
             'medium': {
                 'description': '中线策略（1-3个月）',
-                'holding_days': 60,
+                'holding_days': 30,
                 'target_return': 0.20,
                 'stop_loss': 0.10,
                 'entry_threshold': 70,

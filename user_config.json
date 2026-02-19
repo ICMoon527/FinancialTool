@@ -1,11 +1,11 @@
 {
     "pool_type": "risk",
     "risk_level": "low",
-    "stock_count": 200,
-    "max_stock_count": 3231,
+    "stock_count": 3066,
+    "max_stock_count": 3066,
     "short_term_top_n": 5,
     "medium_term_top_n": 5,
     "long_term_top_n": 5,
-    "data_days": 365,
+    "data_days": 300,
     "cache_days": 1
 }

@@ -19,15 +19,16 @@ except ImportError:
 
 # 尝试导入深度学习库
 try:
-    from tensorflow.keras.models import Sequential
-    from tensorflow.keras.layers import LSTM, GRU, Dense, Dropout
-    from tensorflow.keras.optimizers import Adam
-    keras_available = True
+    import torch
+    import torch.nn as nn
+    import torch.optim as optim
+    from torch.utils.data import TensorDataset, DataLoader
+    pytorch_available = True
 except ImportError:
-    keras_available = False
+    pytorch_available = False
 
-from ml_models.config import default_config
-from ml_models.features import FeatureExtractor
+from .config import default_config
+from .features import FeatureExtractor
 from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
 
 
@@ -296,9 +297,10 @@ class DeepLearningModel(BaseModel):
     def __init__(self, config=default_config):
         """初始化深度学习模型"""
         super().__init__(config)
-        if not keras_available:
-            raise ImportError("TensorFlow/Keras is not installed. Please install it with 'pip install tensorflow'")
+        if not pytorch_available:
+            raise ImportError("PyTorch is not installed. Please install it with 'pip install torch'")
         self.model = None
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     def _create_sequences(self, X: pd.DataFrame, y: pd.Series, sequence_length: int = 10) -> Tuple[np.ndarray, np.ndarray]:
         """
@@ -342,10 +344,10 @@ class DeepLearningModel(BaseModel):
                 continue
             
             # 训练模型
-            self.model.fit(X_train_seq, y_train_seq, epochs=50, batch_size=32, verbose=0)
+            self._train_pytorch_model(X_train_seq, y_train_seq)
             
             # 评估模型
-            predictions = self.model.predict(X_test_seq, verbose=0)
+            predictions = self._predict_pytorch_model(X_test_seq)
             mse = mean_squared_error(y_test_seq, predictions)
             rmse = np.sqrt(mse)
             direction_accuracy = np.mean(np.sign(predictions) == np.sign(y_test_seq))
@@ -359,15 +361,66 @@ class DeepLearningModel(BaseModel):
             'mean_direction_accuracy': np.mean(direction_accuracies)
         }
     
+    def _train_pytorch_model(self, X_seq: np.ndarray, y_seq: np.ndarray, epochs: int = 50, batch_size: int = 32):
+        """训练PyTorch模型"""
+        self.model.train()
+        criterion = nn.MSELoss()
+        optimizer = optim.Adam(self.model.parameters(), lr=0.001)
+        
+        X_tensor = torch.FloatTensor(X_seq).to(self.device)
+        y_tensor = torch.FloatTensor(y_seq).to(self.device)
+        
+        dataset = TensorDataset(X_tensor, y_tensor)
+        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+        
+        for epoch in range(epochs):
+            for batch_X, batch_y in dataloader:
+                optimizer.zero_grad()
+                outputs = self.model(batch_X)
+                loss = criterion(outputs.squeeze(), batch_y)
+                loss.backward()
+                optimizer.step()
+    
+    def _predict_pytorch_model(self, X_seq: np.ndarray) -> np.ndarray:
+        """使用PyTorch模型预测"""
+        self.model.eval()
+        X_tensor = torch.FloatTensor(X_seq).to(self.device)
+        
+        with torch.no_grad():
+            predictions = self.model(X_tensor)
+        
+        return predictions.cpu().numpy().flatten()
+    
     def save(self, path: str):
         """保存模型"""
         if self.model:
-            self.model.save(path)
+            torch.save(self.model.state_dict(), path)
     
     def load(self, path: str):
         """加载模型"""
-        from tensorflow.keras.models import load_model
-        self.model = load_model(path)
+        if self.model:
+            self.model.load_state_dict(torch.load(path))
+            self.model.eval()
+
+
+class LSTMNet(nn.Module):
+    """PyTorch LSTM网络"""
+    
+    def __init__(self, input_dim, hidden_dim=50, num_layers=2, dropout=0.2):
+        super(LSTMNet, self).__init__()
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        
+        self.lstm = nn.LSTM(input_dim, hidden_dim, num_layers, batch_first=True, dropout=dropout if num_layers > 1 else 0)
+        self.dropout = nn.Dropout(dropout)
+        self.fc = nn.Linear(hidden_dim, 1)
+    
+    def forward(self, x):
+        lstm_out, _ = self.lstm(x)
+        lstm_out = lstm_out[:, -1, :]
+        lstm_out = self.dropout(lstm_out)
+        out = self.fc(lstm_out)
+        return out
 
 
 class LSTMModel(DeepLearningModel):
@@ -376,7 +429,7 @@ class LSTMModel(DeepLearningModel):
     def __init__(self, config=default_config):
         """初始化LSTM模型"""
         super().__init__(config)
-        self.sequence_length = config.get('sequence_length', 10)
+        self.sequence_length = getattr(config, 'sequence_length', 10)
     
     def train(self, X: pd.DataFrame, y: pd.Series) -> float:
         """训练LSTM模型"""
@@ -387,21 +440,14 @@ class LSTMModel(DeepLearningModel):
             return float('inf')
         
         # 构建LSTM模型
-        self.model = Sequential()
-        self.model.add(LSTM(units=50, return_sequences=True, input_shape=(X_seq.shape[1], X_seq.shape[2])))
-        self.model.add(Dropout(0.2))
-        self.model.add(LSTM(units=50))
-        self.model.add(Dropout(0.2))
-        self.model.add(Dense(units=1))
-        
-        # 编译模型
-        self.model.compile(optimizer=Adam(learning_rate=0.001), loss='mean_squared_error')
+        input_dim = X_seq.shape[2]
+        self.model = LSTMNet(input_dim=input_dim).to(self.device)
         
         # 训练模型
-        self.model.fit(X_seq, y_seq, epochs=50, batch_size=32, verbose=0)
+        self._train_pytorch_model(X_seq, y_seq)
         
         # 评估模型
-        predictions = self.model.predict(X_seq, verbose=0)
+        predictions = self._predict_pytorch_model(X_seq)
         mse = mean_squared_error(y_seq, predictions)
         rmse = np.sqrt(mse)
         
@@ -418,7 +464,7 @@ class LSTMModel(DeepLearningModel):
             return np.zeros(len(X))
         
         X_seq = np.array(X_seq)
-        predictions = self.model.predict(X_seq, verbose=0)
+        predictions = self._predict_pytorch_model(X_seq)
         
         # 填充预测结果
         full_predictions = np.zeros(len(X))
@@ -427,13 +473,33 @@ class LSTMModel(DeepLearningModel):
         return full_predictions
 
 
+class GRUNet(nn.Module):
+    """PyTorch GRU网络"""
+    
+    def __init__(self, input_dim, hidden_dim=50, num_layers=2, dropout=0.2):
+        super(GRUNet, self).__init__()
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        
+        self.gru = nn.GRU(input_dim, hidden_dim, num_layers, batch_first=True, dropout=dropout if num_layers > 1 else 0)
+        self.dropout = nn.Dropout(dropout)
+        self.fc = nn.Linear(hidden_dim, 1)
+    
+    def forward(self, x):
+        gru_out, _ = self.gru(x)
+        gru_out = gru_out[:, -1, :]
+        gru_out = self.dropout(gru_out)
+        out = self.fc(gru_out)
+        return out
+
+
 class GRUModel(DeepLearningModel):
     """GRU模型"""
     
     def __init__(self, config=default_config):
         """初始化GRU模型"""
         super().__init__(config)
-        self.sequence_length = config.get('sequence_length', 10)
+        self.sequence_length = getattr(config, 'sequence_length', 10)
     
     def train(self, X: pd.DataFrame, y: pd.Series) -> float:
         """训练GRU模型"""
@@ -444,21 +510,14 @@ class GRUModel(DeepLearningModel):
             return float('inf')
         
         # 构建GRU模型
-        self.model = Sequential()
-        self.model.add(GRU(units=50, return_sequences=True, input_shape=(X_seq.shape[1], X_seq.shape[2])))
-        self.model.add(Dropout(0.2))
-        self.model.add(GRU(units=50))
-        self.model.add(Dropout(0.2))
-        self.model.add(Dense(units=1))
-        
-        # 编译模型
-        self.model.compile(optimizer=Adam(learning_rate=0.001), loss='mean_squared_error')
+        input_dim = X_seq.shape[2]
+        self.model = GRUNet(input_dim=input_dim).to(self.device)
         
         # 训练模型
-        self.model.fit(X_seq, y_seq, epochs=50, batch_size=32, verbose=0)
+        self._train_pytorch_model(X_seq, y_seq)
         
         # 评估模型
-        predictions = self.model.predict(X_seq, verbose=0)
+        predictions = self._predict_pytorch_model(X_seq)
         mse = mean_squared_error(y_seq, predictions)
         rmse = np.sqrt(mse)
         
@@ -475,7 +534,7 @@ class GRUModel(DeepLearningModel):
             return np.zeros(len(X))
         
         X_seq = np.array(X_seq)
-        predictions = self.model.predict(X_seq, verbose=0)
+        predictions = self._predict_pytorch_model(X_seq)
         
         # 填充预测结果
         full_predictions = np.zeros(len(X))
@@ -494,8 +553,8 @@ class EnsembleModel(BaseModel):
             'xgboost': XGBoostModel(config),
             'lightgbm': LightGBMModel(config)
         }
-        # 如果Keras可用，添加深度学习模型
-        if keras_available:
+        # 如果PyTorch可用，添加深度学习模型
+        if pytorch_available:
             self.models['lstm'] = LSTMModel(config)
             self.models['gru'] = GRUModel(config)
         self.weights = config.model_weights

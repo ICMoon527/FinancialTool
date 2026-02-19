@@ -19,7 +19,7 @@ except ImportError:
 
 class RecommendationEngine:
     
-    def __init__(self, use_config: bool = True, use_ml: bool = True):
+    def __init__(self, use_config: bool = True, use_ml: bool = False):
         self.use_config = use_config
         self.use_ml = use_ml
         self.ml_model = None
@@ -36,19 +36,43 @@ class RecommendationEngine:
                 log.error(f"机器学习模型初始化失败: {e}")
                 self.use_ml = False
     
+    def _normalize_scores(self, recommendations: List[Dict]) -> List[Dict]:
+        if not recommendations:
+            return recommendations
+        
+        scores = [rec['score'] for rec in recommendations]
+        min_score = min(scores)
+        max_score = max(scores)
+        
+        result = []
+        for rec in recommendations:
+            if max_score == min_score:
+                normalized_score = 50.0
+            else:
+                normalized_score = (rec['score'] - min_score) / (max_score - min_score) * 100
+            rec['score'] = round(normalized_score, 2)
+            result.append(rec)
+        
+        return result
+    
     def generate_short_term_recommendations(self, stock_data: Dict[str, pd.DataFrame], top_n: int = 5) -> List[Dict]:
         recommendations = []
         total = len(stock_data)
         pb = create_progress_bar(total, '计算短线推荐')
         
+        skipped_data_len = 0
+        skipped_st = 0
+        
         for i, (ts_code, df) in enumerate(stock_data.items()):
             if df.empty or len(df) < 60:
+                skipped_data_len += 1
                 pb.update(i + 1)
                 continue
             
             if 'name' in df.columns and not df['name'].empty:
                 stock_name = df['name'].iloc[0]
                 if 'ST' in stock_name or '*ST' in stock_name:
+                    skipped_st += 1
                     pb.update(i + 1)
                     continue
             
@@ -65,6 +89,9 @@ class RecommendationEngine:
             })
             pb.update(i + 1)
         
+        log.info(f"短线推荐统计: 总数={total}, 跳过数据不足={skipped_data_len}, 跳过ST={skipped_st}, 有效推荐={len(recommendations)}")
+        
+        recommendations = self._normalize_scores(recommendations)
         recommendations.sort(key=lambda x: x['score'], reverse=True)
         return recommendations[:top_n]
     
@@ -73,14 +100,19 @@ class RecommendationEngine:
         total = len(stock_data)
         pb = create_progress_bar(total, '计算中线推荐')
         
+        skipped_data_len = 0
+        skipped_st = 0
+        
         for i, (ts_code, df) in enumerate(stock_data.items()):
             if df.empty or len(df) < 90:
+                skipped_data_len += 1
                 pb.update(i + 1)
                 continue
             
             if 'name' in df.columns and not df['name'].empty:
                 stock_name = df['name'].iloc[0]
                 if 'ST' in stock_name or '*ST' in stock_name:
+                    skipped_st += 1
                     pb.update(i + 1)
                     continue
             
@@ -97,6 +129,9 @@ class RecommendationEngine:
             })
             pb.update(i + 1)
         
+        log.info(f"中线推荐统计: 总数={total}, 跳过数据不足={skipped_data_len}, 跳过ST={skipped_st}, 有效推荐={len(recommendations)}")
+        
+        recommendations = self._normalize_scores(recommendations)
         recommendations.sort(key=lambda x: x['score'], reverse=True)
         return recommendations[:top_n]
     
@@ -105,14 +140,19 @@ class RecommendationEngine:
         total = len(stock_data)
         pb = create_progress_bar(total, '计算长线推荐')
         
+        skipped_data_len = 0
+        skipped_st = 0
+        
         for i, (ts_code, df) in enumerate(stock_data.items()):
             if df.empty or len(df) < 120:
+                skipped_data_len += 1
                 pb.update(i + 1)
                 continue
             
             if 'name' in df.columns and not df['name'].empty:
                 stock_name = df['name'].iloc[0]
                 if 'ST' in stock_name or '*ST' in stock_name:
+                    skipped_st += 1
                     pb.update(i + 1)
                     continue
             
@@ -129,58 +169,78 @@ class RecommendationEngine:
             })
             pb.update(i + 1)
         
+        log.info(f"长线推荐统计: 总数={total}, 跳过数据不足={skipped_data_len}, 跳过ST={skipped_st}, 有效推荐={len(recommendations)}")
+        
+        recommendations = self._normalize_scores(recommendations)
         recommendations.sort(key=lambda x: x['score'], reverse=True)
         return recommendations[:top_n]
     
     def _calculate_short_term_score(self, df: pd.DataFrame) -> float:
-        # 传统技术指标评分
+        # 传统技术指标评分 - 增加容错性
         technical_score = 0.0
         
         df = df.copy()
         df = factor_library.calculate_all_factors(df)
         
         current_price = df['close'].iloc[-1]
-        ma5 = df['MA5'].iloc[-1] if 'MA5' in df.columns else current_price
-        ma10 = df['MA10'].iloc[-1] if 'MA10' in df.columns else current_price
-        ma20 = df['MA20'].iloc[-1] if 'MA20' in df.columns else current_price
+        ma5 = df['MA5'].iloc[-1] if 'MA5' in df.columns and not pd.isna(df['MA5'].iloc[-1]) else current_price
+        ma10 = df['MA10'].iloc[-1] if 'MA10' in df.columns and not pd.isna(df['MA10'].iloc[-1]) else current_price
+        ma20 = df['MA20'].iloc[-1] if 'MA20' in df.columns and not pd.isna(df['MA20'].iloc[-1]) else current_price
         
         if self.use_config:
             weights = strategy_config.get_weights('short')
         else:
             weights = {}
         
-        if current_price > ma5:
-            technical_score += weights.get('ma5_weight', 15)
-        if ma5 > ma10:
-            technical_score += weights.get('ma5_ma10_weight', 10)
-        if ma10 > ma20:
-            technical_score += weights.get('ma10_ma20_weight', 10)
+
         
+        # 均线评分
+        if not pd.isna(ma5) and not pd.isna(ma10) and not pd.isna(ma20):
+            if current_price > ma5:
+                technical_score += weights.get('ma5_weight', 15)
+            if ma5 > ma10:
+                technical_score += weights.get('ma5_ma10_weight', 10)
+            if ma10 > ma20:
+                technical_score += weights.get('ma10_ma20_weight', 10)
+        
+        # MACD评分
         if 'MACD' in df.columns and 'MACD_signal' in df.columns:
             macd = df['MACD'].iloc[-1]
             macd_signal = df['MACD_signal'].iloc[-1]
-            if macd > macd_signal and macd > 0:
-                technical_score += weights.get('macd_positive_weight', 20)
-            elif macd > macd_signal:
-                technical_score += weights.get('macd_cross_weight', 10)
+            if not pd.isna(macd) and not pd.isna(macd_signal):
+                if macd > macd_signal and macd > 0:
+                    technical_score += weights.get('macd_positive_weight', 20)
+                elif macd > macd_signal:
+                    technical_score += weights.get('macd_cross_weight', 10)
         
+        # RSI评分
         if 'RSI' in df.columns:
             rsi = df['RSI'].iloc[-1]
-            if 30 <= rsi <= 50:
-                technical_score += weights.get('rsi_low_weight', 15)
-            elif 50 < rsi <= 70:
-                technical_score += weights.get('rsi_mid_weight', 10)
+            if not pd.isna(rsi):
+                if 30 <= rsi <= 50:
+                    technical_score += weights.get('rsi_low_weight', 15)
+                elif 50 < rsi <= 70:
+                    technical_score += weights.get('rsi_mid_weight', 10)
         
+        # KDJ评分
         if 'K' in df.columns and 'D' in df.columns:
             k = df['K'].iloc[-1]
             d = df['D'].iloc[-1]
-            if k > d and k < 50:
-                technical_score += weights.get('kdj_weight', 15)
+            if not pd.isna(k) and not pd.isna(d):
+                if k > d and k < 50:
+                    technical_score += weights.get('kdj_weight', 15)
         
-        recent_volume = df['volume'].iloc[-5:].mean()
-        prev_volume = df['volume'].iloc[-10:-5].mean()
-        if recent_volume > prev_volume * 1.2:
-            technical_score += 5
+        # 成交量评分 - 同时支持 'vol' 和 'volume'
+        vol_col = 'vol' if 'vol' in df.columns else 'volume'
+        if vol_col in df.columns:
+            try:
+                recent_volume = df[vol_col].iloc[-5:].mean()
+                prev_volume = df[vol_col].iloc[-10:-5].mean()
+                if not pd.isna(recent_volume) and not pd.isna(prev_volume) and prev_volume > 0:
+                    if recent_volume > prev_volume * 1.2:
+                        technical_score += 5
+            except:
+                pass
         
         # 机器学习模型评分
         ml_score = 0.0
@@ -207,7 +267,7 @@ class RecommendationEngine:
         else:
             final_score = technical_score
         
-        return min(final_score, 100)
+        return final_score
     
     def _calculate_medium_long_score(self, df: pd.DataFrame) -> float:
         score = 0.0
@@ -216,8 +276,8 @@ class RecommendationEngine:
         df = factor_library.calculate_all_factors(df)
         
         current_price = df['close'].iloc[-1]
-        ma20 = df['MA20'].iloc[-1] if 'MA20' in df.columns else current_price
-        ma60 = df['MA60'].iloc[-1] if 'MA60' in df.columns else current_price
+        ma20 = df['MA20'].iloc[-1] if ('MA20' in df.columns and not pd.isna(df['MA20'].iloc[-1])) else current_price
+        ma60 = df['MA60'].iloc[-1] if ('MA60' in df.columns and not pd.isna(df['MA60'].iloc[-1])) else current_price
         
         if self.use_config:
             weights = strategy_config.get_weights('medium')
@@ -247,7 +307,7 @@ class RecommendationEngine:
         if volatility < 0.03:
             score += weights.get('volatility_weight', 15)
         
-        return min(score, 100)
+        return score
     
     def _calculate_long_score(self, df: pd.DataFrame) -> float:
         score = 0.0
@@ -258,9 +318,9 @@ class RecommendationEngine:
         current_price = df['close'].iloc[-1]
         data_len = len(df)
         
-        ma20 = df['MA20'].iloc[-1] if 'MA20' in df.columns else current_price
-        ma60 = df['MA60'].iloc[-1] if 'MA60' in df.columns else current_price
-        ma120 = df['MA120'].iloc[-1] if ('MA120' in df.columns and data_len >= 120) else ma60
+        ma20 = df['MA20'].iloc[-1] if ('MA20' in df.columns and not pd.isna(df['MA20'].iloc[-1])) else current_price
+        ma60 = df['MA60'].iloc[-1] if ('MA60' in df.columns and not pd.isna(df['MA60'].iloc[-1])) else current_price
+        ma120 = df['MA120'].iloc[-1] if ('MA120' in df.columns and data_len >= 120 and not pd.isna(df['MA120'].iloc[-1])) else ma60
         
         if self.use_config:
             weights = strategy_config.get_weights('long')
@@ -291,7 +351,7 @@ class RecommendationEngine:
                 if obv_trend:
                     score += weights.get('obv_weight', 15)
         
-        return min(score, 100)
+        return score
     
     def _calculate_support_resistance(self, df: pd.DataFrame, period: str) -> Dict[str, float]:
         """

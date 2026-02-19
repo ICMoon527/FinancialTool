@@ -12,13 +12,16 @@ class ProgressBar:
         self.fill = fill
         self.current = 0
         self.is_completed = False
-        # 使用tqdm创建进度条
+        # 使用tqdm创建进度条，设置file参数为sys.stdout，解决与loguru的冲突
+        import sys
         self.tqdm_bar = tqdm(
             total=total,
             desc=prefix,
             unit='item',
             ncols=80,
-            bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]'
+            bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]',
+            file=sys.stdout,
+            dynamic_ncols=True
         )
     
     def update(self, current: int = None):
@@ -34,7 +37,10 @@ class ProgressBar:
             self.tqdm_bar.update(1)
             self.current += 1
         
+        # 强制刷新，确保与loguru日志兼容
         self.tqdm_bar.refresh()
+        import sys
+        sys.stdout.flush()
         
         if self.current >= self.total:
             self.is_completed = True
