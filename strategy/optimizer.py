@@ -52,8 +52,8 @@ class StrategyOptimizer:
         signals = []
         
         if horizon == 'short':
-            entry_days = 5
-            exit_days = 10
+            entry_days = 1
+            exit_days = 2
         elif horizon == 'medium':
             entry_days = 20
             exit_days = 60
@@ -284,9 +284,24 @@ class StrategyOptimizer:
                 prepared_stock_data[ts_code] = df_copy
             pb_prepare.update(i + 1)
         
-        # 初始化当前最佳参数为默认参数
-        current_params = self._get_default_params(horizon)
-        best_performance = None
+        # 初始化当前最佳参数为配置文件中的参数
+        from strategy.strategy_config import strategy_config
+        current_params = strategy_config.get_current_params(horizon)
+        print(f"\n使用配置文件中的参数作为初始基准:")
+        print(f"  {current_params}")
+        
+        # 先评估初始基准参数的表现
+        print(f"\n评估初始基准参数...")
+        best_performance = self.evaluate_strategy_on_multiple_stocks(
+            prepared_stock_data, current_params, horizon
+        )
+        
+        if best_performance:
+            objective = 'sharpe'  # 默认使用夏普比率
+            initial_score = self._calculate_objective_score(best_performance, objective)
+            print(f"  初始基准得分: {initial_score:.4f}")
+        else:
+            print(f"  初始基准参数评估失败，使用负无穷作为基准")
         
         print(f"\n开始分层优化，共 {len(importance_groups)} 个层级...")
         

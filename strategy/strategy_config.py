@@ -21,14 +21,14 @@ class StrategyConfig:
                 'stop_loss': 0.05,
                 'entry_threshold': 70,
                 'weights': {
-                    'ma5_weight': 20,
-                    'ma5_ma10_weight': 15,
-                    'ma10_ma20_weight': 15,
-                    'macd_positive_weight': 20,
-                    'macd_cross_weight': 15,
-                    'rsi_low_weight': 20,
-                    'rsi_mid_weight': 15,
-                    'kdj_weight': 20
+                    'ma5_weight': 20.0,
+                    'ma5_ma10_weight': 15.0,
+                    'ma10_ma20_weight': 15.0,
+                    'macd_positive_weight': 20.0,
+                    'macd_cross_weight': 15.0,
+                    'rsi_low_weight': 20.0,
+                    'rsi_mid_weight': 15.0,
+                    'kdj_weight': 20.0
                 }
             },
             'medium': {
@@ -38,12 +38,12 @@ class StrategyConfig:
                 'stop_loss': 0.10,
                 'entry_threshold': 70,
                 'weights': {
-                    'ma20_weight': 15,
-                    'ma20_ma60_weight': 20,
-                    'macd_weight': 20,
-                    'trend_weight': 25,
-                    'obv_weight': 20,
-                    'volatility_weight': 20
+                    'ma20_weight': 15.0,
+                    'ma20_ma60_weight': 20.0,
+                    'macd_weight': 20.0,
+                    'trend_weight': 25.0,
+                    'obv_weight': 20.0,
+                    'volatility_weight': 20.0
                 }
             },
             'long': {
@@ -53,47 +53,55 @@ class StrategyConfig:
                 'stop_loss': 0.15,
                 'entry_threshold': 70,
                 'weights': {
-                    'ma20_weight': 15,
-                    'ma20_ma60_weight': 20,
-                    'ma60_ma120_weight': 15,
-                    'trend_weight': 30,
-                    'near_high_weight': 20,
-                    'obv_weight': 20
+                    'ma20_weight': 15.0,
+                    'ma20_ma60_weight': 20.0,
+                    'ma60_ma120_weight': 15.0,
+                    'trend_weight': 30.0,
+                    'near_high_weight': 20.0,
+                    'obv_weight': 20.0
                 }
             },
             'optimization': {
                 'objective': 'sharpe',
                 'stock_count': 50,
                 'data_days': 365,
+                'early_stopping_rounds': 50,
+                'parallel_workers': 4,
+                'validation_method': 'rolling',
+                'rolling_window_size': 120,
+                'rolling_step_size': 30,
+                'subsample_count': 3,
+                'subsample_size': 180,
+                'bootstrap_count': 5,
                 'param_ranges': {
                     'short': {
-                        'ma5_weight': [10, 15, 20],
-                        'ma5_ma10_weight': [5, 10, 15],
-                        'ma10_ma20_weight': [5, 10, 15],
-                        'macd_positive_weight': [15, 20, 25],
-                        'macd_cross_weight': [5, 10, 15],
-                        'rsi_low_weight': [10, 15, 20],
-                        'rsi_mid_weight': [5, 10, 15],
-                        'kdj_weight': [10, 15, 20],
-                        'entry_threshold': [60, 70, 80]
+                        'ma5_weight': {'min': 5.0, 'max': 30.0, 'step': 0.5},
+                        'ma5_ma10_weight': {'min': 0.0, 'max': 25.0, 'step': 0.5},
+                        'ma10_ma20_weight': {'min': 0.0, 'max': 25.0, 'step': 0.5},
+                        'macd_positive_weight': {'min': 5.0, 'max': 35.0, 'step': 0.5},
+                        'macd_cross_weight': {'min': 0.0, 'max': 25.0, 'step': 0.5},
+                        'rsi_low_weight': {'min': 5.0, 'max': 30.0, 'step': 0.5},
+                        'rsi_mid_weight': {'min': 0.0, 'max': 25.0, 'step': 0.5},
+                        'kdj_weight': {'min': 5.0, 'max': 30.0, 'step': 0.5},
+                        'entry_threshold': {'min': 50, 'max': 90, 'step': 5}
                     },
                     'medium': {
-                        'ma20_weight': [5, 10, 15],
-                        'ma20_ma60_weight': [10, 15, 20],
-                        'macd_weight': [10, 15, 20],
-                        'trend_weight': [15, 20, 25],
-                        'obv_weight': [10, 15, 20],
-                        'volatility_weight': [10, 15, 20],
-                        'entry_threshold': [60, 70, 80]
+                        'ma20_weight': {'min': 0.0, 'max': 25.0, 'step': 0.5},
+                        'ma20_ma60_weight': {'min': 5.0, 'max': 30.0, 'step': 0.5},
+                        'macd_weight': {'min': 5.0, 'max': 30.0, 'step': 0.5},
+                        'trend_weight': {'min': 10.0, 'max': 40.0, 'step': 0.5},
+                        'obv_weight': {'min': 5.0, 'max': 30.0, 'step': 0.5},
+                        'volatility_weight': {'min': 5.0, 'max': 30.0, 'step': 0.5},
+                        'entry_threshold': {'min': 50, 'max': 90, 'step': 5}
                     },
                     'long': {
-                        'ma20_weight': [5, 10, 15],
-                        'ma20_ma60_weight': [10, 15, 20],
-                        'ma60_ma120_weight': [15, 20, 25],
-                        'trend_weight': [20, 25, 30],
-                        'near_high_weight': [10, 15, 20],
-                        'obv_weight': [10, 15, 20],
-                        'entry_threshold': [60, 70, 80]
+                        'ma20_weight': {'min': 0.0, 'max': 25.0, 'step': 0.5},
+                        'ma20_ma60_weight': {'min': 5.0, 'max': 30.0, 'step': 0.5},
+                        'ma60_ma120_weight': {'min': 5.0, 'max': 35.0, 'step': 0.5},
+                        'trend_weight': {'min': 10.0, 'max': 50.0, 'step': 0.5},
+                        'near_high_weight': {'min': 5.0, 'max': 30.0, 'step': 0.5},
+                        'obv_weight': {'min': 5.0, 'max': 30.0, 'step': 0.5},
+                        'entry_threshold': {'min': 50, 'max': 90, 'step': 5}
                     }
                 }
             },
@@ -172,6 +180,48 @@ class StrategyConfig:
     def get_param_ranges(self, horizon: str) -> Dict:
         """获取参数优化范围"""
         return self.config.get('optimization', {}).get('param_ranges', {}).get(horizon, {})
+    
+    def get_early_stopping_rounds(self) -> int:
+        """获取早停轮数"""
+        return self.config.get('optimization', {}).get('early_stopping_rounds', 50)
+    
+    def get_parallel_workers(self) -> int:
+        """获取并行工作数"""
+        return self.config.get('optimization', {}).get('parallel_workers', 4)
+    
+    def get_validation_method(self) -> str:
+        """获取验证方法"""
+        return self.config.get('optimization', {}).get('validation_method', 'rolling')
+    
+    def get_rolling_window_size(self) -> int:
+        """获取滚动窗口大小"""
+        return self.config.get('optimization', {}).get('rolling_window_size', 120)
+    
+    def get_rolling_step_size(self) -> int:
+        """获取滚动窗口步长"""
+        return self.config.get('optimization', {}).get('rolling_step_size', 30)
+    
+    def get_subsample_count(self) -> int:
+        """获取子采样数量"""
+        return self.config.get('optimization', {}).get('subsample_count', 3)
+    
+    def get_subsample_size(self) -> int:
+        """获取子采样大小"""
+        return self.config.get('optimization', {}).get('subsample_size', 180)
+    
+    def get_bootstrap_count(self) -> int:
+        """获取Bootstrap数量"""
+        return self.config.get('optimization', {}).get('bootstrap_count', 5)
+    
+    def get_current_params(self, horizon: str) -> Dict:
+        """获取当前配置的参数"""
+        horizon_config = self.config.get(horizon, {})
+        weights = horizon_config.get('weights', {})
+        entry_threshold = horizon_config.get('entry_threshold', 70)
+        
+        params = weights.copy()
+        params['entry_threshold'] = entry_threshold
+        return params
     
     def reset_to_default(self):
         """重置为默认配置"""

@@ -667,7 +667,7 @@ class DataFetcher:
             Dict[ts_code, DataFrame]
         """
         if not end_date:
-            end_date = datetime.now().strftime('%Y%m%d')
+            end_date = self.get_available_latest_trading_day()
         if not start_date:
             start_date = (datetime.now() - timedelta(days=300)).strftime('%Y%m%d')
         

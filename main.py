@@ -11,6 +11,7 @@ from data.recommendation_cache import recommendation_cache
 from strategy.recommendation_engine import recommendation_engine
 from strategy.factors import factor_library
 from strategy.signals import signal_generator
+from strategy.single_horizon_optimizer import run_single_horizon_optimization
 from backtest.engine import backtest_engine
 from backtest.recommendation_backtest import recommendation_backtester
 
@@ -87,6 +88,28 @@ def print_risk_level_menu():
     print("  3. 进取型 (经验丰富) - 上证+深证+创业板+科创板")
     print("  4. 激进型 (高风险承受) - 所有板块 (含北交所)")
     print("  5. 核心标的池 (80支核心股票)")
+    print("  0. 返回")
+    print("="*60)
+
+def print_strategy_optimization_menu():
+    print("\n" + "="*60)
+    print("【策略优化】")
+    print("="*60)
+    print("请选择优化周期:")
+    print("  1. 短线策略优化")
+    print("  2. 中期策略优化")
+    print("  3. 长期策略优化")
+    print("  4. 优化所有周期策略")
+    print("  0. 返回")
+    print("="*60)
+
+def print_optimization_type_menu(horizon_name: str):
+    print("\n" + "="*60)
+    print(f"【{horizon_name}策略优化】")
+    print("="*60)
+    print("请选择优化类型:")
+    print("  1. 经典指标策略优化")
+    print("  2. 机器学习增量训练")
     print("  0. 返回")
     print("="*60)
 
@@ -433,23 +456,71 @@ def main():
                 input("\n按回车键继续...")
             
             elif choice == '4':
-                print("\n" + "="*80)
-                print("【策略优化】")
-                print("="*80)
-                print("\n说明: 使用历史数据迭代优化短、中、长期策略参数")
-                print("      优化目标: 夏普比率 (风险调整后收益)")
-                
-                confirm = input("\n是否开始策略优化？(y/n): ").strip().lower()
-                if confirm == 'y':
-                    try:
-                        import optimize_strategy
-                        optimize_strategy.main()
-                    except Exception as e:
-                        print(f"\n策略优化失败: {e}")
-                        log.error(f"策略优化失败: {e}")
-                        import traceback
-                        traceback.print_exc()
-                input("\n按回车键继续...")
+                while True:
+                    print_strategy_optimization_menu()
+                    opt_choice = input("\n请选择 (0-4): ").strip()
+                    
+                    if opt_choice == '0':
+                        break
+                    elif opt_choice == '4':
+                        print("\n" + "="*80)
+                        print("【优化所有周期策略】")
+                        print("="*80)
+                        print("\n说明: 使用历史数据迭代优化短、中、长期策略参数")
+                        print("      优化目标: 夏普比率 (风险调整后收益)")
+                        
+                        confirm = input("\n是否开始优化所有周期策略？(y/n): ").strip().lower()
+                        if confirm == 'y':
+                            try:
+                                import optimize_strategy
+                                optimize_strategy.main()
+                            except Exception as e:
+                                print(f"\n策略优化失败: {e}")
+                                log.error(f"策略优化失败: {e}")
+                                import traceback
+                                traceback.print_exc()
+                        input("\n按回车键继续...")
+                    elif opt_choice in ['1', '2', '3']:
+                        horizon_map = {
+                            '1': ('short', '短线'),
+                            '2': ('medium', '中期'),
+                            '3': ('long', '长期')
+                        }
+                        horizon, horizon_name = horizon_map[opt_choice]
+                        
+                        while True:
+                            print_optimization_type_menu(horizon_name)
+                            type_choice = input("\n请选择 (0-2): ").strip()
+                            
+                            if type_choice == '0':
+                                break
+                            elif type_choice == '1':
+                                print(f"\n" + "="*80)
+                                print(f"【{horizon_name}经典指标策略优化】")
+                                print("="*80)
+                                
+                                confirm = input(f"\n是否开始{horizon_name}经典指标策略优化？(y/n): ").strip().lower()
+                                if confirm == 'y':
+                                    try:
+                                        run_single_horizon_optimization(horizon)
+                                    except Exception as e:
+                                        print(f"\n策略优化失败: {e}")
+                                        log.error(f"策略优化失败: {e}")
+                                        import traceback
+                                        traceback.print_exc()
+                                input("\n按回车键继续...")
+                            elif type_choice == '2':
+                                print(f"\n" + "="*80)
+                                print(f"【{horizon_name}机器学习增量训练】")
+                                print("="*80)
+                                print("\n此功能正在开发中...")
+                                input("\n按回车键继续...")
+                            else:
+                                print("\n无效选项")
+                                input("\n按回车键继续...")
+                    else:
+                        print("\n无效选项")
+                        input("\n按回车键继续...")
             
             elif choice == '5':
                 print_risk_level_menu()
