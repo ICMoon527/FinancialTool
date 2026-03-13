@@ -1,646 +1,719 @@
-import sys
+# -*- coding: utf-8 -*-
+"""
+===================================
+A股自选股智能分析系统 - 主调度程序
+===================================
+
+职责：
+1. 协调各模块完成股票分析流程
+2. 实现低并发的线程池调度
+3. 全局异常处理，确保单股失败不影响整体
+4. 提供命令行入口
+
+使用方式：
+    python main.py              # 正常运行
+    python main.py --debug      # 调试模式
+    python main.py --dry-run    # 仅获取数据不分析
+
+交易理念（已融入分析）：
+- 严进策略：不追高，乖离率 > 5% 不买入
+- 趋势交易：只做 MA5>MA10>MA20 多头排列
+- 效率优先：关注筹码集中度好的股票
+- 买点偏好：缩量回踩 MA5/MA10 支撑
+"""
 import os
-import pandas as pd
-from datetime import datetime, timedelta
-from config import Config, user_config
-from logger import log
-from data.data_fetcher import data_fetcher, HAS_AKSHARE, HAS_TUSHARE
-from data.stock_universe import stock_universe
-from data.sample_data import sample_data_generator
-from data.recommendation_cache import recommendation_cache
-from strategy.recommendation_engine import recommendation_engine
-from strategy.factors import factor_library
-from strategy.signals import signal_generator
-from strategy.single_horizon_optimizer import run_single_horizon_optimization
-from backtest.engine import backtest_engine
-from backtest.recommendation_backtest import recommendation_backtester
+from src.config import setup_env
+setup_env()
 
-try:
-    from data.database import db_manager, StockBasic, StockDaily, HAS_SQLALCHEMY
-except ImportError:
-    HAS_SQLALCHEMY = False
-    db_manager = None
-    StockBasic = None
-    StockDaily = None
+# 代理配置 - 通过 USE_PROXY 环境变量控制，默认关闭
+# GitHub Actions 环境自动跳过代理配置
+if os.getenv("GITHUB_ACTIONS") != "true" and os.getenv("USE_PROXY", "false").lower() == "true":
+    # 本地开发环境，启用代理（可在 .env 中配置 PROXY_HOST 和 PROXY_PORT）
+    proxy_host = os.getenv("PROXY_HOST", "127.0.0.1")
+    proxy_port = os.getenv("PROXY_PORT", "10809")
+    proxy_url = f"http://{proxy_host}:{proxy_port}"
+    os.environ["http_proxy"] = proxy_url
+    os.environ["https_proxy"] = proxy_url
 
+import argparse
+import logging
+import sys
+import time
+import uuid
+from datetime import datetime, timezone, timedelta
+from typing import List, Optional, Tuple
 
-def print_welcome():
-    print("""
-╔═══════════════════════════════════════════════════════════════╗
-║                    股票推荐系统 (FinancialTools)               ║
-║                      A股量化交易回测平台                        ║
-╚═══════════════════════════════════════════════════════════════╝
-    """)
+from data_provider.base import canonical_stock_code
+from src.core.pipeline import StockAnalysisPipeline
+from src.core.market_review import run_market_review
+from src.webui_frontend import prepare_webui_frontend_assets
+from src.config import get_config, Config
+from src.logging_config import setup_logging
 
 
-def get_pool_display_name(pool_type: str, risk_level: str) -> str:
-    if pool_type == 'core':
-        return '核心标的池'
-    elif pool_type == 'risk':
-        risk_names = {
-            'low': '保守型 (上证+深证)',
-            'medium': '稳健型 (上证+深证+创业板)',
-            'high': '进取型 (上证+深证+创业板+科创板)',
-            'all': '激进型 (全部板块)'
-        }
-        return risk_names.get(risk_level, '未知风险等级')
-    else:
-        return '未知股票池'
+logger = logging.getLogger(__name__)
 
 
-def print_menu(pool_type='core', risk_level='low', current_stock_count=80):
-    pool_display = get_pool_display_name(pool_type, risk_level)
-    print("\n" + "="*60)
-    print("请选择操作:")
-    print(f"  1. 获取推荐股票")
-    print(f"  2. 推荐历史回测")
-    print(f"  3. 历史数据回测验证")
-    print(f"  4. 策略优化 - 使用历史数据优化策略参数")
-    print(f"  5. 选择风险等级/股票池 (当前: {pool_display})")
-    print(f"  6. 设置分析股票数量 (当前: {current_stock_count}支)")
-    print(f"  0. 退出")
-    print("="*60)
-
-def print_recommendation_submenu():
-    print("\n" + "="*60)
-    print("请选择推荐周期:")
-    print("  1. 短线推荐 (5支，预计1-5个交易日，明天上涨概率最大)")
-    print("  2. 中长期推荐 (5支，预计1-3个月)")
-    print("  3. 长期推荐 (5支，预计6个月以上)")
-    print("  0. 返回")
-    print("="*60)
-
-def print_backtest_submenu():
-    print("\n" + "="*60)
-    print("请选择回测周期:")
-    print("  1. 短线推荐历史回测 (10天前推荐，查看后5个交易日表现)")
-    print("  2. 中线推荐历史回测 (45天前推荐，查看后30个交易日表现)")
-    print("  3. 长线推荐历史回测 (210天前推荐，查看后180个交易日表现)")
-    print("  0. 返回")
-    print("="*60)
-
-
-def print_risk_level_menu():
-    print("\n" + "="*60)
-    print("请选择风险等级:")
-    print("  1. 保守型 (初入股市) - 仅上证+深证主板")
-    print("  2. 稳健型 (有经验) - 上证+深证+创业板")
-    print("  3. 进取型 (经验丰富) - 上证+深证+创业板+科创板")
-    print("  4. 激进型 (高风险承受) - 所有板块 (含北交所)")
-    print("  5. 核心标的池 (80支核心股票)")
-    print("  0. 返回")
-    print("="*60)
-
-def print_strategy_optimization_menu():
-    print("\n" + "="*60)
-    print("【策略优化】")
-    print("="*60)
-    print("请选择优化周期:")
-    print("  1. 短线策略优化")
-    print("  2. 中期策略优化")
-    print("  3. 长期策略优化")
-    print("  4. 优化所有周期策略")
-    print("  0. 返回")
-    print("="*60)
-
-def print_optimization_type_menu(horizon_name: str):
-    print("\n" + "="*60)
-    print(f"【{horizon_name}策略优化】")
-    print("="*60)
-    print("请选择优化类型:")
-    print("  1. 经典指标策略优化")
-    print("  2. 机器学习增量训练")
-    print("  0. 返回")
-    print("="*60)
-
-
-def fetch_realtime_stock_data(pool_type='core', risk_level='low', stock_count=80):
-    pool_display = get_pool_display_name(pool_type, risk_level)
-    log.info(f"正在从{pool_display}获取 {stock_count} 支A股股票数据...")
-    
-    actual_pool_type = risk_level if pool_type == 'risk' else pool_type
-    
-    stock_data = stock_universe.fetch_all_stock_data(
-        pool_type=actual_pool_type,
-        stock_count=stock_count, 
-        days=user_config.data_days, 
-        show_progress=True
+def parse_arguments() -> argparse.Namespace:
+    """解析命令行参数"""
+    parser = argparse.ArgumentParser(
+        description='A股自选股智能分析系统',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='''
+示例:
+  python main.py                    # 正常运行
+  python main.py --debug            # 调试模式
+  python main.py --dry-run          # 仅获取数据，不进行 AI 分析
+  python main.py --stocks 600519,000001  # 指定分析特定股票
+  python main.py --no-notify        # 不发送推送通知
+  python main.py --single-notify    # 启用单股推送模式（每分析完一只立即推送）
+  python main.py --schedule         # 启用定时任务模式
+  python main.py --market-review    # 仅运行大盘复盘
+        '''
     )
-    
-    if not stock_data:
-        log.warning("获取真实数据失败，使用样本数据")
-        stock_data = sample_data_generator.generate_sample_stock_data(days=user_config.data_days)
+
+    parser.add_argument(
+        '--debug',
+        action='store_true',
+        help='启用调试模式，输出详细日志'
+    )
+
+    parser.add_argument(
+        '--dry-run',
+        action='store_true',
+        help='仅获取数据，不进行 AI 分析'
+    )
+
+    parser.add_argument(
+        '--stocks',
+        type=str,
+        help='指定要分析的股票代码，逗号分隔（覆盖配置文件）'
+    )
+
+    parser.add_argument(
+        '--no-notify',
+        action='store_true',
+        help='不发送推送通知'
+    )
+
+    parser.add_argument(
+        '--single-notify',
+        action='store_true',
+        help='启用单股推送模式：每分析完一只股票立即推送，而不是汇总推送'
+    )
+
+    parser.add_argument(
+        '--workers',
+        type=int,
+        default=None,
+        help='并发线程数（默认使用配置值）'
+    )
+
+    parser.add_argument(
+        '--no-multithreading',
+        action='store_true',
+        help='禁用多线程模式，使用单线程执行分析'
+    )
+
+    parser.add_argument(
+        '--schedule',
+        action='store_true',
+        help='启用定时任务模式，每日定时执行'
+    )
+
+    parser.add_argument(
+        '--no-run-immediately',
+        action='store_true',
+        help='定时任务启动时不立即执行一次'
+    )
+
+    parser.add_argument(
+        '--market-review',
+        action='store_true',
+        help='仅运行大盘复盘分析'
+    )
+
+    parser.add_argument(
+        '--no-market-review',
+        action='store_true',
+        help='跳过大盘复盘分析'
+    )
+
+    parser.add_argument(
+        '--force-run',
+        action='store_true',
+        help='跳过交易日检查，强制执行全量分析（Issue #373）'
+    )
+
+    parser.add_argument(
+        '--webui',
+        action='store_true',
+        help='启动 Web 管理界面'
+    )
+
+    parser.add_argument(
+        '--webui-only',
+        action='store_true',
+        help='仅启动 Web 服务，不执行自动分析'
+    )
+
+    parser.add_argument(
+        '--serve',
+        action='store_true',
+        help='启动 FastAPI 后端服务（同时执行分析任务）'
+    )
+
+    parser.add_argument(
+        '--serve-only',
+        action='store_true',
+        help='仅启动 FastAPI 后端服务，不自动执行分析'
+    )
+
+    parser.add_argument(
+        '--port',
+        type=int,
+        default=8000,
+        help='FastAPI 服务端口（默认 8000）'
+    )
+
+    parser.add_argument(
+        '--host',
+        type=str,
+        default='0.0.0.0',
+        help='FastAPI 服务监听地址（默认 0.0.0.0）'
+    )
+
+    parser.add_argument(
+        '--no-context-snapshot',
+        action='store_true',
+        help='不保存分析上下文快照'
+    )
+
+    # === Backtest ===
+    parser.add_argument(
+        '--backtest',
+        action='store_true',
+        help='运行回测（对历史分析结果进行评估）'
+    )
+
+    parser.add_argument(
+        '--backtest-code',
+        type=str,
+        default=None,
+        help='仅回测指定股票代码'
+    )
+
+    parser.add_argument(
+        '--backtest-days',
+        type=int,
+        default=None,
+        help='回测评估窗口（交易日数，默认使用配置）'
+    )
+
+    parser.add_argument(
+        '--backtest-force',
+        action='store_true',
+        help='强制回测（即使已有回测结果也重新计算）'
+    )
+
+    return parser.parse_args()
+
+
+def _compute_trading_day_filter(
+    config: Config,
+    args: argparse.Namespace,
+    stock_codes: List[str],
+) -> Tuple[List[str], Optional[str], bool]:
+    """
+    Compute filtered stock list and effective market review region (Issue #373).
+
+    Returns:
+        (filtered_codes, effective_region, should_skip_all)
+        - effective_region None = use config default (check disabled)
+        - effective_region '' = all relevant markets closed, skip market review
+        - should_skip_all: skip entire run when no stocks and no market review to run
+    """
+    force_run = getattr(args, 'force_run', False)
+    if force_run or not getattr(config, 'trading_day_check_enabled', True):
+        return (stock_codes, None, False)
+
+    from src.core.trading_calendar import (
+        get_market_for_stock,
+        get_open_markets_today,
+        compute_effective_region,
+    )
+
+    open_markets = get_open_markets_today()
+    filtered_codes = []
+    for code in stock_codes:
+        mkt = get_market_for_stock(code)
+        if mkt in open_markets or mkt is None:
+            filtered_codes.append(code)
+
+    if config.market_review_enabled and not getattr(args, 'no_market_review', False):
+        effective_region = compute_effective_region(
+            getattr(config, 'market_review_region', 'cn') or 'cn', open_markets
+        )
     else:
-        print("\n正在预计算并缓存推荐结果...")
-        
-        today_str = datetime.now().strftime('%Y%m%d')
-        
-        horizons = [
-            ('short', '短线', user_config.short_term_top_n),
-            ('medium', '中线', user_config.medium_term_top_n),
-            ('long', '长线', user_config.long_term_top_n)
-        ]
-        
-        for horizon, name, top_n in horizons:
-            if not recommendation_cache.has_valid_cache(horizon, today_str):
-                print(f"  生成{name}推荐...")
-                if horizon == 'short':
-                    recs = recommendation_engine.generate_short_term_recommendations(stock_data, top_n=top_n)
-                elif horizon == 'medium':
-                    recs = recommendation_engine.generate_medium_long_term_recommendations(stock_data, top_n=top_n)
-                else:
-                    recs = recommendation_engine.generate_long_term_recommendations(stock_data, top_n=top_n)
-                
-                recommendation_cache.save_recommendations(recs, horizon, today_str)
-            else:
-                print(f"  {name}推荐已有缓存，跳过")
-    
-    return stock_data
+        effective_region = None
+
+    should_skip_all = (not filtered_codes) and (effective_region or '') == ''
+    return (filtered_codes, effective_region, should_skip_all)
 
 
-def print_recommendations(recommendations, period_type):
-    period_names = {
-        'short': '短线',
-        'medium': '中长期',
-        'long': '长期'
-    }
-    
-    print(f"\n{'='*80}")
-    print(f"【{period_names[period_type]}推荐】 - {len(recommendations)} 支股票")
-    print(f"{'='*80}\n")
-    
-    for idx, rec in enumerate(recommendations, 1):
-        print(f"【第 {idx} 名】")
-        print(f"  股票代码: {rec['ts_code']}")
-        print(f"  股票名称: {rec['name']}")
-        print(f"  当前价格: {rec['current_price']:.2f} 元")
-        print(f"  推荐评分: {rec['score']:.1f} 分")
-        print(f"\n  推荐原因: {rec['reason']}")
-        print(f"\n  买入分析:")
-        print(f"    - 目标价位: {rec['analysis']['target_price']:.2f} 元")
-        print(f"    - 止损价位: {rec['analysis']['stop_loss']:.2f} 元")
-        print(f"    - 持仓周期: {rec['analysis']['holding_period']}")
-        print(f"    - 进场建议: {rec['analysis']['entry_suggestion']}")
-        print(f"    - 风险控制: {rec['analysis']['risk_control']}")
-        print(f"\n{'-'*80}\n")
+def run_full_analysis(
+    config: Config,
+    args: argparse.Namespace,
+    stock_codes: Optional[List[str]] = None
+):
+    """
+    执行完整的分析流程（个股 + 大盘复盘）
 
-
-def get_stocks_with_data():
-    """获取数据库中有数据的股票列表"""
+    这是定时任务调用的主函数
+    """
     try:
-        if not HAS_SQLALCHEMY or not db_manager:
-            return []
-        
-        session = db_manager.get_session()
+        # Issue #373: Trading day filter (per-stock, per-market)
+        effective_codes = stock_codes if stock_codes is not None else config.stock_list
+        filtered_codes, effective_region, should_skip = _compute_trading_day_filter(
+            config, args, effective_codes
+        )
+        if should_skip:
+            logger.info(
+                "今日所有相关市场均为非交易日，跳过执行。可使用 --force-run 强制执行。"
+            )
+            return
+        if set(filtered_codes) != set(effective_codes):
+            skipped = set(effective_codes) - set(filtered_codes)
+            logger.info("今日休市股票已跳过: %s", skipped)
+        stock_codes = filtered_codes
+
+        # 命令行参数 --single-notify 覆盖配置（#55）
+        if getattr(args, 'single_notify', False):
+            config.single_stock_notify = True
+
+        # 命令行参数 --no-multithreading 覆盖配置
+        if getattr(args, 'no_multithreading', False):
+            config.enable_multithreading = False
+            logger.info("通过命令行参数禁用多线程模式")
+
+        # Issue #190: 个股与大盘复盘合并推送
+        merge_notification = (
+            getattr(config, 'merge_email_notification', False)
+            and config.market_review_enabled
+            and not getattr(args, 'no_market_review', False)
+            and not config.single_stock_notify
+        )
+
+        # 创建调度器
+        save_context_snapshot = None
+        if getattr(args, 'no_context_snapshot', False):
+            save_context_snapshot = False
+        query_id = uuid.uuid4().hex
+        pipeline = StockAnalysisPipeline(
+            config=config,
+            max_workers=args.workers,
+            query_id=query_id,
+            query_source="cli",
+            save_context_snapshot=save_context_snapshot
+        )
+
+        # 1. 运行个股分析
+        results = pipeline.run(
+            stock_codes=stock_codes,
+            dry_run=args.dry_run,
+            send_notification=not args.no_notify,
+            merge_notification=merge_notification
+        )
+
+        # Issue #128: 分析间隔 - 在个股分析和大盘分析之间添加延迟
+        analysis_delay = getattr(config, 'analysis_delay', 0)
+        if (
+            analysis_delay > 0
+            and config.market_review_enabled
+            and not args.no_market_review
+            and effective_region != ''
+        ):
+            logger.info(f"等待 {analysis_delay} 秒后执行大盘复盘（避免API限流）...")
+            time.sleep(analysis_delay)
+
+        # 2. 运行大盘复盘（如果启用且不是仅个股模式）
+        market_report = ""
+        if (
+            config.market_review_enabled
+            and not args.no_market_review
+            and effective_region != ''
+        ):
+            review_result = run_market_review(
+                notifier=pipeline.notifier,
+                analyzer=pipeline.analyzer,
+                search_service=pipeline.search_service,
+                send_notification=not args.no_notify,
+                merge_notification=merge_notification,
+                override_region=effective_region,
+            )
+            # 如果有结果，赋值给 market_report 用于后续飞书文档生成
+            if review_result:
+                market_report = review_result
+
+        # Issue #190: 合并推送（个股+大盘复盘）
+        if merge_notification and (results or market_report) and not args.no_notify:
+            parts = []
+            if market_report:
+                parts.append(f"# 📈 大盘复盘\n\n{market_report}")
+            if results:
+                dashboard_content = pipeline.notifier.generate_dashboard_report(results)
+                parts.append(f"# 🚀 个股决策仪表盘\n\n{dashboard_content}")
+            if parts:
+                combined_content = "\n\n---\n\n".join(parts)
+                if pipeline.notifier.is_available():
+                    if pipeline.notifier.send(combined_content, email_send_to_all=True):
+                        logger.info("已合并推送（个股+大盘复盘）")
+                    else:
+                        logger.warning("合并推送失败")
+
+        # 输出摘要
+        if results:
+            logger.info("\n===== 分析结果摘要 =====")
+            for r in sorted(results, key=lambda x: x.sentiment_score, reverse=True):
+                emoji = r.get_emoji()
+                logger.info(
+                    f"{emoji} {r.name}({r.code}): {r.operation_advice} | "
+                    f"评分 {r.sentiment_score} | {r.trend_prediction}"
+                )
+
+        logger.info("\n任务执行完成")
+
+        # === 新增：生成飞书云文档 ===
         try:
-            stocks = session.query(StockDaily.ts_code).distinct().all()
-            return [ts_code for (ts_code,) in stocks]
-        finally:
-            session.close()
-    except Exception as e:
-        log.warning(f"获取有数据的股票列表失败: {e}")
-        return []
+            from src.feishu_doc import FeishuDocManager
 
+            feishu_doc = FeishuDocManager()
+            if feishu_doc.is_configured() and (results or market_report):
+                logger.info("正在创建飞书云文档...")
 
-def run_backtest_validation():
-    print("\n" + "="*80)
-    print("【历史数据回测验证】")
-    print("="*80)
-    
-    stocks_with_data = get_stocks_with_data()
-    
-    if not stocks_with_data:
-        print("\n数据库中没有股票数据！")
-        print("\n请先选择股票推荐选项（1/2/3）来获取数据，")
-        print("或者运行 fetch_and_save_data.py 脚本来获取数据。")
-        print("\n使用演示数据进行回测...\n")
-        df = sample_data_generator.generate_backtest_demo(days=252)
-        target_stocks = [('000000.SZ', '演示股票')]
-    else:
-        print(f"\n数据库中有 {len(stocks_with_data)} 支股票有数据")
-        print("选择前3支股票进行回测...\n")
-        
-        target_stocks = []
-        for ts_code in stocks_with_data[:3]:
-            try:
-                session = db_manager.get_session()
-                try:
-                    basic = session.query(StockBasic).filter(StockBasic.ts_code == ts_code).first()
-                    name = basic.name if basic else ts_code
-                    target_stocks.append((ts_code, name))
-                finally:
-                    session.close()
-            except:
-                target_stocks.append((ts_code, ts_code))
-    
-    strategies = [
-        ('ma_cross', '均线交叉策略', {}),
-        ('macd', 'MACD策略', {}),
-        ('rsi', 'RSI策略', {}),
-        ('bollinger', '布林带策略', {}),
-        ('kdj', 'KDJ策略', {}),
-    ]
-    
-    all_results = []
-    
-    for ts_code, stock_name in target_stocks:
-        print(f"\n{'='*80}")
-        print(f"【股票: {stock_name} ({ts_code})】")
-        print(f"{'='*80}")
-        
-        if stocks_with_data:
-            df = data_fetcher.load_stock_daily_from_db(ts_code)
-            if df.empty:
-                print(f"\n  警告: {ts_code} 数据为空，跳过")
-                continue
-        else:
-            df = sample_data_generator.generate_backtest_demo(days=252)
-        
-        print(f"  数据时间范围: {df['trade_date'].min()} 至 {df['trade_date'].max()}")
-        print(f"  数据条数: {len(df)}")
-        
-        stock_results = []
-        
-        for strategy_name, strategy_desc, kwargs in strategies:
-            print(f"\n  正在测试: {strategy_desc}")
-            
-            try:
-                df_with_signals = signal_generator.generate_signals(df.copy(), strategy_name, **kwargs)
-                results = backtest_engine.run(df_with_signals)
-                
+                # 1. 准备标题 "01-01 13:01大盘复盘"
+                tz_cn = timezone(timedelta(hours=8))
+                now = datetime.now(tz_cn)
+                doc_title = f"{now.strftime('%Y-%m-%d %H:%M')} 大盘复盘"
+
+                # 2. 准备内容 (拼接个股分析和大盘复盘)
+                full_content = ""
+
+                # 添加大盘复盘内容（如果有）
+                if market_report:
+                    full_content += f"# 📈 大盘复盘\n\n{market_report}\n\n---\n\n"
+
+                # 添加个股决策仪表盘（使用 NotificationService 生成）
                 if results:
-                    summary = {
-                        '股票': stock_name,
-                        '代码': ts_code,
-                        '策略': strategy_desc,
-                        '总收益': f"{results.get('total_return', 0)*100:.2f}%",
-                        '年化收益': f"{results.get('annual_return', 0)*100:.2f}%",
-                        '夏普比率': f"{results.get('sharpe_ratio', 0):.2f}",
-                        '最大回撤': f"{results.get('max_drawdown', 0)*100:.2f}%",
-                        '交易次数': results.get('total_trades', 0),
-                        '胜率': f"{results.get('win_rate', 0)*100:.2f}%",
-                    }
-                    stock_results.append(summary)
-                    all_results.append(summary)
-                    
-                    print(f"    ✓ 总收益率: {summary['总收益']}")
-                    print(f"    ✓ 年化收益: {summary['年化收益']}")
-                    print(f"    ✓ 夏普比率: {summary['夏普比率']}")
-                    print(f"    ✓ 最大回撤: {summary['最大回撤']}")
-                    print(f"    ✓ 交易次数: {summary['交易次数']}")
-                    print(f"    ✓ 胜率: {summary['胜率']}")
-                else:
-                    print(f"    ✗ 回测失败")
-                    
-            except Exception as e:
-                print(f"    ✗ 错误: {e}")
-                log.error(f"回测 {stock_name} {strategy_name} 失败: {e}")
-        
-        if stock_results:
-            print(f"\n  {stock_name} 回测结果汇总:")
-            result_df = pd.DataFrame(stock_results)
-            print("\n" + result_df.to_string(index=False))
-    
-    print(f"\n{'='*80}")
-    print("【所有股票回测结果汇总】")
-    print(f"{'='*80}")
-    
-    if all_results:
-        result_df = pd.DataFrame(all_results)
-        print("\n" + result_df.to_string(index=False))
-        
-        print(f"\n{'='*80}")
-        print("【系统可行性分析】")
-        print(f"{'='*80}")
-        print("\n✓ 系统已成功实现完整的量化交易回测框架")
-        print("✓ 包含多种经典技术分析策略（均线、MACD、RSI、布林带、KDJ等）")
-        print("✓ 支持滑点、手续费等真实交易成本模拟")
-        print("✓ 提供完整的绩效指标（收益率、夏普比率、最大回撤、胜率等）")
-        print("✓ 推荐系统基于多因子综合评分，包含趋势、动量、成交量等维度")
-        
-        if stocks_with_data:
-            print("\n✓ 使用真实历史数据进行回测验证")
-        else:
-            print("\n注意: 以上回测使用演示数据，请先获取真实数据进行验证")
-    else:
-        print("\n未获得有效回测结果")
+                    dashboard_content = pipeline.notifier.generate_dashboard_report(results)
+                    full_content += f"# 🚀 个股决策仪表盘\n\n{dashboard_content}"
 
+                # 3. 创建文档
+                doc_url = feishu_doc.create_daily_doc(doc_title, full_content)
+                if doc_url:
+                    logger.info(f"飞书云文档创建成功: {doc_url}")
+                    # 可选：将文档链接也推送到群里
+                    if not args.no_notify:
+                        pipeline.notifier.send(f"[{now.strftime('%Y-%m-%d %H:%M')}] 复盘文档创建成功: {doc_url}")
 
-def main():
-    print_welcome()
-    log.info("股票推荐系统启动")
-    
-    print(f"\n数据源: {'AKShare' if HAS_AKSHARE else 'Tushare' if HAS_TUSHARE else '样本数据'}")
-    
-    stock_data = None
-    
-    while True:
-        print_menu(user_config.pool_type, user_config.risk_level, user_config.stock_count)
-        
-        try:
-            choice = input(f"\n请输入选项 (0-9): ").strip()
-            
-            if choice == '0':
-                print("\n感谢使用，再见！")
-                break
-            
-            elif choice == '1':
-                print_recommendation_submenu()
-                sub_choice = input("\n请选择推荐周期 (0-3): ").strip()
-                
-                if sub_choice == '0':
-                    continue
-                elif sub_choice in ['1', '2', '3']:
-                    horizon_map = {
-                        '1': ('short', '短线', user_config.short_term_top_n),
-                        '2': ('medium', '中线', user_config.medium_term_top_n),
-                        '3': ('long', '长线', user_config.long_term_top_n)
-                    }
-                    
-                    horizon, name, top_n = horizon_map[sub_choice]
-                    today_str = datetime.now().strftime('%Y%m%d')
-                    
-                    use_cache = False
-                    recommendations = []
-                    
-                    if recommendation_cache.has_valid_cache(horizon, today_str):
-                        print(f"\n从缓存加载{name}推荐...")
-                        recommendations = recommendation_cache.load_recommendations(horizon, today_str, top_n=top_n)
-                        if recommendations:
-                            use_cache = True
-                    
-                    if not use_cache:
-                        if stock_data is None:
-                            pool_display = get_pool_display_name(user_config.pool_type, user_config.risk_level)
-                            print(f"\n正在准备数据 ({pool_display} - {user_config.stock_count} 支)...")
-                            stock_data = fetch_realtime_stock_data(
-                                pool_type=user_config.pool_type,
-                                risk_level=user_config.risk_level,
-                                stock_count=user_config.stock_count
-                            )
-                        else:
-                            print("\n正在预计算并缓存所有推荐结果...")
-                            horizons = [
-                                ('short', '短线', user_config.short_term_top_n),
-                                ('medium', '中线', user_config.medium_term_top_n),
-                                ('long', '长线', user_config.long_term_top_n)
-                            ]
-                            
-                            for h, n, tn in horizons:
-                                if not recommendation_cache.has_valid_cache(h, today_str):
-                                    print(f"  生成{n}推荐...")
-                                    if h == 'short':
-                                        recs = recommendation_engine.generate_short_term_recommendations(stock_data, top_n=tn)
-                                    elif h == 'medium':
-                                        recs = recommendation_engine.generate_medium_long_term_recommendations(stock_data, top_n=tn)
-                                    else:
-                                        recs = recommendation_engine.generate_long_term_recommendations(stock_data, top_n=tn)
-                                    
-                                    recommendation_cache.save_recommendations(recs, h, today_str)
-                                else:
-                                    print(f"  {n}推荐已有缓存，跳过")
-                    
-                    recommendations = recommendation_cache.load_recommendations(horizon, today_str, top_n=top_n)
-                    print_recommendations(recommendations, horizon)
-                    input("\n按回车键继续...")
-                else:
-                    print("\n无效选项")
-                    input("\n按回车键继续...")
-            
-            elif choice == '2':
-                print_backtest_submenu()
-                sub_choice = input("\n请选择回测周期 (0-3): ").strip()
-                
-                if sub_choice == '0':
-                    continue
-                elif sub_choice in ['1', '2', '3']:
-                    horizon_map = {
-                        '1': ('short', '短线'),
-                        '2': ('medium', '中线'),
-                        '3': ('long', '长线')
-                    }
-                    
-                    horizon, name = horizon_map[sub_choice]
-                    
-                    print("\n" + "="*80)
-                    print(f"【{name}推荐历史回测】")
-                    print("="*80)
-                    
-                    if horizon == 'short':
-                        print("\n说明: 寻找10天前的5个短线股票推荐，")
-                        print("      查看后5个交易日的表现\n")
-                        top_n = user_config.short_term_top_n
-                    elif horizon == 'medium':
-                        print("\n说明: 寻找45天前的5个中线股票推荐，")
-                        print("      查看后30个交易日的表现\n")
-                        top_n = user_config.medium_term_top_n
-                    else:
-                        print("\n说明: 寻找210天前的5个长期股票推荐，")
-                        print("      查看后180个交易日的表现\n")
-                        top_n = user_config.long_term_top_n
-                    
-                    recommendation_backtester.run_backtest(
-                        horizon=horizon,
-                        top_n=top_n,
-                        stock_count=user_config.stock_count,
-                        pool_type=user_config.pool_type,
-                        risk_level=user_config.risk_level
-                    )
-                    input("\n按回车键继续...")
-                else:
-                    print("\n无效选项")
-                    input("\n按回车键继续...")
-            
-            elif choice == '3':
-                run_backtest_validation()
-                input("\n按回车键继续...")
-            
-            elif choice == '4':
-                while True:
-                    print_strategy_optimization_menu()
-                    opt_choice = input("\n请选择 (0-4): ").strip()
-                    
-                    if opt_choice == '0':
-                        break
-                    elif opt_choice == '4':
-                        print("\n" + "="*80)
-                        print("【优化所有周期策略】")
-                        print("="*80)
-                        print("\n说明: 使用历史数据迭代优化短、中、长期策略参数")
-                        print("      优化目标: 夏普比率 (风险调整后收益)")
-                        
-                        confirm = input("\n是否开始优化所有周期策略？(y/n): ").strip().lower()
-                        if confirm == 'y':
-                            try:
-                                import optimize_strategy
-                                optimize_strategy.main()
-                            except Exception as e:
-                                print(f"\n策略优化失败: {e}")
-                                log.error(f"策略优化失败: {e}")
-                                import traceback
-                                traceback.print_exc()
-                        input("\n按回车键继续...")
-                    elif opt_choice in ['1', '2', '3']:
-                        horizon_map = {
-                            '1': ('short', '短线'),
-                            '2': ('medium', '中期'),
-                            '3': ('long', '长期')
-                        }
-                        horizon, horizon_name = horizon_map[opt_choice]
-                        
-                        while True:
-                            print_optimization_type_menu(horizon_name)
-                            type_choice = input("\n请选择 (0-2): ").strip()
-                            
-                            if type_choice == '0':
-                                break
-                            elif type_choice == '1':
-                                print(f"\n" + "="*80)
-                                print(f"【{horizon_name}经典指标策略优化】")
-                                print("="*80)
-                                
-                                confirm = input(f"\n是否开始{horizon_name}经典指标策略优化？(y/n): ").strip().lower()
-                                if confirm == 'y':
-                                    try:
-                                        run_single_horizon_optimization(horizon)
-                                    except Exception as e:
-                                        print(f"\n策略优化失败: {e}")
-                                        log.error(f"策略优化失败: {e}")
-                                        import traceback
-                                        traceback.print_exc()
-                                input("\n按回车键继续...")
-                            elif type_choice == '2':
-                                print(f"\n" + "="*80)
-                                print(f"【{horizon_name}机器学习增量训练】")
-                                print("="*80)
-                                print("\n此功能正在开发中...")
-                                input("\n按回车键继续...")
-                            else:
-                                print("\n无效选项")
-                                input("\n按回车键继续...")
-                    else:
-                        print("\n无效选项")
-                        input("\n按回车键继续...")
-            
-            elif choice == '5':
-                print_risk_level_menu()
-                risk_choice = input("\n请选择 (0-5): ").strip()
-                
-                if risk_choice == '0':
-                    pass
-                elif risk_choice in ['1', '2', '3', '4', '5']:
-                    print(f"\n正在清除推荐缓存...")
-                    deleted_count = recommendation_cache.clear_all_recommendations()
-                    print(f"✓ 已清除 {deleted_count} 条推荐缓存")
-                    
-                    if risk_choice == '1':
-                        user_config.pool_type = 'risk'
-                        user_config.risk_level = 'low'
-                        user_config.stock_count = 100
-                        print(f"正在获取保守型股票池信息...")
-                        try:
-                            pool_stocks = stock_universe.get_stock_pool(pool_type='low', basic_only=True, use_cache=True)
-                            user_config.max_stock_count = len(pool_stocks)
-                        except Exception as e:
-                            log.warning(f"获取股票池数量失败，使用默认值: {e}")
-                            user_config.max_stock_count = 500
-                        stock_data = None
-                        print(f"✓ 已设置为保守型，默认分析100支股票 (仅上证+深证)，股票池总数: {user_config.max_stock_count}支")
-                    elif risk_choice == '2':
-                        user_config.pool_type = 'risk'
-                        user_config.risk_level = 'medium'
-                        user_config.stock_count = 200
-                        print(f"正在获取稳健型股票池信息...")
-                        try:
-                            pool_stocks = stock_universe.get_stock_pool(pool_type='medium', basic_only=True, use_cache=True)
-                            user_config.max_stock_count = len(pool_stocks)
-                        except Exception as e:
-                            log.warning(f"获取股票池数量失败，使用默认值: {e}")
-                            user_config.max_stock_count = 1000
-                        stock_data = None
-                        print(f"✓ 已设置为稳健型，默认分析200支股票 (上证+深证+创业板)，股票池总数: {user_config.max_stock_count}支")
-                    elif risk_choice == '3':
-                        user_config.pool_type = 'risk'
-                        user_config.risk_level = 'high'
-                        user_config.stock_count = 300
-                        print(f"正在获取进取型股票池信息...")
-                        try:
-                            pool_stocks = stock_universe.get_stock_pool(pool_type='high', basic_only=True, use_cache=True)
-                            user_config.max_stock_count = len(pool_stocks)
-                        except Exception as e:
-                            log.warning(f"获取股票池数量失败，使用默认值: {e}")
-                            user_config.max_stock_count = 2000
-                        stock_data = None
-                        print(f"✓ 已设置为进取型，默认分析300支股票 (上证+深证+创业板+科创板)，股票池总数: {user_config.max_stock_count}支")
-                    elif risk_choice == '4':
-                        user_config.pool_type = 'risk'
-                        user_config.risk_level = 'all'
-                        user_config.stock_count = 500
-                        print(f"正在获取激进型股票池信息...")
-                        try:
-                            pool_stocks = stock_universe.get_stock_pool(pool_type='all', basic_only=True, use_cache=True)
-                            user_config.max_stock_count = len(pool_stocks)
-                        except Exception as e:
-                            log.warning(f"获取股票池数量失败，使用默认值: {e}")
-                            user_config.max_stock_count = 5000
-                        stock_data = None
-                        print(f"✓ 已设置为激进型，默认分析500支股票 (所有板块)，股票池总数: {user_config.max_stock_count}支")
-                    elif risk_choice == '5':
-                        user_config.pool_type = 'core'
-                        user_config.risk_level = 'low'
-                        user_config.stock_count = 80
-                        print(f"正在获取核心标的池信息...")
-                        try:
-                            pool_stocks = stock_universe.get_stock_pool(pool_type='core', basic_only=True, use_cache=True)
-                            user_config.max_stock_count = len(pool_stocks)
-                        except Exception as e:
-                            log.warning(f"获取股票池数量失败，使用默认值: {e}")
-                            user_config.max_stock_count = 80
-                        stock_data = None
-                        print(f"✓ 已切换到核心标的池，默认分析80支股票，股票池总数: {user_config.max_stock_count}支")
-                else:
-                    print("✗ 无效选项")
-                
-                input("\n按回车键继续...")
-            
-            elif choice == '6':
-                print(f"\n正在获取当前股票池信息...")
-                
-                # 直接使用用户配置中存储的股票池最大数量
-                max_count = user_config.max_stock_count
-                
-                print(f"\n当前分析股票数量: {user_config.stock_count}")
-                print(f"当前股票池总数量: {max_count} 支")
-                
-                new_count = input(f"请输入新的股票数量 (10-{max_count}): ").strip()
-                try:
-                    new_count = int(new_count)
-                    if 10 <= new_count <= max_count:
-                        if new_count != user_config.stock_count:
-                            print(f"\n正在清除推荐缓存...")
-                            deleted_count = recommendation_cache.clear_all_recommendations()
-                            print(f"✓ 已清除 {deleted_count} 条推荐缓存")
-                        
-                        user_config.stock_count = new_count
-                        stock_data = None
-                        print(f"✓ 已设置为 {user_config.stock_count} 支，下次获取数据时生效")
-                    else:
-                        print(f"✗ 请输入10-{max_count}之间的数字")
-                except ValueError:
-                    print("✗ 请输入有效的数字")
-                input("\n按回车键继续...")
-            
-            else:
-                print("\n无效选项，请重新输入")
-        
-        except KeyboardInterrupt:
-            print("\n\n感谢使用，再见！")
-            break
         except Exception as e:
-            print(f"\n发生错误: {e}")
-            log.error(f"主程序错误: {e}")
-            input("\n按回车键继续...")
+            logger.error(f"飞书文档生成失败: {e}")
+
+        # === Auto backtest ===
+        try:
+            if getattr(config, 'backtest_enabled', False):
+                from src.services.backtest_service import BacktestService
+
+                logger.info("开始自动回测...")
+                service = BacktestService()
+                stats = service.run_backtest(
+                    force=False,
+                    eval_window_days=getattr(config, 'backtest_eval_window_days', 10),
+                    min_age_days=getattr(config, 'backtest_min_age_days', 14),
+                    limit=200,
+                )
+                logger.info(
+                    f"自动回测完成: processed={stats.get('processed')} saved={stats.get('saved')} "
+                    f"completed={stats.get('completed')} insufficient={stats.get('insufficient')} errors={stats.get('errors')}"
+                )
+        except Exception as e:
+            logger.warning(f"自动回测失败（已忽略）: {e}")
+
+    except Exception as e:
+        logger.exception(f"分析流程执行失败: {e}")
 
 
-if __name__ == '__main__':
-    main()
+def start_api_server(host: str, port: int, config: Config) -> None:
+    """
+    在后台线程启动 FastAPI 服务
+    
+    Args:
+        host: 监听地址
+        port: 监听端口
+        config: 配置对象
+    """
+    import threading
+    import uvicorn
+
+    def run_server():
+        level_name = (config.log_level or "INFO").lower()
+        uvicorn.run(
+            "api.app:app",
+            host=host,
+            port=port,
+            log_level=level_name,
+            log_config=None,
+        )
+
+    thread = threading.Thread(target=run_server, daemon=True)
+    thread.start()
+    logger.info(f"FastAPI 服务已启动: http://{host}:{port}")
+
+
+def _is_truthy_env(var_name: str, default: str = "true") -> bool:
+    """Parse common truthy / falsy environment values."""
+    value = os.getenv(var_name, default).strip().lower()
+    return value not in {"0", "false", "no", "off"}
+
+def start_bot_stream_clients(config: Config) -> None:
+    """Start bot stream clients when enabled in config."""
+    # 启动钉钉 Stream 客户端
+    if config.dingtalk_stream_enabled:
+        try:
+            from bot.platforms import start_dingtalk_stream_background, DINGTALK_STREAM_AVAILABLE
+            if DINGTALK_STREAM_AVAILABLE:
+                if start_dingtalk_stream_background():
+                    logger.info("[Main] Dingtalk Stream client started in background.")
+                else:
+                    logger.warning("[Main] Dingtalk Stream client failed to start.")
+            else:
+                logger.warning("[Main] Dingtalk Stream enabled but SDK is missing.")
+                logger.warning("[Main] Run: pip install dingtalk-stream")
+        except Exception as exc:
+            logger.error(f"[Main] Failed to start Dingtalk Stream client: {exc}")
+
+    # 启动飞书 Stream 客户端
+    if getattr(config, 'feishu_stream_enabled', False):
+        try:
+            from bot.platforms import start_feishu_stream_background, FEISHU_SDK_AVAILABLE
+            if FEISHU_SDK_AVAILABLE:
+                if start_feishu_stream_background():
+                    logger.info("[Main] Feishu Stream client started in background.")
+                else:
+                    logger.warning("[Main] Feishu Stream client failed to start.")
+            else:
+                logger.warning("[Main] Feishu Stream enabled but SDK is missing.")
+                logger.warning("[Main] Run: pip install lark-oapi")
+        except Exception as exc:
+            logger.error(f"[Main] Failed to start Feishu Stream client: {exc}")
+
+
+def main() -> int:
+    """
+    主入口函数
+
+    Returns:
+        退出码（0 表示成功）
+    """
+    # 解析命令行参数
+    args = parse_arguments()
+
+    # 加载配置（在设置日志前加载，以获取日志目录）
+    config = get_config()
+
+    # 配置日志（输出到控制台和文件）
+    setup_logging(log_prefix="stock_analysis", debug=args.debug, log_dir=config.log_dir)
+
+    logger.info("=" * 60)
+    logger.info("A股自选股智能分析系统 启动")
+    logger.info(f"运行时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info("=" * 60)
+
+    # 验证配置
+    warnings = config.validate()
+    for warning in warnings:
+        logger.warning(warning)
+
+    # 解析股票列表（统一为大写 Issue #355）
+    stock_codes = None
+    if args.stocks:
+        stock_codes = [canonical_stock_code(c) for c in args.stocks.split(',') if (c or "").strip()]
+        logger.info(f"使用命令行指定的股票列表: {stock_codes}")
+
+    # === 处理 --webui / --webui-only 参数，映射到 --serve / --serve-only ===
+    if args.webui:
+        args.serve = True
+    if args.webui_only:
+        args.serve_only = True
+
+    # 兼容旧版 WEBUI_ENABLED 环境变量
+    if config.webui_enabled and not (args.serve or args.serve_only):
+        args.serve = True
+
+    # === 启动 Web 服务 (如果启用) ===
+    start_serve = (args.serve or args.serve_only) and os.getenv("GITHUB_ACTIONS") != "true"
+
+    # 兼容旧版 WEBUI_HOST/WEBUI_PORT：如果用户未通过 --host/--port 指定，则使用旧变量
+    if start_serve:
+        if args.host == '0.0.0.0' and os.getenv('WEBUI_HOST'):
+            args.host = os.getenv('WEBUI_HOST')
+        if args.port == 8000 and os.getenv('WEBUI_PORT'):
+            args.port = int(os.getenv('WEBUI_PORT'))
+
+    bot_clients_started = False
+    if start_serve:
+        if not prepare_webui_frontend_assets():
+            logger.warning("前端静态资源未就绪，继续启动 FastAPI 服务（Web 页面可能不可用）")
+        try:
+            start_api_server(host=args.host, port=args.port, config=config)
+            bot_clients_started = True
+        except Exception as e:
+            logger.error(f"启动 FastAPI 服务失败: {e}")
+
+    if bot_clients_started:
+        start_bot_stream_clients(config)
+
+    # === 仅 Web 服务模式：不自动执行分析 ===
+    if args.serve_only:
+        logger.info("模式: 仅 Web 服务")
+        logger.info(f"Web 服务运行中: http://{args.host}:{args.port}")
+        logger.info("通过 /api/v1/analysis/stock/{code} 接口触发分析")
+        logger.info(f"API 文档: http://{args.host}:{args.port}/docs")
+        logger.info("按 Ctrl+C 退出...")
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            logger.info("\n用户中断，程序退出")
+        return 0
+
+    try:
+        # 模式0: 回测
+        if getattr(args, 'backtest', False):
+            logger.info("模式: 回测")
+            from src.services.backtest_service import BacktestService
+
+            service = BacktestService()
+            stats = service.run_backtest(
+                code=getattr(args, 'backtest_code', None),
+                force=getattr(args, 'backtest_force', False),
+                eval_window_days=getattr(args, 'backtest_days', None),
+            )
+            logger.info(
+                f"回测完成: processed={stats.get('processed')} saved={stats.get('saved')} "
+                f"completed={stats.get('completed')} insufficient={stats.get('insufficient')} errors={stats.get('errors')}"
+            )
+            return 0
+
+        # 模式1: 仅大盘复盘
+        if args.market_review:
+            from src.analyzer import GeminiAnalyzer
+            from src.core.market_review import run_market_review
+            from src.notification import NotificationService
+            from src.search_service import SearchService
+
+            # Issue #373: Trading day check for market-review-only mode.
+            # Do NOT use _compute_trading_day_filter here: that helper checks
+            # config.market_review_enabled, which would wrongly block an
+            # explicit --market-review invocation when the flag is disabled.
+            effective_region = None
+            if not getattr(args, 'force_run', False) and getattr(config, 'trading_day_check_enabled', True):
+                from src.core.trading_calendar import get_open_markets_today, compute_effective_region as _compute_region
+                open_markets = get_open_markets_today()
+                effective_region = _compute_region(
+                    getattr(config, 'market_review_region', 'cn') or 'cn', open_markets
+                )
+                if effective_region == '':
+                    logger.info("今日大盘复盘相关市场均为非交易日，跳过执行。可使用 --force-run 强制执行。")
+                    return 0
+
+            logger.info("模式: 仅大盘复盘")
+            notifier = NotificationService()
+
+            # 初始化搜索服务和分析器（如果有配置）
+            search_service = None
+            analyzer = None
+
+            if config.bocha_api_keys or config.tavily_api_keys or config.brave_api_keys or config.serpapi_keys:
+                search_service = SearchService(
+                    bocha_keys=config.bocha_api_keys,
+                    tavily_keys=config.tavily_api_keys,
+                    brave_keys=config.brave_api_keys,
+                    serpapi_keys=config.serpapi_keys,
+                    news_max_age_days=config.news_max_age_days,
+                )
+
+            if config.gemini_api_key or config.openai_api_key:
+                analyzer = GeminiAnalyzer(api_key=config.gemini_api_key)
+                if not analyzer.is_available():
+                    logger.warning("AI 分析器初始化后不可用，请检查 API Key 配置")
+                    analyzer = None
+            else:
+                logger.warning("未检测到 API Key (Gemini/OpenAI)，将仅使用模板生成报告")
+
+            run_market_review(
+                notifier=notifier,
+                analyzer=analyzer,
+                search_service=search_service,
+                send_notification=not args.no_notify,
+                override_region=effective_region,
+            )
+            return 0
+
+        # 模式2: 定时任务模式
+        if args.schedule or config.schedule_enabled:
+            logger.info("模式: 定时任务")
+            logger.info(f"每日执行时间: {config.schedule_time}")
+
+            # Determine whether to run immediately:
+            # Command line arg --no-run-immediately overrides config if present.
+            # Otherwise use config (defaults to True).
+            should_run_immediately = config.schedule_run_immediately
+            if getattr(args, 'no_run_immediately', False):
+                should_run_immediately = False
+
+            logger.info(f"启动时立即执行: {should_run_immediately}")
+
+            from src.scheduler import run_with_schedule
+
+            def scheduled_task():
+                run_full_analysis(config, args, stock_codes)
+
+            run_with_schedule(
+                task=scheduled_task,
+                schedule_time=config.schedule_time,
+                run_immediately=should_run_immediately
+            )
+            return 0
+
+        # 模式3: 正常单次运行
+        if config.run_immediately:
+            run_full_analysis(config, args, stock_codes)
+        else:
+            logger.info("配置为不立即运行分析 (RUN_IMMEDIATELY=false)")
+
+        logger.info("\n程序执行完成")
+
+        # 如果启用了服务且是非定时任务模式，保持程序运行
+        keep_running = start_serve and not (args.schedule or config.schedule_enabled)
+        if keep_running:
+            logger.info("API 服务运行中 (按 Ctrl+C 退出)...")
+            try:
+                while True:
+                    time.sleep(1)
+            except KeyboardInterrupt:
+                pass
+
+        return 0
+
+    except KeyboardInterrupt:
+        logger.info("\n用户中断，程序退出")
+        return 130
+
+    except Exception as e:
+        logger.exception(f"程序执行失败: {e}")
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

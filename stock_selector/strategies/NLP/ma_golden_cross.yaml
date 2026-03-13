@@ -1,0 +1,29 @@
+# 均线金叉策略
+# MA Golden Cross Strategy
+
+name: ma_golden_cross
+display_name: 均线金叉
+description: 均线金叉配合量能确认的经典趋势反转策略。
+category: trend
+
+instructions: |
+  **均线金叉策略**
+
+  信号判定标准：
+
+  1. **金叉检测**：
+     - MA5在最近3个交易日内上穿MA10
+     - 或MA10上穿MA20（更慢但更可靠）
+
+  2. **量能确认**：
+     - 金叉日成交量 > 5日均量
+     - 量比 > 1.2
+
+  3. **价格位置**：
+     - 价格在交叉均线附近或上方
+     - 乖离率 < 5%
+
+  评分调整：
+  - MA5 × MA10 金叉配合量能：score +10
+  - MA10 × MA20 金叉：score +8
+  - MACD零轴上方金叉：额外 +5
