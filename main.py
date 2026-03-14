@@ -519,6 +519,214 @@ def start_bot_stream_clients(config: Config) -> None:
             logger.error(f"[Main] Failed to start Feishu Stream client: {exc}")
 
 
+def setup_and_start_web_service(
+    args: argparse.Namespace,
+    config: Config
+) -> bool:
+    """
+    设置并启动 Web 服务
+    
+    Args:
+        args: 命令行参数
+        config: 配置对象
+        
+    Returns:
+        bool: Web 服务是否成功启动
+    """
+    start_serve = (args.serve or args.serve_only) and os.getenv("GITHUB_ACTIONS") != "true"
+    
+    if not start_serve:
+        return False
+    
+    # 兼容旧版 WEBUI_HOST/WEBUI_PORT
+    if args.host == '0.0.0.0' and os.getenv('WEBUI_HOST'):
+        args.host = os.getenv('WEBUI_HOST')
+    if args.port == 8000 and os.getenv('WEBUI_PORT'):
+        args.port = int(os.getenv('WEBUI_PORT'))
+    
+    # 准备前端资源
+    if not prepare_webui_frontend_assets():
+        logger.warning("前端静态资源未就绪，继续启动 FastAPI 服务（Web 页面可能不可用）")
+    
+    # 启动 API 服务
+    try:
+        start_api_server(host=args.host, port=args.port, config=config)
+        # 启动 Bot 流客户端
+        start_bot_stream_clients(config)
+        return True
+    except Exception as e:
+        logger.error(f"启动 FastAPI 服务失败: {e}")
+        return False
+
+
+def run_backtest_mode(args: argparse.Namespace) -> int:
+    """
+    运行回测模式
+    
+    Args:
+        args: 命令行参数
+        
+    Returns:
+        int: 退出码
+    """
+    logger.info("模式: 回测")
+    from src.services.backtest_service import BacktestService
+
+    service = BacktestService()
+    stats = service.run_backtest(
+        code=getattr(args, 'backtest_code', None),
+        force=getattr(args, 'backtest_force', False),
+        eval_window_days=getattr(args, 'backtest_days', None),
+    )
+    logger.info(
+        f"回测完成: processed={stats.get('processed')} saved={stats.get('saved')} "
+        f"completed={stats.get('completed')} insufficient={stats.get('insufficient')} errors={stats.get('errors')}"
+    )
+    return 0
+
+
+def run_market_review_mode(
+    args: argparse.Namespace,
+    config: Config
+) -> int:
+    """
+    运行大盘复盘模式
+    
+    Args:
+        args: 命令行参数
+        config: 配置对象
+        
+    Returns:
+        int: 退出码
+    """
+    from src.analyzer import GeminiAnalyzer
+    from src.core.market_review import run_market_review
+    from src.notification import NotificationService
+    from src.search_service import SearchService
+
+    # 交易日检查
+    effective_region = None
+    if not getattr(args, 'force_run', False) and getattr(config, 'trading_day_check_enabled', True):
+        from src.core.trading_calendar import get_open_markets_today, compute_effective_region as _compute_region
+        open_markets = get_open_markets_today()
+        effective_region = _compute_region(
+            getattr(config, 'market_review_region', 'cn') or 'cn', open_markets
+        )
+        if effective_region == '':
+            logger.info("今日大盘复盘相关市场均为非交易日，跳过执行。可使用 --force-run 强制执行。")
+            return 0
+
+    logger.info("模式: 仅大盘复盘")
+    notifier = NotificationService()
+
+    # 初始化搜索服务和分析器
+    search_service = None
+    analyzer = None
+
+    if config.bocha_api_keys or config.tavily_api_keys or config.brave_api_keys or config.serpapi_keys:
+        search_service = SearchService(
+            bocha_keys=config.bocha_api_keys,
+            tavily_keys=config.tavily_api_keys,
+            brave_keys=config.brave_api_keys,
+            serpapi_keys=config.serpapi_keys,
+            news_max_age_days=config.news_max_age_days,
+        )
+
+    if config.gemini_api_key or config.openai_api_key:
+        analyzer = GeminiAnalyzer(api_key=config.gemini_api_key)
+        if not analyzer.is_available():
+            logger.warning("AI 分析器初始化后不可用，请检查 API Key 配置")
+            analyzer = None
+    else:
+        logger.warning("未检测到 API Key (Gemini/OpenAI)，将仅使用模板生成报告")
+
+    run_market_review(
+        notifier=notifier,
+        analyzer=analyzer,
+        search_service=search_service,
+        send_notification=not args.no_notify,
+        override_region=effective_region,
+    )
+    return 0
+
+
+def run_schedule_mode(
+    args: argparse.Namespace,
+    config: Config,
+    stock_codes: Optional[List[str]]
+) -> int:
+    """
+    运行定时任务模式
+    
+    Args:
+        args: 命令行参数
+        config: 配置对象
+        stock_codes: 股票代码列表
+        
+    Returns:
+        int: 退出码
+    """
+    logger.info("模式: 定时任务")
+    logger.info(f"每日执行时间: {config.schedule_time}")
+
+    # 确定是否立即执行
+    should_run_immediately = config.schedule_run_immediately
+    if getattr(args, 'no_run_immediately', False):
+        should_run_immediately = False
+
+    logger.info(f"启动时立即执行: {should_run_immediately}")
+
+    from src.scheduler import run_with_schedule
+
+    def scheduled_task():
+        run_full_analysis(config, args, stock_codes)
+
+    run_with_schedule(
+        task=scheduled_task,
+        schedule_time=config.schedule_time,
+        run_immediately=should_run_immediately
+    )
+    return 0
+
+
+def run_normal_mode(
+    args: argparse.Namespace,
+    config: Config,
+    stock_codes: Optional[List[str]],
+    web_service_started: bool
+) -> int:
+    """
+    运行正常单次模式
+    
+    Args:
+        args: 命令行参数
+        config: 配置对象
+        stock_codes: 股票代码列表
+        web_service_started: Web 服务是否已启动
+        
+    Returns:
+        int: 退出码
+    """
+    if config.run_immediately:
+        run_full_analysis(config, args, stock_codes)
+    else:
+        logger.info("配置为不立即运行分析 (RUN_IMMEDIATELY=false)")
+
+    logger.info("\n程序执行完成")
+
+    # 如果启用了服务且是非定时任务模式，保持程序运行
+    keep_running = web_service_started and not (args.schedule or config.schedule_enabled)
+    if keep_running:
+        logger.info("API 服务运行中 (按 Ctrl+C 退出)...")
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            pass
+
+    return 0
+
+
 def main() -> int:
     """
     主入口函数
@@ -529,10 +737,10 @@ def main() -> int:
     # 解析命令行参数
     args = parse_arguments()
 
-    # 加载配置（在设置日志前加载，以获取日志目录）
+    # 加载配置
     config = get_config()
 
-    # 配置日志（输出到控制台和文件）
+    # 配置日志
     setup_logging(log_prefix="stock_analysis", debug=args.debug, log_dir=config.log_dir)
 
     logger.info("=" * 60)
@@ -545,46 +753,24 @@ def main() -> int:
     for warning in warnings:
         logger.warning(warning)
 
-    # 解析股票列表（统一为大写 Issue #355）
+    # 解析股票列表
     stock_codes = None
     if args.stocks:
         stock_codes = [canonical_stock_code(c) for c in args.stocks.split(',') if (c or "").strip()]
         logger.info(f"使用命令行指定的股票列表: {stock_codes}")
 
-    # === 处理 --webui / --webui-only 参数，映射到 --serve / --serve-only ===
+    # 处理 WebUI 参数兼容性
     if args.webui:
         args.serve = True
     if args.webui_only:
         args.serve_only = True
-
-    # 兼容旧版 WEBUI_ENABLED 环境变量
     if config.webui_enabled and not (args.serve or args.serve_only):
         args.serve = True
 
-    # === 启动 Web 服务 (如果启用) ===
-    start_serve = (args.serve or args.serve_only) and os.getenv("GITHUB_ACTIONS") != "true"
+    # 启动 Web 服务
+    web_service_started = setup_and_start_web_service(args, config)
 
-    # 兼容旧版 WEBUI_HOST/WEBUI_PORT：如果用户未通过 --host/--port 指定，则使用旧变量
-    if start_serve:
-        if args.host == '0.0.0.0' and os.getenv('WEBUI_HOST'):
-            args.host = os.getenv('WEBUI_HOST')
-        if args.port == 8000 and os.getenv('WEBUI_PORT'):
-            args.port = int(os.getenv('WEBUI_PORT'))
-
-    bot_clients_started = False
-    if start_serve:
-        if not prepare_webui_frontend_assets():
-            logger.warning("前端静态资源未就绪，继续启动 FastAPI 服务（Web 页面可能不可用）")
-        try:
-            start_api_server(host=args.host, port=args.port, config=config)
-            bot_clients_started = True
-        except Exception as e:
-            logger.error(f"启动 FastAPI 服务失败: {e}")
-
-    if bot_clients_started:
-        start_bot_stream_clients(config)
-
-    # === 仅 Web 服务模式：不自动执行分析 ===
+    # 仅 Web 服务模式
     if args.serve_only:
         logger.info("模式: 仅 Web 服务")
         logger.info(f"Web 服务运行中: http://{args.host}:{args.port}")
@@ -599,123 +785,20 @@ def main() -> int:
         return 0
 
     try:
-        # 模式0: 回测
+        # 回测模式
         if getattr(args, 'backtest', False):
-            logger.info("模式: 回测")
-            from src.services.backtest_service import BacktestService
+            return run_backtest_mode(args)
 
-            service = BacktestService()
-            stats = service.run_backtest(
-                code=getattr(args, 'backtest_code', None),
-                force=getattr(args, 'backtest_force', False),
-                eval_window_days=getattr(args, 'backtest_days', None),
-            )
-            logger.info(
-                f"回测完成: processed={stats.get('processed')} saved={stats.get('saved')} "
-                f"completed={stats.get('completed')} insufficient={stats.get('insufficient')} errors={stats.get('errors')}"
-            )
-            return 0
-
-        # 模式1: 仅大盘复盘
+        # 大盘复盘模式
         if args.market_review:
-            from src.analyzer import GeminiAnalyzer
-            from src.core.market_review import run_market_review
-            from src.notification import NotificationService
-            from src.search_service import SearchService
+            return run_market_review_mode(args, config)
 
-            # Issue #373: Trading day check for market-review-only mode.
-            # Do NOT use _compute_trading_day_filter here: that helper checks
-            # config.market_review_enabled, which would wrongly block an
-            # explicit --market-review invocation when the flag is disabled.
-            effective_region = None
-            if not getattr(args, 'force_run', False) and getattr(config, 'trading_day_check_enabled', True):
-                from src.core.trading_calendar import get_open_markets_today, compute_effective_region as _compute_region
-                open_markets = get_open_markets_today()
-                effective_region = _compute_region(
-                    getattr(config, 'market_review_region', 'cn') or 'cn', open_markets
-                )
-                if effective_region == '':
-                    logger.info("今日大盘复盘相关市场均为非交易日，跳过执行。可使用 --force-run 强制执行。")
-                    return 0
-
-            logger.info("模式: 仅大盘复盘")
-            notifier = NotificationService()
-
-            # 初始化搜索服务和分析器（如果有配置）
-            search_service = None
-            analyzer = None
-
-            if config.bocha_api_keys or config.tavily_api_keys or config.brave_api_keys or config.serpapi_keys:
-                search_service = SearchService(
-                    bocha_keys=config.bocha_api_keys,
-                    tavily_keys=config.tavily_api_keys,
-                    brave_keys=config.brave_api_keys,
-                    serpapi_keys=config.serpapi_keys,
-                    news_max_age_days=config.news_max_age_days,
-                )
-
-            if config.gemini_api_key or config.openai_api_key:
-                analyzer = GeminiAnalyzer(api_key=config.gemini_api_key)
-                if not analyzer.is_available():
-                    logger.warning("AI 分析器初始化后不可用，请检查 API Key 配置")
-                    analyzer = None
-            else:
-                logger.warning("未检测到 API Key (Gemini/OpenAI)，将仅使用模板生成报告")
-
-            run_market_review(
-                notifier=notifier,
-                analyzer=analyzer,
-                search_service=search_service,
-                send_notification=not args.no_notify,
-                override_region=effective_region,
-            )
-            return 0
-
-        # 模式2: 定时任务模式
+        # 定时任务模式
         if args.schedule or config.schedule_enabled:
-            logger.info("模式: 定时任务")
-            logger.info(f"每日执行时间: {config.schedule_time}")
+            return run_schedule_mode(args, config, stock_codes)
 
-            # Determine whether to run immediately:
-            # Command line arg --no-run-immediately overrides config if present.
-            # Otherwise use config (defaults to True).
-            should_run_immediately = config.schedule_run_immediately
-            if getattr(args, 'no_run_immediately', False):
-                should_run_immediately = False
-
-            logger.info(f"启动时立即执行: {should_run_immediately}")
-
-            from src.scheduler import run_with_schedule
-
-            def scheduled_task():
-                run_full_analysis(config, args, stock_codes)
-
-            run_with_schedule(
-                task=scheduled_task,
-                schedule_time=config.schedule_time,
-                run_immediately=should_run_immediately
-            )
-            return 0
-
-        # 模式3: 正常单次运行
-        if config.run_immediately:
-            run_full_analysis(config, args, stock_codes)
-        else:
-            logger.info("配置为不立即运行分析 (RUN_IMMEDIATELY=false)")
-
-        logger.info("\n程序执行完成")
-
-        # 如果启用了服务且是非定时任务模式，保持程序运行
-        keep_running = start_serve and not (args.schedule or config.schedule_enabled)
-        if keep_running:
-            logger.info("API 服务运行中 (按 Ctrl+C 退出)...")
-            try:
-                while True:
-                    time.sleep(1)
-            except KeyboardInterrupt:
-                pass
-
-        return 0
+        # 正常单次运行模式
+        return run_normal_mode(args, config, stock_codes, web_service_started)
 
     except KeyboardInterrupt:
         logger.info("\n用户中断，程序退出")
