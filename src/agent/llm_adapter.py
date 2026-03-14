@@ -8,9 +8,15 @@ interface consumed by the AgentExecutor, via LiteLLM.
 
 import json
 import logging
+import os
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
+
+# 禁用所有底层 SDK 的内部重试，完全由我们自己控制
+os.environ["OPENAI_MAX_RETRIES"] = "0"
+os.environ["LITELLM_NUM_RETRIES"] = "0"
+os.environ["LITELLM_RETRY_TIMEOUT"] = "0"
 
 import litellm
 from litellm import Router
@@ -162,7 +168,13 @@ class LLMToolAdapter:
             self._router = Router(
                 model_list=model_list,
                 routing_strategy="simple-shuffle",
-                num_retries=2,
+                num_retries=5,
+                retry_after=10,
+                fallthrough=[
+                    litellm.RateLimitError,
+                    litellm.Timeout,
+                    litellm.ServiceUnavailableError,
+                ],
             )
             models_in_router = list(dict.fromkeys(m["litellm_params"]["model"] for m in model_list))
             logger.info(f"Agent LLM: Router initialized with {len(keys)} keys for {litellm_model} (models: {models_in_router})")

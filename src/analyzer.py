@@ -12,6 +12,7 @@ A股自选股智能分析系统 - AI分析层
 
 import json
 import logging
+import os
 import time
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, List
@@ -34,6 +35,11 @@ from src.core.json_parser import (
     extract_key_points,
     extract_risk_warning,
 )
+
+# 禁用所有底层 SDK 的内部重试，完全由我们自己控制
+os.environ["OPENAI_MAX_RETRIES"] = "0"
+os.environ["LITELLM_NUM_RETRIES"] = "0"
+os.environ["LITELLM_RETRY_TIMEOUT"] = "0"
 
 logger = logging.getLogger(__name__)
 
@@ -596,7 +602,13 @@ class GeminiAnalyzer:
             self._router = Router(
                 model_list=model_list,
                 routing_strategy="simple-shuffle",
-                num_retries=2,
+                num_retries=5,
+                retry_after=10,
+                fallthrough=[
+                    litellm.RateLimitError,
+                    litellm.Timeout,
+                    litellm.ServiceUnavailableError,
+                ],
             )
             models_in_router = list(dict.fromkeys(m["litellm_params"]["model"] for m in model_list))
             logger.info(f"Analyzer LLM: Router initialized with {len(keys)} keys for {litellm_model} (models: {models_in_router})")
@@ -636,78 +648,125 @@ class GeminiAnalyzer:
             if not keys:
                 logger.debug(f"[LiteLLM] Skipping {model}: no API keys")
                 continue
-            try:
-                model_short = model.split("/")[-1] if "/" in model else model
-                call_kwargs: Dict[str, Any] = {
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": self.SYSTEM_PROMPT},
-                        {"role": "user", "content": prompt},
-                    ],
-                    "temperature": temperature,
-                    "max_tokens": max_tokens,
-                }
-                extra = get_thinking_extra_body(model_short)
-                if extra:
-                    call_kwargs["extra_body"] = extra
+            
+            # 指数退避重试配置 - 更长的延迟避免限流
+            max_retries = 8
+            base_delay = 5.0
+            
+            for attempt in range(max_retries):
+                try:
+                    # 第一次请求前也增加延迟，避免一开始就限流
+                    if attempt == 0:
+                        initial_delay = config.gemini_request_delay
+                        logger.info(f"[LiteLLM] Initial delay: {initial_delay:.1f}s before first request...")
+                        time.sleep(initial_delay)
+                    
+                    model_short = model.split("/")[-1] if "/" in model else model
+                    call_kwargs: Dict[str, Any] = {
+                        "model": model,
+                        "messages": [
+                            {"role": "system", "content": self.SYSTEM_PROMPT},
+                            {"role": "user", "content": prompt},
+                        ],
+                        "temperature": temperature,
+                        "max_tokens": max_tokens,
+                    }
+                    extra = get_thinking_extra_body(model_short)
+                    if extra:
+                        call_kwargs["extra_body"] = extra
 
-                # 检查是否是阿里云平台的模型
-                is_aliyun_model = model == "openai/qvq-max-2025-03-25"
-                
-                # 为阿里云平台的模型启用流式输出
-                if is_aliyun_model:
-                    call_kwargs["stream"] = True
+                    # 检查是否是阿里云平台的模型
+                    is_aliyun_model = model == "openai/qvq-max-2025-03-25"
+                    
+                    # 为阿里云平台的模型启用流式输出
+                    if is_aliyun_model:
+                        call_kwargs["stream"] = True
 
-                # 直接使用litellm.completion，确保使用正确的api_base
-                call_kwargs["api_key"] = keys[0]
-                call_kwargs.update(self._extra_litellm_params(model, config))
-                response = litellm.completion(**call_kwargs)
+                    # 轮询使用多个 API Key（如果有）
+                    key_index = attempt % len(keys)
+                    current_key = keys[key_index]
+                    
+                    # 直接使用litellm.completion，确保使用正确的api_base
+                    call_kwargs["api_key"] = current_key
+                    call_kwargs.update(self._extra_litellm_params(model, config))
+                    
+                    # 禁用 LiteLLM 和 OpenAI SDK 的内部重试，完全由我们自己控制
+                    call_kwargs["num_retries"] = 0
+                    call_kwargs["retry_timeout"] = 0
+                    
+                    # 如果是 OpenAI 兼容模型，禁用 OpenAI SDK 的内部重试
+                    if not model.startswith("gemini/") and not model.startswith("anthropic/"):
+                        call_kwargs["max_retries"] = 0
+                    
+                    logger.info(f"[LiteLLM] Attempt {attempt + 1}/{max_retries} with key {key_index + 1}/{len(keys)}")
+                    response = litellm.completion(**call_kwargs)
 
-                # 处理流式响应
-                if is_aliyun_model and hasattr(response, '__iter__'):
-                    # 收集流式响应的所有部分
-                    collected_content = ""
-                    for chunk in response:
-                        if hasattr(chunk, 'choices'):
-                            for choice in chunk.choices:
-                                if hasattr(choice, 'delta') and hasattr(choice.delta, 'content'):
-                                    if choice.delta.content:
-                                        collected_content += choice.delta.content
-                    # 如果收集到内容，创建一个模拟的响应对象
-                    if collected_content:
-                        # 创建一个简单的响应对象，不使用litellm的Delta类
-                        class MockResponse:
-                            def __init__(self, content):
-                                # 模拟delta对象
-                                class MockDelta:
-                                    def __init__(self, content):
-                                        self.content = content
-                                # 模拟message对象
-                                class MockMessage:
-                                    def __init__(self, content, role):
-                                        self.content = content
-                                        self.role = role
-                                # 模拟choices对象
-                                class MockChoices:
-                                    def __init__(self, index, message, delta, finish_reason):
-                                        self.index = index
-                                        self.message = message
-                                        self.delta = delta
-                                        self.finish_reason = finish_reason
-                                delta = MockDelta(content)
-                                message = MockMessage(content, "assistant")
-                                choices = MockChoices(0, message, delta, "stop")
-                                self.choices = [choices]
-                        response = MockResponse(collected_content)
+                    # 处理流式响应
+                    if is_aliyun_model and hasattr(response, '__iter__'):
+                        # 收集流式响应的所有部分
+                        collected_content = ""
+                        for chunk in response:
+                            if hasattr(chunk, 'choices'):
+                                for choice in chunk.choices:
+                                    if hasattr(choice, 'delta') and hasattr(choice.delta, 'content'):
+                                        if choice.delta.content:
+                                            collected_content += choice.delta.content
+                        # 如果收集到内容，创建一个模拟的响应对象
+                        if collected_content:
+                            # 创建一个简单的响应对象，不使用litellm的Delta类
+                            class MockResponse:
+                                def __init__(self, content):
+                                    # 模拟delta对象
+                                    class MockDelta:
+                                        def __init__(self, content):
+                                            self.content = content
+                                    # 模拟message对象
+                                    class MockMessage:
+                                        def __init__(self, content, role):
+                                            self.content = content
+                                            self.role = role
+                                    # 模拟choices对象
+                                    class MockChoices:
+                                        def __init__(self, index, message, delta, finish_reason):
+                                            self.index = index
+                                            self.message = message
+                                            self.delta = delta
+                                            self.finish_reason = finish_reason
+                                    delta = MockDelta(content)
+                                    message = MockMessage(content, "assistant")
+                                    choices = MockChoices(0, message, delta, "stop")
+                                    self.choices = [choices]
+                            response = MockResponse(collected_content)
 
-                if response and response.choices and response.choices[0].message.content:
-                    return response.choices[0].message.content
-                raise ValueError("LLM returned empty response")
+                    if response and response.choices and response.choices[0].message.content:
+                        return response.choices[0].message.content
+                    raise ValueError("LLM returned empty response")
 
-            except Exception as e:
-                logger.warning(f"[LiteLLM] {model} failed: {e}")
-                last_error = e
-                continue
+                except litellm.RateLimitError as e:
+                    if attempt < max_retries - 1:
+                        # 指数退避：base_delay * (2^attempt) 秒，最小 10 秒
+                        delay = max(base_delay * (2 ** attempt), 10.0)
+                        logger.warning(f"[LiteLLM] Rate limit hit (attempt {attempt + 1}/{max_retries}), "
+                                      f"waiting {delay:.1f}s before retry...")
+                        time.sleep(delay)
+                        last_error = e
+                        continue
+                    else:
+                        logger.error(f"[LiteLLM] Rate limit exceeded after {max_retries} attempts")
+                        last_error = e
+                        break
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        delay = max(base_delay * (2 ** attempt), 10.0)
+                        logger.warning(f"[LiteLLM] {model} failed (attempt {attempt + 1}/{max_retries}): {e}, "
+                                      f"waiting {delay:.1f}s before retry...")
+                        time.sleep(delay)
+                        last_error = e
+                        continue
+                    else:
+                        logger.warning(f"[LiteLLM] {model} failed after {max_retries} attempts: {e}")
+                        last_error = e
+                        break
 
         raise Exception(f"All LLM models failed (tried {len(models_to_try)} model(s)). Last error: {last_error}")
     
