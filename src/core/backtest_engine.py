@@ -19,6 +19,7 @@ class DailyBarLike(Protocol):
     """Protocol for objects representing a daily OHLC bar."""
 
     date: date
+    open: Optional[float]
     high: Optional[float]
     low: Optional[float]
     close: Optional[float]
@@ -130,9 +131,10 @@ class BacktestEngine:
         """Evaluate one historical analysis against forward daily bars.
 
         Notes:
-        - Daily bars cannot determine intraday ordering. If stop-loss and
-          take-profit are both touched in the same bar, we record
-          first_hit="ambiguous" and assume stop-loss first for simulated exit.
+        - T+1 trading rule: cannot sell on the first day after purchase
+        - Uses Day 1 opening price as entry price if available
+        - Stop-loss/take-profit checks start from Day 2
+        - If Day 2 opening price directly hits stop-loss/take-profit, uses that price
         """
 
         if start_price is None or start_price <= 0:
@@ -159,6 +161,11 @@ class BacktestEngine:
             }
 
         window_bars = list(forward_bars[:eval_days])
+
+        entry_price = start_price
+        if window_bars and hasattr(window_bars[0], 'open') and window_bars[0].open is not None:
+            entry_price = window_bars[0].open
+
         end_close = window_bars[-1].close
         highs = [b.high for b in window_bars if b.high is not None]
         lows = [b.low for b in window_bars if b.low is not None]
@@ -169,7 +176,7 @@ class BacktestEngine:
         if end_close is None:
             stock_return_pct = None
         else:
-            stock_return_pct = (end_close - start_price) / start_price * 100
+            stock_return_pct = (end_close - entry_price) / entry_price * 100
 
         direction_expected = cls.infer_direction_expected(operation_advice)
         position = cls.infer_position_recommendation(operation_advice)
@@ -196,14 +203,14 @@ class BacktestEngine:
             end_close=end_close,
         )
 
-        simulated_entry_price = start_price if position == "long" else None
+        simulated_entry_price = entry_price if position == "long" else None
         simulated_return_pct: Optional[float]
         if position != "long":
             simulated_return_pct = 0.0
         elif simulated_exit_price is None:
             simulated_return_pct = None
         else:
-            simulated_return_pct = (simulated_exit_price - start_price) / start_price * 100
+            simulated_return_pct = (simulated_exit_price - entry_price) / entry_price * 100
 
         return {
             "analysis_date": analysis_date,
@@ -212,7 +219,7 @@ class BacktestEngine:
             "eval_status": "completed",
             "operation_advice": operation_advice,
             "position_recommendation": position,
-            "start_price": start_price,
+            "start_price": entry_price,
             "end_close": end_close,
             "max_high": max_high,
             "min_low": min_low,
@@ -471,8 +478,29 @@ class BacktestEngine:
         for idx, bar in enumerate(window_bars, start=1):
             low = bar.low
             high = bar.high
-            stop_hit = stop_loss is not None and low is not None and low <= stop_loss
-            tp_hit = take_profit is not None and high is not None and high >= take_profit
+            open_price = getattr(bar, 'open', None)
+
+            if idx == 1:
+                continue
+
+            stop_hit = False
+            tp_hit = False
+
+            if open_price is not None:
+                if stop_loss is not None and open_price <= stop_loss:
+                    stop_hit = True
+                    exit_price = open_price
+                if take_profit is not None and open_price >= take_profit:
+                    tp_hit = True
+                    exit_price = open_price
+
+            if not stop_hit and not tp_hit:
+                stop_hit = stop_loss is not None and low is not None and low <= stop_loss
+                tp_hit = take_profit is not None and high is not None and high >= take_profit
+                if stop_hit:
+                    exit_price = stop_loss
+                if tp_hit:
+                    exit_price = take_profit
 
             if stop_hit:
                 hit_sl = True
@@ -487,19 +515,31 @@ class BacktestEngine:
 
             if stop_hit and tp_hit:
                 first_hit = "ambiguous"
-                exit_price = stop_loss
-                exit_reason = "ambiguous_stop_loss"
+                if open_price is not None:
+                    if take_profit is not None and open_price >= take_profit:
+                        exit_price = take_profit
+                        exit_reason = "ambiguous_take_profit"
+                    else:
+                        exit_price = stop_loss
+                        exit_reason = "ambiguous_stop_loss"
+                else:
+                    exit_price = stop_loss
+                    exit_reason = "ambiguous_stop_loss"
                 break
 
             if stop_hit:
                 first_hit = "stop_loss"
-                exit_price = stop_loss
-                exit_reason = "stop_loss"
+                if open_price is not None and stop_loss is not None and open_price <= stop_loss:
+                    exit_reason = "stop_loss_open"
+                else:
+                    exit_reason = "stop_loss"
                 break
 
             first_hit = "take_profit"
-            exit_price = take_profit
-            exit_reason = "take_profit"
+            if open_price is not None and take_profit is not None and open_price >= take_profit:
+                exit_reason = "take_profit_open"
+            else:
+                exit_reason = "take_profit"
             break
 
         return (

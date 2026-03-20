@@ -40,6 +40,8 @@ class VolumeBreakoutStrategyPython(StockSelectorStrategy):
             category="trend",
             source="builtin",
             version="1.0.0",
+            score_multiplier=1.0,
+            max_raw_score=23.0,
         )
         super().__init__(metadata)
 
@@ -216,33 +218,61 @@ class VolumeBreakoutStrategyPython(StockSelectorStrategy):
                         conditions_failed.append("未满足趋势确认条件")
                         match_details["conditions"]["trend_confirmation"] = {"passed": False}
 
-                    # Sector momentum (placeholder - would require sector data)
-                    # For now, we'll add a placeholder score
-                    conditions_met.append("板块热点")
-                    total_score += 3
-                    match_details["conditions"]["sector_momentum"] = {"passed": True}
+                    # Sector momentum analysis
+                    sector_hot = False
+                    sector_name = None
+                    sector_change_pct = None
+                    sector_bonus = 0
+                    if self.sector_manager:
+                        try:
+                            is_hot, sector_name, sector_change_pct = self.sector_manager.is_stock_in_hot_sector(stock_code)
+                            if is_hot and sector_name and sector_change_pct:
+                                sector_hot = True
+                                # 根据板块涨幅计算加分：3-10分区间
+                                # 涨幅2%-3%加3分，3%-5%加5分，5%以上加10分
+                                if sector_change_pct >= 5.0:
+                                    sector_bonus = 10
+                                elif sector_change_pct >= 3.0:
+                                    sector_bonus = 5
+                                else:
+                                    sector_bonus = 3
+                        except Exception as e:
+                            logger.warning(f"[策略] 板块热点分析失败: {e}")
+                    
+                    if sector_hot:
+                        conditions_met.append(f"板块热点({sector_name}: {sector_change_pct:.2f}%)")
+                        total_score += sector_bonus
+                        match_details["conditions"]["sector_momentum"] = {
+                            "passed": True,
+                            "sector_name": sector_name,
+                            "sector_change_pct": sector_change_pct,
+                            "bonus": sector_bonus
+                        }
+                    else:
+                        match_details["conditions"]["sector_momentum"] = {
+                            "passed": False,
+                            "reason": "不在热点板块中"
+                        }
 
         except Exception as e:
             logger.warning(f"Error executing strategy for {stock_code}: {e}")
             conditions_failed.append(f"策略执行错误: {str(e)[:50]}")
 
-        match_score = min(total_score, max_score)
+        raw_score = min(total_score, max_score)
 
-        matched = match_score >= 15  # Minimum score to match
+        matched = raw_score >= 15  # Minimum score to match
 
         if conditions_met:
-            reason = f"综合评分 {match_score:.0f}/{max_score:.0f}：" + "; ".join(conditions_met)
+            reason = f"综合评分 {raw_score:.0f}/{max_score:.0f}：" + "; ".join(conditions_met)
         else:
-            reason = f"综合评分 {match_score:.0f}/{max_score:.0f}：未满足核心条件"
+            reason = f"综合评分 {raw_score:.0f}/{max_score:.0f}：未满足核心条件"
 
         match_details["conditions_met"] = conditions_met
         match_details["conditions_failed"] = conditions_failed
 
-        return StrategyMatch(
-            strategy_id=self.id,
-            strategy_name=self.display_name,
+        return self.create_strategy_match(
+            raw_score=raw_score,
             matched=matched,
-            score=match_score,
             reason=reason,
             match_details=match_details,
         )

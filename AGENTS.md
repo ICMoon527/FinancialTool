@@ -1,12 +1,13 @@
 # AGENTS.md
 
-本文件定义在本仓库中执行开发、Issue 分析、PR 审查时的统一行为准则。  
+本文件定义在本仓库中执行开发、Issue 分析、PR 审查时的统一行为准则。
 
 ## 1. 通用协作原则
 
 - 语言与栈：Python 3.10+，遵循仓库现有架构与目录边界。
 - 配置约束：统一使用 `.env`（参见 `.env.example`）。
 - 代码质量：优先保证可运行、可回归验证、可追踪（日志/错误信息清晰）。
+- 测试文件管理：生成的测试文件统一放入tests文件夹中，并在测试完毕后删除，删除该测试文件不需要额外获得许可即可删除。
 - 风格约束：
   - 行宽 120
   - `black` + `isort` + `flake8`
@@ -22,16 +23,19 @@
 每个 Issue 必须先回答 3 个问题：
 
 1. 是否合理（Reasonable）
+
 - 是否描述了真实影响（功能错误、数据错误、性能/稳定性问题、体验退化）。
 - 是否有可验证证据（日志、截图、复现步骤、版本信息）。
 - 是否与项目目标相关（股票分析、数据源、通知、API/WebUI、部署链路）。
 
-2. 是否是 Issue（Valid Issue）
+1. 是否是 Issue（Valid Issue）
+
 - 属于缺陷/功能缺失/回归/文档错误之一，而非纯咨询或环境误用。
 - 能定位到仓库责任边界；若是三方服务波动，也需判断是否需要仓库侧兜底。
 - 如果是使用问题，应转为文档改进或 FAQ，而不是代码缺陷。
 
-3. 是否好解决（Solvability）
+1. 是否好解决（Solvability）
+
 - 可否稳定复现。
 - 依赖是否可控（第三方 API、网络、权限、密钥）。
 - 变更范围与风险等级（低/中/高）。
@@ -50,18 +54,22 @@
 每个 PR 需按以下顺序审查：
 
 1. 必要性（Necessity）
+
 - 是否解决明确问题，或提供明确业务价值。
 - 是否避免“为了改而改”的重构。
 
-2. 关联性（Traceability）
+1. 关联性（Traceability）
+
 - 是否关联对应 Issue（建议必须有：`Fixes #xxx` 或 `Refs #xxx`）。
 - 若无 Issue，PR 描述必须给出动机、场景与验收标准。
 
-3. 类型判定（Type）
+1. 类型判定（Type）
+
 - 明确标注：`fix / feat / refactor / docs / chore / test`。
 - 对“fix/bug”类 PR：必须说明原问题、根因、修复点、回归风险。
 
-4. 描述完整性（Description Completeness）
+1. 描述完整性（Description Completeness）
+
 - 必须包含：
   - 背景与问题
   - 变更范围（改了哪些模块）
@@ -70,7 +78,8 @@
   - 回滚方案（至少一句）
   - 若为 issue 修复：在 PR description 中显式写明关闭语句（如 `Fixes #241` / `Closes #241`）
 
-5. 合入判定（Merge Readiness）
+1. 合入判定（Merge Readiness）
+
 - 可直接合入（Ready to Merge）条件：
   - 目标明确且必要
   - 有 Issue 或同等质量的问题描述
@@ -120,3 +129,4 @@
 python -m py_compile main.py src/*.py data_provider/*.py
 flake8 main.py src/ --max-line-length=120
 ```
+

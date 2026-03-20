@@ -666,6 +666,20 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "validation": {},
         "display_order": 40,
     },
+    "UPDATE_SECTOR_DATA": {
+        "title": "Update Sector Data",
+        "description": "Force update all stock sector data, even if already exists. Set to false to use cached data.",
+        "category": "data_source",
+        "data_type": "boolean",
+        "ui_control": "switch",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "false",
+        "options": [],
+        "validation": {},
+        "display_order": 22,
+    },
 }
 
 

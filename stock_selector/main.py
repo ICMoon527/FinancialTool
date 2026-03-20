@@ -71,20 +71,54 @@ def screen_stocks(service: StockSelectorService, stock_codes: Optional[List[str]
         top_n=top_n
     )
 
+    # Get sector manager
+    sector_manager = None
+    if service.strategy_manager:
+        sector_manager = service.strategy_manager.get_sector_manager()
+
     print("\nTop Candidates:")
-    print("=" * 100)
+    print("=" * 120)
 
     for i, candidate in enumerate(candidates, 1):
         print(f"\nRank {i}: {candidate.code} - {candidate.name}")
         print(f"Score: {candidate.match_score:.2f}")
         print(f"Price: {candidate.current_price:.2f}")
 
+        # Show sector information
+        if sector_manager:
+            try:
+                sectors = sector_manager.get_stock_sectors(candidate.code)
+                if sectors:
+                    print(f"\nSectors: {', '.join(sectors)}")
+                    
+                    # Check if any sector is hot and show details
+                    hot_sector_found = False
+                    for sector_name in sectors:
+                        is_hot = sector_manager.is_hot_sector(sector_name)
+                        change_pct = sector_manager.get_sector_change_pct(sector_name)
+                        
+                        if is_hot and change_pct:
+                            if not hot_sector_found:
+                                print("Hot Sectors:")
+                                hot_sector_found = True
+                            print(f"  🔥 {sector_name}: +{change_pct:.2f}%")
+                        elif change_pct:
+                            if not hot_sector_found:
+                                print("Sector Performance:")
+                                hot_sector_found = True
+                            if change_pct >= 0:
+                                print(f"  • {sector_name}: +{change_pct:.2f}%")
+                            else:
+                                print(f"  • {sector_name}: {change_pct:.2f}%")
+            except Exception as e:
+                logger.warning(f"Failed to get sector info for {candidate.code}: {e}")
+
         print("\nStrategy Matches:")
         for match in candidate.strategy_matches:
             status = "✓" if match.matched else "✗"
             print(f"  {status} {match.strategy_name}: {match.score:.2f} - {match.reason}")
 
-    print("\n" + "=" * 100)
+    print("\n" + "=" * 120)
     print(f"Found {len(candidates)} candidates")
 
 

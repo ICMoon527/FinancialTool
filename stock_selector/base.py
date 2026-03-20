@@ -32,6 +32,8 @@ class StrategyMetadata:
     version: str = "1.0.0"
     created_at: datetime = field(default_factory=datetime.now)
     enabled: bool = True
+    score_multiplier: float = 1.0
+    max_raw_score: float = 100.0
 
 
 @dataclass
@@ -41,6 +43,7 @@ class StrategyMatch:
     strategy_name: str
     matched: bool
     score: float = 0.0
+    raw_score: float = 0.0
     reason: Optional[str] = None
     match_details: Dict[str, Any] = field(default_factory=dict)
 
@@ -88,6 +91,79 @@ class StockSelectorStrategy(ABC):
     def __init__(self, metadata: StrategyMetadata):
         self.metadata = metadata
         self._data_provider = None
+        self._sector_manager = None
+        self._score_multiplier = metadata.score_multiplier
+        self._max_raw_score = metadata.max_raw_score
+
+    @property
+    def score_multiplier(self) -> float:
+        """Get the score multiplier."""
+        return self._score_multiplier
+
+    @score_multiplier.setter
+    def score_multiplier(self, value: float) -> None:
+        """Set the score multiplier."""
+        self._score_multiplier = max(0.0, value)
+
+    @property
+    def max_raw_score(self) -> float:
+        """Get the maximum raw score."""
+        return self._max_raw_score
+
+    @max_raw_score.setter
+    def max_raw_score(self, value: float) -> None:
+        """Set the maximum raw score."""
+        self._max_raw_score = max(1.0, value)
+
+    def normalize_score(self, raw_score: float) -> float:
+        """
+        Normalize a raw score to the 0-100 range using linear mapping.
+        
+        Args:
+            raw_score: The raw score from the strategy
+            
+        Returns:
+            Normalized score in 0-100 range
+        """
+        # Apply multiplier to raw score
+        multiplied_score = raw_score * self._score_multiplier
+        
+        # Normalize to 0-100 range
+        normalized_score = (multiplied_score / self._max_raw_score) * 100.0
+        
+        # Clamp to 0-100 range
+        return max(0.0, min(100.0, normalized_score))
+
+    def create_strategy_match(
+        self, 
+        raw_score: float, 
+        matched: bool, 
+        reason: Optional[str] = None,
+        match_details: Optional[Dict[str, Any]] = None
+    ) -> StrategyMatch:
+        """
+        Create a StrategyMatch with normalized score.
+        
+        Args:
+            raw_score: The raw score from the strategy
+            matched: Whether the strategy matched
+            reason: Optional reason for the match
+            match_details: Optional match details
+            
+        Returns:
+            StrategyMatch with normalized score
+        """
+        normalized_score = self.normalize_score(raw_score)
+        
+        return StrategyMatch(
+            strategy_id=self.id,
+            strategy_name=self.display_name,
+            matched=matched,
+            score=normalized_score,
+            raw_score=raw_score,
+            reason=reason,
+            match_details=match_details or {},
+        )
 
     @property
     def id(self) -> str:
@@ -107,6 +183,15 @@ class StockSelectorStrategy(ABC):
     def set_data_provider(self, data_provider: Any) -> None:
         """Set data provider for the strategy."""
         self._data_provider = data_provider
+    
+    def set_sector_manager(self, sector_manager: Any) -> None:
+        """Set sector manager for the strategy."""
+        self._sector_manager = sector_manager
+    
+    @property
+    def sector_manager(self) -> Any:
+        """Get sector manager."""
+        return self._sector_manager
 
     @abstractmethod
     def select(self, stock_code: str, stock_name: Optional[str] = None) -> StrategyMatch:

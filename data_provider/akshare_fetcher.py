@@ -1541,6 +1541,87 @@ class AkshareFetcher(BaseFetcher):
             logger.error(f"[Akshare] 新浪接口获取板块排行也失败: {e}")
             return None
 
+    def get_stock_sectors(self, stock_code: str) -> Optional[List[str]]:
+        """
+        获取股票所属板块
+
+        Args:
+            stock_code: 股票代码
+
+        Returns:
+            板块名称列表，失败返回 None
+        """
+        import akshare as ak
+
+        try:
+            self._set_random_user_agent()
+            self._enforce_rate_limit()
+
+            logger.info(f"[API调用] 获取股票 {stock_code} 所属板块...")
+            
+            # 处理股票代码格式，确保是6位数字
+            code = stock_code.strip()
+            if '.' in code:
+                code = code.split('.')[0]
+            
+            # 东财接口需要6位代码
+            if len(code) != 6 or not code.isdigit():
+                logger.warning(f"[Akshare] 股票代码格式不正确: {stock_code}")
+                return None
+            
+            sectors = []
+            
+            # 方法1: 尝试使用 stock_individual_info_em 接口
+            try:
+                df = ak.stock_individual_info_em(symbol=code)
+                if df is not None and not df.empty:
+                    # 尝试从不同可能的列中提取板块信息
+                    for col in ['所属行业', '行业', '板块', '所属板块']:
+                        if col in df.columns:
+                            sector_val = df.iloc[0][col]
+                            if sector_val and pd.notna(sector_val):
+                                sectors.append(str(sector_val))
+                    
+                    if sectors:
+                        unique_sectors = list(set(sectors))
+                        logger.info(f"[Akshare] 股票 {stock_code} 所属板块: {unique_sectors}")
+                        return unique_sectors
+            except Exception as e1:
+                logger.debug(f"[Akshare] stock_individual_info_em 方法失败: {e1}")
+            
+            # 方法2: 尝试从 stock_zh_a_spot_em 全量数据中查找
+            try:
+                if not _realtime_cache['data'] or (time.time() - _realtime_cache['timestamp'] >= _realtime_cache['ttl']):
+                    # 缓存未命中，刷新缓存
+                    _realtime_cache['data'] = ak.stock_zh_a_spot_em()
+                    _realtime_cache['timestamp'] = time.time()
+                
+                df = _realtime_cache['data']
+                if df is not None and not df.empty:
+                    row = df[df['代码'] == code]
+                    if not row.empty:
+                        # 尝试从不同可能的列中提取板块信息
+                        for col in ['所属行业', '行业', '板块', '所属板块']:
+                            if col in row.columns:
+                                sector_val = row.iloc[0][col]
+                                if sector_val and pd.notna(sector_val):
+                                    sectors.append(str(sector_val))
+                        
+                        if sectors:
+                            unique_sectors = list(set(sectors))
+                            logger.info(f"[Akshare] 股票 {stock_code} 所属板块: {unique_sectors}")
+                            return unique_sectors
+            except Exception as e2:
+                logger.debug(f"[Akshare] stock_zh_a_spot_em 方法失败: {e2}")
+            
+            # 所有方法都失败
+            logger.warning(f"[Akshare] 无法获取股票 {stock_code} 的板块信息")
+            return None
+            
+        except Exception as e:
+            logger.warning(f"[Akshare] 获取股票 {stock_code} 所属板块失败: {e}")
+            return None
+
 
 if __name__ == "__main__":
     # 测试代码

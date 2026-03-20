@@ -196,6 +196,18 @@ class BaseFetcher(ABC):
         """
         return None
 
+    def get_stock_sectors(self, stock_code: str) -> Optional[List[str]]:
+        """
+        获取股票所属板块
+
+        Args:
+            stock_code: 股票代码
+
+        Returns:
+            板块名称列表，失败返回 None
+        """
+        return None
+
     def get_daily_data(
         self,
         stock_code: str, 
@@ -988,3 +1000,17 @@ class DataFetcherManager:
                 logger.warning(f"[{fetcher.name}] 获取板块排行失败: {e}")
                 continue
         return [], []
+
+    def get_stock_sectors(self, stock_code: str) -> Optional[List[str]]:
+        """获取股票所属板块（自动切换数据源）"""
+        stock_code = normalize_stock_code(stock_code)
+        for fetcher in self._fetchers:
+            try:
+                data = fetcher.get_stock_sectors(stock_code)
+                if data:
+                    logger.info(f"[{fetcher.name}] 获取股票 {stock_code} 所属板块成功")
+                    return data
+            except Exception as e:
+                logger.warning(f"[{fetcher.name}] 获取股票 {stock_code} 所属板块失败: {e}")
+                continue
+        return None

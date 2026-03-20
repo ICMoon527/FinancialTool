@@ -13,6 +13,7 @@ from stock_selector.base import (
     StrategyMatch,
 )
 from stock_selector.config import StockSelectorConfig
+from stock_selector.sector_manager import SectorManager
 from stock_selector.strategies.nl_strategy_loader import load_nl_strategies_from_dir
 from stock_selector.strategies.python_strategy_loader import load_python_strategies_from_dir
 
@@ -60,6 +61,13 @@ class StrategyManager:
         except Exception as e:
             import logging
             logging.warning(f"Failed to initialize database manager: {e}")
+        
+        # Initialize sector manager
+        self._sector_manager = SectorManager(
+            data_manager=data_provider, 
+            db_manager=self._db_manager,
+            config=self._config
+        )
 
         if nl_strategy_dir:
             # Load NLP strategies from NLP subdirectory
@@ -77,6 +85,7 @@ class StrategyManager:
                 self.load_python_strategies(python_strategy_dir)
 
         self._apply_config()
+        self._apply_config_multipliers()
         self.activate_all_strategies()
 
     def _apply_config(self) -> None:
@@ -112,6 +121,18 @@ class StrategyManager:
         self._data_provider = data_provider
         for strategy in self._strategies.values():
             strategy.set_data_provider(data_provider)
+        # Update sector manager data provider
+        if self._sector_manager:
+            self._sector_manager._data_manager = data_provider
+    
+    def get_sector_manager(self) -> Optional[SectorManager]:
+        """
+        Get the sector manager instance.
+        
+        Returns:
+            SectorManager instance or None
+        """
+        return self._sector_manager
 
     def load_nl_strategies(self, directory: Path) -> int:
         strategies = load_nl_strategies_from_dir(directory)
@@ -120,6 +141,8 @@ class StrategyManager:
             if strategy.id not in self._strategies:
                 if self._data_provider:
                     strategy.set_data_provider(self._data_provider)
+                if self._sector_manager:
+                    strategy.set_sector_manager(self._sector_manager)
                 self._strategies[strategy.id] = strategy
                 count += 1
         logger.info("Loaded %d new NL strategies from %s", count, directory)
@@ -132,6 +155,8 @@ class StrategyManager:
             if strategy.id not in self._strategies:
                 if self._data_provider:
                     strategy.set_data_provider(self._data_provider)
+                if self._sector_manager:
+                    strategy.set_sector_manager(self._sector_manager)
                 self._strategies[strategy.id] = strategy
                 count += 1
         logger.info("Loaded %d new Python strategies from %s", count, directory)
@@ -279,6 +304,67 @@ class StrategyManager:
                 )
 
         return results
+
+    def _apply_config_multipliers(self) -> None:
+        """Apply strategy multipliers from configuration."""
+        if not self._config or not self._config.strategy_multipliers:
+            return
+        
+        for strategy_id, multiplier in self._config.strategy_multipliers.items():
+            strategy = self._strategies.get(strategy_id)
+            if strategy:
+                strategy.score_multiplier = multiplier
+                logger.info("Applied multiplier %.2f to strategy %s", multiplier, strategy_id)
+
+    def set_strategy_multiplier(self, strategy_id: str, multiplier: float) -> bool:
+        """
+        Set the score multiplier for a specific strategy.
+        
+        Args:
+            strategy_id: ID of the strategy to update
+            multiplier: New multiplier value (must be >= 0)
+            
+        Returns:
+            True if strategy was found and updated, False otherwise
+        """
+        strategy = self._strategies.get(strategy_id)
+        if not strategy:
+            logger.warning("Cannot set multiplier for unknown strategy: %s", strategy_id)
+            return False
+        
+        old_multiplier = strategy.score_multiplier
+        strategy.score_multiplier = max(0.0, multiplier)
+        logger.info("Updated strategy %s multiplier: %.2f -> %.2f", 
+                   strategy_id, old_multiplier, strategy.score_multiplier)
+        return True
+
+    def get_strategy_multiplier(self, strategy_id: str) -> Optional[float]:
+        """
+        Get the current score multiplier for a strategy.
+        
+        Args:
+            strategy_id: ID of the strategy
+            
+        Returns:
+            Current multiplier or None if strategy not found
+        """
+        strategy = self._strategies.get(strategy_id)
+        return strategy.score_multiplier if strategy else None
+
+    def get_all_strategy_multipliers(self) -> Dict[str, float]:
+        """
+        Get multipliers for all strategies.
+        
+        Returns:
+            Dictionary of {strategy_id: multiplier}
+        """
+        return {sid: strategy.score_multiplier for sid, strategy in self._strategies.items()}
+
+    def reset_strategy_multipliers(self) -> None:
+        """Reset all strategies to their default multipliers (1.0)."""
+        for strategy in self._strategies.values():
+            strategy.score_multiplier = 1.0
+        logger.info("Reset all strategy multipliers to default (1.0)")
 
     def rank_candidates(
         self,

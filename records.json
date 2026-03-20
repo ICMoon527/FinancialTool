@@ -1,0 +1,66 @@
+[
+  {
+    "iteration_id": "3f94e0b4-11c3-4a5e-992d-c618408323df",
+    "iteration_number": 1,
+    "timestamp": "2026-03-15T16:59:41.949561",
+    "strategy_params": {
+      "ma_golden_cross_python": {
+        "strategy_id": "ma_golden_cross_python",
+        "strategy_name": "均线金叉(Python)",
+        "score_multiplier": 1.0,
+        "max_raw_score": 100.0,
+        "enabled": true,
+        "custom_params": {},
+        "created_at": "2026-03-15T16:59:41.949553"
+      },
+      "short_term_strategy_python": {
+        "strategy_id": "short_term_strategy_python",
+        "strategy_name": "下午两点半短线策略(Python)",
+        "score_multiplier": 1.0,
+        "max_raw_score": 100.0,
+        "enabled": true,
+        "custom_params": {},
+        "created_at": "2026-03-15T16:59:41.949557"
+      },
+      "volume_breakout_python": {
+        "strategy_id": "volume_breakout_python",
+        "strategy_name": "放量突破(Python)",
+        "score_multiplier": 1.0,
+        "max_raw_score": 100.0,
+        "enabled": true,
+        "custom_params": {},
+        "created_at": "2026-03-15T16:59:41.949560"
+      }
+    },
+    "stock_selection_result": {
+      "selection_date": "2022-08-09T00:00:00",
+      "selected_stocks": [
+        {
+          "code": "600096",
+          "name": "600096",
+          "buy_price": 27.45,
+          "match_score": 25.0,
+          "strategy_matches": [
+            {
+              "strategy_id": "ma_golden_cross_python",
+              "strategy_name": "均线金叉(Python)",
+              "matched": false,
+              "score": 17.857142857142858,
+              "raw_score": 5.0,
+              "reason": "综合评分 5/100：价格位置合理",
+              "match_details": {
+                "realtime_quote": {
+                  "price": 27.45,
+                  "volume_ratio": 1.54
+                },
+                "daily_indicators": {
+                  "ma5": 26.404000000000003,
+                  "ma10": 26.470999999999997,
+                  "ma20": 27.801500000000004,
+                  "avg_volume_5d": 60512736.2,
+                  "current_volume": 86876735.0,
+                  "macd": {
+                    "macd": -1.0011381720307,
+                    "signal": -0.9712525858928738,
+                    "histogram": -0.029885586137826214,
+                    "golden_cross": 

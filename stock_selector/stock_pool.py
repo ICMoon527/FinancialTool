@@ -283,7 +283,7 @@ def get_all_stock_codes(force_refresh: bool = False) -> List[str]:
         force_refresh: Force refresh even if cache is valid
         
     Returns:
-        List of stock codes
+        List of all stock codes (including those without data, validation will be done separately)
     """
     manager = get_stock_pool_manager()
     return manager.get_stock_list(force_refresh=force_refresh)

@@ -10,7 +10,7 @@ TushareFetcher - 备用数据源 1 (Priority 2)
 
 流控策略：
 1. 实现"每分钟调用计数器"
-2. 超过免费配额（80次/分）时，强制休眠到下一分钟
+2. 超过免费配额（50次/分）时，强制休眠到下一分钟
 3. 使用 tenacity 实现指数退避重试
 """
 
@@ -80,23 +80,22 @@ class TushareFetcher(BaseFetcher):
     
     关键策略：
     - 每分钟调用计数器，防止超出配额
-    - 超过 80 次/分钟时强制等待
+    - 超过 50 次/分钟时强制等待
     - 失败后指数退避重试
     
     配额说明（Tushare 免费用户）：
-    - 每分钟最多 80 次请求
-    - 每天最多 500 次请求
+    - 每分钟最多 50 次请求
     """
     
     name = "TushareFetcher"
     priority = int(os.getenv("TUSHARE_PRIORITY", "2"))  # 默认优先级，会在 __init__ 中根据配置动态调整
 
-    def __init__(self, rate_limit_per_minute: int = 80):
+    def __init__(self, rate_limit_per_minute: int = 50):
         """
         初始化 TushareFetcher
 
         Args:
-            rate_limit_per_minute: 每分钟最大请求数（默认80，Tushare免费配额）
+            rate_limit_per_minute: 每分钟最大请求数（默认50，Tushare免费配额）
         """
         self.rate_limit_per_minute = rate_limit_per_minute
         self._call_count = 0  # 当前分钟内的调用次数

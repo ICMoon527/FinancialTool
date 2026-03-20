@@ -22,6 +22,13 @@ A股自选股智能分析系统 - 主调度程序
 - 买点偏好：缩量回踩 MA5/MA10 支撑
 """
 import os
+import warnings
+import sys
+
+# ====== 最激进的警告抑制 - 在任何导入前设置 ======
+warnings.simplefilter("ignore")
+os.environ["PYTHONWARNINGS"] = "ignore"
+# =======================================================
 
 # ====== 关键！在任何导入前禁用所有 SDK 的内部重试 ======
 # 彻底禁用 OpenAI SDK 内部重试

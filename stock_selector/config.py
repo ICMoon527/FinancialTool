@@ -8,7 +8,7 @@ Configuration management for the stock selector system.
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Dict
 from dotenv import load_dotenv
 
 
@@ -44,6 +44,37 @@ class StockSelectorConfig:
     volume_breakout_multiplier: float = 2.0
     log_level: str = "INFO"
     debug_strategy_execution: bool = False
+    strategy_multipliers: Dict[str, float] = field(default_factory=dict)
+    
+    # Sector analysis configuration
+    enable_sector_analysis: bool = True
+    sector_hot_threshold: float = 2.0
+    sector_cache_ttl: int = 1800
+    sector_bonus_low: float = 3.0
+    sector_bonus_mid: float = 5.0
+    sector_bonus_high: float = 10.0
+    sector_bonus_threshold_low: float = 2.0
+    sector_bonus_threshold_high: float = 5.0
+    update_sector_data: bool = False
+
+    @classmethod
+    def _parse_strategy_multipliers(cls, env_str: str) -> Dict[str, float]:
+        """Parse strategy multipliers from environment variable string."""
+        multipliers = {}
+        if not env_str:
+            return multipliers
+        parts = env_str.split(",")
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+            if ":" in part:
+                strategy_id, multiplier = part.split(":", 1)
+                try:
+                    multipliers[strategy_id.strip()] = float(multiplier.strip())
+                except ValueError:
+                    pass
+        return multipliers
 
     @classmethod
     def from_env(cls) -> "StockSelectorConfig":
@@ -95,6 +126,18 @@ class StockSelectorConfig:
             volume_breakout_multiplier=float(os.getenv("STOCK_SELECTOR_VOLUME_BREAKOUT_MULTIPLIER", "2.0")),
             log_level=os.getenv("STOCK_SELECTOR_LOG_LEVEL", "INFO"),
             debug_strategy_execution=os.getenv("STOCK_SELECTOR_DEBUG_EXECUTION", "false").lower() == "true",
+            strategy_multipliers=cls._parse_strategy_multipliers(
+                os.getenv("STOCK_SELECTOR_STRATEGY_MULTIPLIERS", "")
+            ),
+            enable_sector_analysis=os.getenv("STOCK_SELECTOR_ENABLE_SECTOR_ANALYSIS", "true").lower() == "true",
+            sector_hot_threshold=float(os.getenv("STOCK_SELECTOR_SECTOR_THRESHOLD", "2.0")),
+            sector_cache_ttl=int(os.getenv("STOCK_SELECTOR_SECTOR_CACHE_TTL", "1800")),
+            sector_bonus_low=float(os.getenv("STOCK_SELECTOR_SECTOR_BONUS_LOW", "3.0")),
+            sector_bonus_mid=float(os.getenv("STOCK_SELECTOR_SECTOR_BONUS_MID", "5.0")),
+            sector_bonus_high=float(os.getenv("STOCK_SELECTOR_SECTOR_BONUS_HIGH", "10.0")),
+            sector_bonus_threshold_low=float(os.getenv("STOCK_SELECTOR_SECTOR_BONUS_THRESHOLD_LOW", "2.0")),
+            sector_bonus_threshold_high=float(os.getenv("STOCK_SELECTOR_SECTOR_BONUS_THRESHOLD_HIGH", "5.0")),
+            update_sector_data=os.getenv("UPDATE_SECTOR_DATA", "false").lower() == "true",
         )
 
 

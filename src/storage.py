@@ -132,6 +132,111 @@ class StockDaily(Base):
         }
 
 
+class StockSector(Base):
+    """
+    股票板块信息数据模型
+
+    存储股票所属板块信息，避免重复联网获取
+    """
+
+    __tablename__ = "stock_sector"
+
+    # 主键
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    # 股票代码（如 600519, 000001）
+    code = Column(String(10), nullable=False, index=True)
+
+    # 板块名称（JSON 格式存储列表）
+    sectors = Column(Text, nullable=False)
+
+    # 数据来源
+    data_source = Column(String(50))
+
+    # 更新时间
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    # 唯一约束：同一股票只能有一条板块记录
+    __table_args__ = (
+        UniqueConstraint("code", name="uix_stock_sector_code"),
+    )
+
+    def __repr__(self):
+        return f"<StockSector(code={self.code}, sectors={self.sectors})>"
+
+    def get_sectors(self) -> List[str]:
+        """获取板块列表"""
+        try:
+            return json.loads(self.sectors)
+        except (json.JSONDecodeError, TypeError):
+            return []
+
+    @classmethod
+    def create_from_list(cls, code: str, sectors: List[str], data_source: str) -> 'StockSector':
+        """从板块列表创建实例"""
+        return cls(
+            code=code,
+            sectors=json.dumps(sectors, ensure_ascii=False),
+            data_source=data_source
+        )
+
+
+class SectorDaily(Base):
+    """
+    板块每日数据模型
+
+    存储板块每日涨跌幅等数据，用于历史回测
+    """
+
+    __tablename__ = "sector_daily"
+
+    # 主键
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    # 板块名称
+    name = Column(String(100), nullable=False, index=True)
+
+    # 交易日期
+    date = Column(Date, nullable=False, index=True)
+
+    # 涨跌幅 (%)
+    change_pct = Column(Float)
+
+    # 板块内股票数量
+    stock_count = Column(Integer, default=0)
+
+    # 涨停股票数量
+    limit_up_count = Column(Integer, default=0)
+
+    # 数据来源
+    data_source = Column(String(50))
+
+    # 更新时间
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    # 唯一约束：同一板块同一日期只能有一条数据
+    __table_args__ = (
+        UniqueConstraint("name", "date", name="uix_sector_date"),
+        Index("ix_sector_date", "name", "date"),
+    )
+
+    def __repr__(self):
+        return f"<SectorDaily(name={self.name}, date={self.date}, change_pct={self.change_pct})>"
+
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典"""
+        return {
+            "name": self.name,
+            "date": self.date,
+            "change_pct": self.change_pct,
+            "stock_count": self.stock_count,
+            "limit_up_count": self.limit_up_count,
+            "data_source": self.data_source,
+        }
+
+
 class NewsIntel(Base):
     """
     新闻情报数据模型
@@ -1147,6 +1252,184 @@ class DatabaseManager:
             return "短期走弱 🔽"
         else:
             return "震荡整理 ↔️"
+
+    def get_stock_sectors(self, code: str) -> Optional[List[str]]:
+        """
+        获取股票的板块信息
+
+        Args:
+            code: 股票代码
+
+        Returns:
+            板块列表，如果数据库中没有则返回 None
+        """
+        with self.session_scope() as session:
+            stmt = select(StockSector).where(StockSector.code == code)
+            result = session.execute(stmt).scalar_one_or_none()
+            if result:
+                return result.get_sectors()
+            return None
+
+    def save_stock_sectors(self, code: str, sectors: List[str], data_source: str = "unknown") -> bool:
+        """
+        保存股票的板块信息
+
+        Args:
+            code: 股票代码
+            sectors: 板块列表
+            data_source: 数据来源
+
+        Returns:
+            是否保存成功
+        """
+        try:
+            with self.session_scope() as session:
+                stmt = select(StockSector).where(StockSector.code == code)
+                existing = session.execute(stmt).scalar_one_or_none()
+
+                if existing:
+                    existing.sectors = json.dumps(sectors, ensure_ascii=False)
+                    existing.data_source = data_source
+                    existing.updated_at = datetime.now()
+                    logger.info(f"更新股票 {code} 的板块信息: {sectors}")
+                else:
+                    record = StockSector.create_from_list(code, sectors, data_source)
+                    session.add(record)
+                    logger.info(f"保存股票 {code} 的板块信息: {sectors}")
+
+                session.commit()
+                return True
+        except Exception as e:
+            logger.error(f"保存股票 {code} 的板块信息失败: {e}")
+            return False
+
+    def get_sector_daily(self, name: str, date: date) -> Optional[SectorDaily]:
+        """
+        获取指定板块在指定日期的数据
+
+        Args:
+            name: 板块名称
+            date: 日期
+
+        Returns:
+            SectorDaily 实例，如果没有则返回 None
+        """
+        with self.session_scope() as session:
+            stmt = select(SectorDaily).where(
+                and_(SectorDaily.name == name, SectorDaily.date == date)
+            )
+            return session.execute(stmt).scalar_one_or_none()
+
+    def get_sector_change_pct(self, name: str, date: date) -> Optional[float]:
+        """
+        获取指定板块在指定日期的涨跌幅
+
+        Args:
+            name: 板块名称
+            date: 日期
+
+        Returns:
+            涨跌幅（%），如果没有则返回 None
+        """
+        sector_data = self.get_sector_daily(name, date)
+        if sector_data:
+            return sector_data.change_pct
+        return None
+
+    def save_sector_daily(
+        self,
+        name: str,
+        date: date,
+        change_pct: Optional[float] = None,
+        stock_count: int = 0,
+        limit_up_count: int = 0,
+        data_source: str = "unknown"
+    ) -> bool:
+        """
+        保存板块每日数据
+
+        Args:
+            name: 板块名称
+            date: 日期
+            change_pct: 涨跌幅
+            stock_count: 板块内股票数量
+            limit_up_count: 涨停股票数量
+            data_source: 数据来源
+
+        Returns:
+            是否保存成功
+        """
+        try:
+            with self.session_scope() as session:
+                stmt = select(SectorDaily).where(
+                    and_(SectorDaily.name == name, SectorDaily.date == date)
+                )
+                existing = session.execute(stmt).scalar_one_or_none()
+
+                if existing:
+                    if change_pct is not None:
+                        existing.change_pct = change_pct
+                    existing.stock_count = stock_count
+                    existing.limit_up_count = limit_up_count
+                    existing.data_source = data_source
+                    existing.updated_at = datetime.now()
+                    logger.info(f"更新板块 {name} 在 {date} 的数据: change_pct={change_pct}")
+                else:
+                    record = SectorDaily(
+                        name=name,
+                        date=date,
+                        change_pct=change_pct,
+                        stock_count=stock_count,
+                        limit_up_count=limit_up_count,
+                        data_source=data_source
+                    )
+                    session.add(record)
+                    logger.info(f"保存板块 {name} 在 {date} 的数据: change_pct={change_pct}")
+
+                session.commit()
+                return True
+        except Exception as e:
+            logger.error(f"保存板块 {name} 在 {date} 的数据失败: {e}")
+            return False
+
+    def save_sector_rankings(
+        self,
+        top_sectors: List[Dict],
+        bottom_sectors: List[Dict],
+        date: Optional[date] = None,
+        data_source: str = "unknown"
+    ) -> int:
+        """
+        批量保存板块排行数据
+
+        Args:
+            top_sectors: 领涨板块列表
+            bottom_sectors: 领跌板块列表
+            date: 日期（默认为今天）
+            data_source: 数据来源
+
+        Returns:
+            保存成功的数量
+        """
+        if date is None:
+            date = datetime.now().date()
+
+        saved_count = 0
+        all_sectors = top_sectors + bottom_sectors
+
+        for sector in all_sectors:
+            name = sector.get('name')
+            change_pct = sector.get('change_pct')
+            if name:
+                if self.save_sector_daily(
+                    name=name,
+                    date=date,
+                    change_pct=change_pct,
+                    data_source=data_source
+                ):
+                    saved_count += 1
+
+        return saved_count
 
     @staticmethod
     def _parse_published_date(value: Optional[str]) -> Optional[datetime]:

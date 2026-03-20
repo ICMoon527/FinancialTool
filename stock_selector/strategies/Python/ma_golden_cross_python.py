@@ -40,6 +40,8 @@ class MAGoldenCrossStrategyPython(StockSelectorStrategy):
             category="trend",
             source="builtin",
             version="1.0.0",
+            score_multiplier=1.0,
+            max_raw_score=28.0,
         )
         super().__init__(metadata)
 
@@ -232,23 +234,21 @@ class MAGoldenCrossStrategyPython(StockSelectorStrategy):
             logger.warning(f"Error executing strategy for {stock_code}: {e}")
             conditions_failed.append(f"策略执行错误: {str(e)[:50]}")
 
-        match_score = min(total_score, max_score)
+        raw_score = min(total_score, max_score)
 
-        matched = match_score >= 15  # Minimum score to match
+        matched = raw_score >= 15  # Minimum score to match
 
         if conditions_met:
-            reason = f"综合评分 {match_score:.0f}/{max_score:.0f}：" + "; ".join(conditions_met)
+            reason = f"综合评分 {raw_score:.0f}/{max_score:.0f}：" + "; ".join(conditions_met)
         else:
-            reason = f"综合评分 {match_score:.0f}/{max_score:.0f}：未满足核心条件"
+            reason = f"综合评分 {raw_score:.0f}/{max_score:.0f}：未满足核心条件"
 
         match_details["conditions_met"] = conditions_met
         match_details["conditions_failed"] = conditions_failed
 
-        return StrategyMatch(
-            strategy_id=self.id,
-            strategy_name=self.display_name,
+        return self.create_strategy_match(
+            raw_score=raw_score,
             matched=matched,
-            score=match_score,
             reason=reason,
             match_details=match_details,
         )

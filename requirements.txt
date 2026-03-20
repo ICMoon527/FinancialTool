@@ -25,9 +25,13 @@ pandas>=2.0.0               # 数据分析
 numpy>=1.24.0               # 数值计算
 json-repair>=0.55.1         # JSON 修复
 
-# AI 分析
-litellm>=1.80.10            # Unified LLM client (Gemini/Anthropic/OpenAI/DeepSeek etc.)
-openai>=1.0.0               # OpenAI SDK (transitive dependency of litellm, kept explicit)
+# 贝叶斯优化
+scikit-optimize>=0.9.0       # 贝叶斯优化库
+scikit-learn>=1.3.0           # 机器学习库（skopt 依赖）
+
+# AI 分析 - 版本锁定以确保兼容性
+litellm==1.51.0             # Unified LLM client (Gemini/Anthropic/OpenAI/DeepSeek etc.)
+openai<2.0.0                 # OpenAI SDK (1.x for litellm 1.51.0 compatibility)
 
 # 搜索引擎（用于获取股票新闻）
 tavily-python>=0.3.0        # Tavily 搜索 API（每月 1000 次免费）

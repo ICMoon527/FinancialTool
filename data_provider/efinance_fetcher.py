@@ -909,6 +909,39 @@ class EfinanceFetcher(BaseFetcher):
         except Exception as e:
             logger.error(f"[API错误] 获取 {stock_code} 所属板块失败: {e}")
             return None
+
+    def get_stock_sectors(self, stock_code: str) -> Optional[List[str]]:
+        """
+        获取股票所属板块（统一接口）
+        
+        Args:
+            stock_code: 股票代码
+            
+        Returns:
+            板块名称列表，获取失败返回 None
+        """
+        try:
+            df = self.get_belong_board(stock_code)
+            if df is not None and not df.empty:
+                # 尝试从不同可能的列中提取板块名称
+                sector_col = None
+                for col in ['板块名称', '板块', 'name', 'label']:
+                    if col in df.columns:
+                        sector_col = col
+                        break
+                
+                if sector_col:
+                    sectors = df[sector_col].tolist()
+                    # 过滤掉空值和无效值
+                    sectors = [str(s) for s in sectors if s and pd.notna(s)]
+                    if sectors:
+                        logger.info(f"[efinance] 股票 {stock_code} 所属板块: {sectors}")
+                        return sectors
+            
+            return None
+        except Exception as e:
+            logger.warning(f"[efinance] 获取股票 {stock_code} 所属板块失败: {e}")
+            return None
     
     def get_enhanced_data(self, stock_code: str, days: int = 60) -> Dict[str, Any]:
         """
