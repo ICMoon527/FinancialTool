@@ -7,6 +7,7 @@ import LoginPage from './pages/LoginPage';
 import NotFoundPage from './pages/NotFoundPage';
 import ChatPage from './pages/ChatPage';
 import StockSelectorPage from './pages/StockSelectorPage';
+import VisualizationPage from './pages/VisualizationPage';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import './App.css';
 
@@ -47,6 +48,13 @@ const StockSelectorIcon: React.FC<{ active?: boolean }> = ({active}) => (
     </svg>
 );
 
+const VisualizationIcon: React.FC<{ active?: boolean }> = ({active}) => (
+    <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={active ? 2 : 1.5}
+              d="M7 12l3-3 2 2 4-4M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+    </svg>
+);
+
 const LogoutIcon: React.FC = () => (
     <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
@@ -79,6 +87,12 @@ const NAV_ITEMS: DockItem[] = [
         label: '选股',
         to: '/stock-selector',
         icon: StockSelectorIcon,
+    },
+    {
+        key: 'visualization',
+        label: '可视化',
+        to: '/visualization',
+        icon: VisualizationIcon,
     },
     {
         key: 'backtest',
@@ -190,6 +204,7 @@ const AppContent: React.FC = () => {
                     <Route path="/" element={<HomePage/>}/>
                     <Route path="/chat" element={<ChatPage/>}/>
                     <Route path="/stock-selector" element={<StockSelectorPage/>}/>
+                    <Route path="/visualization" element={<VisualizationPage/>}/>
                     <Route path="/backtest" element={<BacktestPage/>}/>
                     <Route path="/settings" element={<SettingsPage/>}/>
                     <Route path="/login" element={<LoginPage/>}/>

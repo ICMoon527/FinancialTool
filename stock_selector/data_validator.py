@@ -251,7 +251,8 @@ class StockDataValidator:
         wfa_start_date: date,
         training_window_days: int = 60,
         testing_window_days: int = 20,
-        num_windows: int = 5
+        num_windows: int = 5,
+        step_days: int = 30
     ) -> Dict[str, any]:
         """
         Prepare all stock data for Walk-Forward Analysis.
@@ -262,6 +263,7 @@ class StockDataValidator:
             training_window_days: Training window size in days
             testing_window_days: Testing window size in days
             num_windows: Number of WFA windows
+            step_days: Step days between windows
 
         Returns:
             Dictionary with preparation summary
@@ -273,8 +275,9 @@ class StockDataValidator:
         # Calculate the full date range we need data for
         # First window training starts at wfa_start_date
         # Last window testing ends at wfa_start_date + training + (num_windows-1)*step + testing
-        # Let's be conservative and cover from wfa_start_date - 180 days to latest available
-        data_start_date = wfa_start_date - timedelta(days=180)
+        # Only need data from (wfa_start_date - training_window_days) to end of last window
+        # Add a small buffer (30 days) for safety
+        data_start_date = wfa_start_date - timedelta(days=training_window_days + 30)
         
         # Get latest date in database to know end date
         latest_date = self._get_latest_date_in_database()
@@ -469,8 +472,9 @@ class StockDataValidator:
         last_training_end = last_training_start + timedelta(days=training_window_days - 1)
         last_testing_end = last_training_end + timedelta(days=testing_window_days)
 
-        # Also need some extra days before for historical data
-        full_start = wfa_start_date - timedelta(days=180)
+        # Only need data from (wfa_start_date - training_window_days) to end of last window
+        # Add a small buffer (30 days) for safety
+        full_start = wfa_start_date - timedelta(days=training_window_days + 30)
         full_end = last_testing_end
 
         logger.info(f"WFA full date range: {full_start} to {full_end}")
@@ -498,7 +502,8 @@ def prepare_data_for_wfa(
     wfa_start_date: date,
     training_window_days: int = 60,
     testing_window_days: int = 20,
-    num_windows: int = 5
+    num_windows: int = 5,
+    step_days: int = 30
 ) -> Dict[str, any]:
     """
     Convenience function to prepare data for WFA.
@@ -509,6 +514,7 @@ def prepare_data_for_wfa(
         training_window_days: Training window days
         testing_window_days: Testing window days
         num_windows: Number of windows
+        step_days: Step days between windows
 
     Returns:
         Preparation summary dictionary
@@ -519,7 +525,8 @@ def prepare_data_for_wfa(
         wfa_start_date=wfa_start_date,
         training_window_days=training_window_days,
         testing_window_days=testing_window_days,
-        num_windows=num_windows
+        num_windows=num_windows,
+        step_days=step_days
     )
 
 

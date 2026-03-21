@@ -3899,7 +3899,8 @@ Examples:
                 wfa_start_date=start_date,
                 training_window_days=config.wfa_training_window_days,
                 testing_window_days=config.wfa_testing_window_days,
-                num_windows=config.wfa_num_windows
+                num_windows=config.wfa_num_windows,
+                step_days=config.wfa_step_days
             )
             
             print("\nData preparation complete!")

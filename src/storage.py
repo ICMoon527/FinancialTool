@@ -132,6 +132,105 @@ class StockDaily(Base):
         }
 
 
+class StockIndicator(Base):
+    """
+    股票技术指标数据模型
+
+    存储计算后的技术指标数据，支持多股票、多日期的唯一约束
+    """
+
+    __tablename__ = "stock_indicator"
+
+    # 主键
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    # 股票代码（如 600519, 000001）
+    code = Column(String(10), nullable=False, index=True)
+
+    # 交易日期
+    date = Column(Date, nullable=False, index=True)
+
+    # 指标类型（如 'banker_control', 'main_capital_absorption' 等）
+    indicator_type = Column(String(50), nullable=False, index=True)
+
+    # 指标数据（JSON 格式存储）
+    indicator_data = Column(Text, nullable=False)
+
+    # 更新时间
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    # 唯一约束：同一股票同一日期同一指标只能有一条数据
+    __table_args__ = (
+        UniqueConstraint("code", "date", "indicator_type", name="uix_code_date_indicator"),
+        Index("ix_code_date_indicator", "code", "date", "indicator_type"),
+    )
+
+    def __repr__(self):
+        return f"<StockIndicator(code={self.code}, date={self.date}, type={self.indicator_type})>"
+
+    def get_indicator_data(self) -> Dict[str, Any]:
+        """获取指标数据字典"""
+        try:
+            return json.loads(self.indicator_data)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+
+    @classmethod
+    def create_from_dict(cls, code: str, date: date, indicator_type: str, data: Dict[str, Any]) -> 'StockIndicator':
+        """从字典创建实例"""
+        return cls(
+            code=code,
+            date=date,
+            indicator_type=indicator_type,
+            indicator_data=json.dumps(data, ensure_ascii=False),
+        )
+
+
+class VisualizationSearchHistory(Base):
+    """
+    可视化搜索历史记录
+
+    专门用于可视化页面的搜索历史记录
+    """
+
+    __tablename__ = "visualization_search_history"
+
+    # 主键
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    # 股票代码
+    stock_code = Column(String(10), nullable=False, index=True)
+
+    # 股票名称
+    stock_name = Column(String(50))
+
+    # 搜索时间
+    searched_at = Column(DateTime, default=datetime.now, index=True)
+
+    # 选中的指标列表（JSON 格式）
+    selected_indicators = Column(Text)
+
+    def __repr__(self):
+        return f"<VisualizationSearchHistory(code={self.stock_code}, time={self.searched_at})>"
+
+    def get_selected_indicators(self) -> List[str]:
+        """获取选中的指标列表"""
+        try:
+            return json.loads(self.selected_indicators) if self.selected_indicators else []
+        except (json.JSONDecodeError, TypeError):
+            return []
+
+    @classmethod
+    def create(cls, stock_code: str, stock_name: Optional[str] = None, selected_indicators: Optional[List[str]] = None) -> 'VisualizationSearchHistory':
+        """创建搜索历史记录"""
+        return cls(
+            stock_code=stock_code,
+            stock_name=stock_name,
+            selected_indicators=json.dumps(selected_indicators or [], ensure_ascii=False) if selected_indicators else None,
+        )
+
+
 class StockSector(Base):
     """
     股票板块信息数据模型
@@ -536,6 +635,12 @@ class DatabaseManager:
 
         # 创建所有表
         Base.metadata.create_all(self._engine)
+
+        # 初始化 LRU 缓存（用于性能优化）
+        from collections import OrderedDict
+        self._data_cache = OrderedDict()
+        self.CACHE_MAX_SIZE = 1000  # 最大缓存条目数
+        self.CACHE_TTL_SECONDS = 300  # 缓存 TTL: 5 分钟
 
         self._initialized = True
         logger.info(f"数据库初始化完成: {db_url}")
@@ -1080,6 +1185,280 @@ class DatabaseManager:
             )
 
             return list(results)
+
+    def get_data_range_optimized(
+        self, 
+        code: str, 
+        start_date: date, 
+        end_date: date,
+        use_cache: bool = True
+    ) -> List[StockDaily]:
+        """
+        优化的数据范围查询 - 带 LRU 缓存
+
+        优化点：
+        1. LRU 缓存，避免重复查询
+        2. 批量加载
+        
+        Args:
+            code: 股票代码
+            start_date: 开始日期
+            end_date: 结束日期
+            use_cache: 是否使用缓存
+            
+        Returns:
+            StockDaily 对象列表
+        """
+        cache_key = (code, start_date, end_date)
+        
+        if use_cache and cache_key in self._data_cache:
+            cached_data, timestamp = self._data_cache[cache_key]
+            age = (datetime.now() - timestamp).total_seconds()
+            
+            if age < self.CACHE_TTL_SECONDS:
+                logger.debug(f"缓存命中：{code} ({age:.1f}s old)")
+                self._data_cache.move_to_end(cache_key)
+                return cached_data
+        
+        with self.get_session() as session:
+            results = (
+                session.execute(
+                    select(StockDaily)
+                    .where(and_(StockDaily.code == code, StockDaily.date >= start_date, StockDaily.date <= end_date))
+                    .order_by(StockDaily.date)
+                )
+                .scalars()
+                .all()
+            )
+            
+            data = list(results)
+            
+            if use_cache:
+                self._update_cache(cache_key, data)
+            
+            return data
+
+    def get_data_range_with_fields(
+        self, 
+        code: str, 
+        start_date: date, 
+        end_date: date,
+        fields: Optional[List[str]] = None
+    ) -> pd.DataFrame:
+        """
+        优化的数据范围查询 - 只检索指定字段
+        
+        优化点：
+        1. 只选择需要的字段，减少数据传输量
+        2. 直接返回 DataFrame，方便后续处理
+        
+        Args:
+            code: 股票代码
+            start_date: 开始日期
+            end_date: 结束日期
+            fields: 需要检索的字段列表，默认使用核心字段
+            
+        Returns:
+            pandas DataFrame
+        """
+        if fields is None:
+            fields = [
+                'date', 'open', 'high', 'low', 'close', 
+                'volume', 'pct_chg'
+            ]
+        
+        with self.get_session() as session:
+            columns = [getattr(StockDaily, field) for field in fields if hasattr(StockDaily, field)]
+            
+            results = (
+                session.execute(
+                    select(*columns)
+                    .where(and_(StockDaily.code == code, StockDaily.date >= start_date, StockDaily.date <= end_date))
+                    .order_by(StockDaily.date)
+                )
+            )
+            
+            df = pd.DataFrame(results.fetchall(), columns=fields)
+            
+            return df
+
+    def save_daily_data_bulk(
+        self, 
+        df: pd.DataFrame, 
+        code: str, 
+        data_source: str = "Unknown"
+    ) -> int:
+        """
+        批量保存日线数据（优化版本）
+        
+        优化点：
+        1. 批量查询已存在的记录（解决 N+1 问题）
+        2. 批量插入新记录
+        3. 批量更新现有记录
+        4. 减少数据库交互次数
+        
+        Args:
+            df: 包含日线数据的 DataFrame
+            code: 股票代码
+            data_source: 数据来源名称
+            
+        Returns:
+            新增/更新的记录数
+        """
+        if df is None or df.empty:
+            logger.warning(f"保存数据为空，跳过 {code}")
+            return 0
+        
+        with self.get_session() as session:
+            try:
+                parsed_dates = []
+                for _, row in df.iterrows():
+                    row_date = self._parse_date(row.get("date"))
+                    if row_date:
+                        parsed_dates.append((row_date, row))
+                
+                if not parsed_dates:
+                    logger.warning(f"没有有效的日期数据，跳过 {code}")
+                    return 0
+                
+                date_set = {d for d, _ in parsed_dates}
+                
+                existing_records = (
+                    session.execute(
+                        select(StockDaily)
+                        .where(and_(StockDaily.code == code, StockDaily.date.in_(date_set)))
+                    )
+                    .scalars()
+                    .all()
+                )
+                
+                existing_map = {rec.date: rec for rec in existing_records}
+                
+                records_to_add = []
+                records_to_update = []
+                
+                for row_date, row in parsed_dates:
+                    if row_date in existing_map:
+                        records_to_update.append((row_date, row))
+                    else:
+                        records_to_add.append((row_date, row))
+                
+                if records_to_add:
+                    for row_date, row in records_to_add:
+                        record = StockDaily(
+                            code=code,
+                            date=row_date,
+                            open=row.get("open"),
+                            high=row.get("high"),
+                            low=row.get("low"),
+                            close=row.get("close"),
+                            volume=row.get("volume"),
+                            amount=row.get("amount"),
+                            pct_chg=row.get("pct_chg"),
+                            ma5=row.get("ma5"),
+                            ma10=row.get("ma10"),
+                            ma20=row.get("ma20"),
+                            volume_ratio=row.get("volume_ratio"),
+                            data_source=data_source,
+                        )
+                        session.add(record)
+                    
+                    logger.info(f"批量插入 {code} 数据：{len(records_to_add)} 条")
+                
+                if records_to_update:
+                    for row_date, row in records_to_update:
+                        existing_record = existing_map[row_date]
+                        existing_record.open = row.get("open")
+                        existing_record.high = row.get("high")
+                        existing_record.low = row.get("low")
+                        existing_record.close = row.get("close")
+                        existing_record.volume = row.get("volume")
+                        existing_record.amount = row.get("amount")
+                        existing_record.pct_chg = row.get("pct_chg")
+                        existing_record.ma5 = row.get("ma5")
+                        existing_record.ma10 = row.get("ma10")
+                        existing_record.ma20 = row.get("ma20")
+                        existing_record.volume_ratio = row.get("volume_ratio")
+                        existing_record.data_source = data_source
+                        existing_record.updated_at = datetime.now()
+                    
+                    logger.info(f"批量更新 {code} 数据：{len(records_to_update)} 条")
+                
+                session.commit()
+                
+                total_count = len(records_to_add) + len(records_to_update)
+                logger.info(f"保存 {code} 数据成功，共 {total_count} 条（新增 {len(records_to_add)}, 更新 {len(records_to_update)}）")
+                
+                self._invalidate_cache(code)
+                
+                return total_count
+                
+            except Exception as e:
+                session.rollback()
+                logger.error(f"保存 {code} 数据失败：{e}")
+                raise
+
+    def _parse_date(self, date_value) -> Optional[date]:
+        """
+        解析日期值为 date 对象
+        
+        Args:
+            date_value: 可以是字符串、datetime、pd.Timestamp 等
+            
+        Returns:
+            date 对象或 None
+        """
+        if date_value is None:
+            return None
+        
+        if isinstance(date_value, str):
+            try:
+                return datetime.strptime(date_value, "%Y-%m-%d").date()
+            except ValueError:
+                return None
+        elif isinstance(date_value, datetime):
+            return date_value.date()
+        elif isinstance(date_value, pd.Timestamp):
+            return date_value.date()
+        elif isinstance(date_value, date):
+            return date_value
+        
+        return None
+
+    def _update_cache(self, key: Tuple, data: List[StockDaily]) -> None:
+        """
+        更新 LRU 缓存
+        
+        Args:
+            key: 缓存键
+            data: 数据
+        """
+        if len(self._data_cache) >= self.CACHE_MAX_SIZE:
+            self._data_cache.popitem(last=False)
+        
+        self._data_cache[key] = (data, datetime.now())
+
+    def _invalidate_cache(self, code: str) -> None:
+        """
+        清除指定股票的所有缓存
+        
+        Args:
+            code: 股票代码
+        """
+        keys_to_remove = [
+            key for key in self._data_cache.keys() 
+            if key[0] == code
+        ]
+        
+        for key in keys_to_remove:
+            del self._data_cache[key]
+        
+        logger.debug(f"清除 {code} 的缓存，共 {len(keys_to_remove)} 条")
+
+    def clear_cache(self) -> None:
+        """清除所有缓存"""
+        self._data_cache.clear()
+        logger.info("数据缓存已清空")
 
     def save_daily_data(self, df: pd.DataFrame, code: str, data_source: str = "Unknown") -> int:
         """
@@ -1745,6 +2124,284 @@ class DatabaseManager:
         with self.session_scope() as session:
             result = session.execute(delete(ConversationMessage).where(ConversationMessage.session_id == session_id))
             return result.rowcount
+
+    def save_stock_indicators(
+        self,
+        code: str,
+        indicator_type: str,
+        df: pd.DataFrame,
+        data_source: str = "Unknown"
+    ) -> int:
+        """
+        批量保存股票技术指标数据
+
+        Args:
+            code: 股票代码
+            indicator_type: 指标类型
+            df: 包含指标数据的 DataFrame
+            data_source: 数据来源
+
+        Returns:
+            保存的记录数
+        """
+        if df is None or df.empty:
+            logger.warning(f"保存指标数据为空，跳过 {code} {indicator_type}")
+            return 0
+
+        saved_count = 0
+
+        with self.get_session() as session:
+            try:
+                for _, row in df.iterrows():
+                    row_date = self._parse_date(row.get("date"))
+                    if not row_date:
+                        continue
+
+                    existing = session.execute(
+                        select(StockIndicator).where(
+                            and_(
+                                StockIndicator.code == code,
+                                StockIndicator.date == row_date,
+                                StockIndicator.indicator_type == indicator_type
+                            )
+                        )
+                    ).scalar_one_or_none()
+
+                    indicator_data_dict = row.to_dict()
+                    if 'date' in indicator_data_dict:
+                        del indicator_data_dict['date']
+
+                    if existing:
+                        existing.indicator_data = json.dumps(indicator_data_dict, ensure_ascii=False)
+                        existing.updated_at = datetime.now()
+                    else:
+                        record = StockIndicator.create_from_dict(
+                            code=code,
+                            date=row_date,
+                            indicator_type=indicator_type,
+                            data=indicator_data_dict
+                        )
+                        session.add(record)
+                        saved_count += 1
+
+                session.commit()
+                logger.info(f"保存 {code} {indicator_type} 指标数据成功，新增 {saved_count} 条")
+                return saved_count
+            except Exception as e:
+                session.rollback()
+                logger.error(f"保存 {code} {indicator_type} 指标数据失败: {e}")
+                raise
+
+    def get_stock_indicators(
+        self,
+        code: str,
+        indicator_type: Optional[str] = None,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None
+    ) -> List[StockIndicator]:
+        """
+        获取股票技术指标数据
+
+        Args:
+            code: 股票代码
+            indicator_type: 指标类型（可选）
+            start_date: 开始日期（可选）
+            end_date: 结束日期（可选）
+
+        Returns:
+            StockIndicator 对象列表
+        """
+        with self.get_session() as session:
+            conditions = [StockIndicator.code == code]
+
+            if indicator_type:
+                conditions.append(StockIndicator.indicator_type == indicator_type)
+            if start_date:
+                conditions.append(StockIndicator.date >= start_date)
+            if end_date:
+                conditions.append(StockIndicator.date <= end_date)
+
+            results = (
+                session.execute(
+                    select(StockIndicator)
+                    .where(and_(*conditions))
+                    .order_by(StockIndicator.date)
+                )
+                .scalars()
+                .all()
+            )
+
+            return list(results)
+
+    def get_stock_indicators_as_df(
+        self,
+        code: str,
+        indicator_type: str,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None
+    ) -> pd.DataFrame:
+        """
+        获取股票技术指标数据并转换为 DataFrame
+
+        Args:
+            code: 股票代码
+            indicator_type: 指标类型
+            start_date: 开始日期（可选）
+            end_date: 结束日期（可选）
+
+        Returns:
+            pandas DataFrame
+        """
+        indicators = self.get_stock_indicators(code, indicator_type, start_date, end_date)
+
+        if not indicators:
+            return pd.DataFrame()
+
+        data_list = []
+        for ind in indicators:
+            ind_data = ind.get_indicator_data()
+            ind_data['date'] = ind.date
+            data_list.append(ind_data)
+
+        return pd.DataFrame(data_list)
+
+    def save_visualization_search_history(
+        self,
+        stock_code: str,
+        stock_name: Optional[str] = None,
+        selected_indicators: Optional[List[str]] = None
+    ) -> int:
+        """
+        保存可视化搜索历史记录
+
+        Args:
+            stock_code: 股票代码
+            stock_name: 股票名称
+            selected_indicators: 选中的指标列表
+
+        Returns:
+            保存的记录ID
+        """
+        with self.get_session() as session:
+            try:
+                record = VisualizationSearchHistory.create(
+                    stock_code=stock_code,
+                    stock_name=stock_name,
+                    selected_indicators=selected_indicators
+                )
+                session.add(record)
+                session.commit()
+                logger.info(f"保存可视化搜索历史成功: {stock_code}")
+                return record.id
+            except Exception as e:
+                session.rollback()
+                logger.error(f"保存可视化搜索历史失败: {e}")
+                raise
+
+    def get_visualization_search_history(
+        self,
+        limit: int = 20
+    ) -> List[Dict[str, Any]]:
+        """
+        获取可视化搜索历史记录
+
+        Args:
+            limit: 返回数量限制
+
+        Returns:
+            搜索历史记录列表
+        """
+        with self.get_session() as session:
+            results = (
+                session.execute(
+                    select(VisualizationSearchHistory)
+                    .order_by(desc(VisualizationSearchHistory.searched_at))
+                    .limit(limit)
+                )
+                .scalars()
+                .all()
+            )
+
+            return [
+                {
+                    "id": record.id,
+                    "stock_code": record.stock_code,
+                    "stock_name": record.stock_name,
+                    "searched_at": record.searched_at.isoformat() if record.searched_at else None,
+                    "selected_indicators": record.get_selected_indicators()
+                }
+                for record in results
+            ]
+
+    def delete_duplicate_visualization_history(self, stock_code: str) -> int:
+        """
+        删除重复的可视化搜索历史记录，只保留最新的一条
+
+        Args:
+            stock_code: 股票代码
+
+        Returns:
+            删除的记录数
+        """
+        with self.get_session() as session:
+            try:
+                latest_record = (
+                    session.execute(
+                        select(VisualizationSearchHistory)
+                        .where(VisualizationSearchHistory.stock_code == stock_code)
+                        .order_by(desc(VisualizationSearchHistory.searched_at))
+                        .limit(1)
+                    )
+                    .scalar_one_or_none()
+                )
+
+                if not latest_record:
+                    return 0
+
+                result = session.execute(
+                    delete(VisualizationSearchHistory).where(
+                        and_(
+                            VisualizationSearchHistory.stock_code == stock_code,
+                            VisualizationSearchHistory.id != latest_record.id
+                        )
+                    )
+                )
+                session.commit()
+                deleted_count = result.rowcount
+                if deleted_count > 0:
+                    logger.info(f"删除 {stock_code} 的重复搜索历史: {deleted_count} 条")
+                return deleted_count
+            except Exception as e:
+                session.rollback()
+                logger.error(f"删除重复搜索历史失败: {e}")
+                return 0
+
+    def delete_visualization_search_history(self, record_id: int) -> bool:
+        """
+        删除单条可视化搜索历史记录
+
+        Args:
+            record_id: 记录ID
+
+        Returns:
+            是否成功删除
+        """
+        with self.get_session() as session:
+            try:
+                result = session.execute(
+                    delete(VisualizationSearchHistory).where(
+                        VisualizationSearchHistory.id == record_id
+                    )
+                )
+                session.commit()
+                success = result.rowcount > 0
+                if success:
+                    logger.info(f"删除可视化搜索历史记录: {record_id}")
+                return success
+            except Exception as e:
+                session.rollback()
+                logger.error(f"删除可视化搜索历史失败: {e}")
+                return False
 
 
 # 便捷函数
