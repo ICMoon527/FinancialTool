@@ -19,6 +19,12 @@ const INDICATOR_OPTIONS = [
 const SUBCHART_HEIGHT = 150;
 
 const VisualizationPage: React.FC = () => {
+  const validIndicatorIds = INDICATOR_OPTIONS.map(opt => opt.id);
+  
+  const filterValidIndicators = (indicators: string[]) => {
+    return indicators.filter(id => validIndicatorIds.includes(id));
+  };
+
   // 状态管理
   const [stockCode, setStockCode] = useState('');
   const [inputError, setInputError] = useState<string>();
@@ -27,7 +33,9 @@ const VisualizationPage: React.FC = () => {
   const [visualizationData, setVisualizationData] = useState<VisualizationResponse | null>(null);
   const [searchHistory, setSearchHistory] = useState<VisualizationSearchHistoryItem[]>([]);
   const [selectedHistoryId, setSelectedHistoryId] = useState<number | null>(null);
-  const [selectedIndicators, setSelectedIndicators] = useState<string[]>(['volume', 'main_capital_absorption', 'banker_control', 'main_trading']);
+  const [selectedIndicators, setSelectedIndicators] = useState<string[]>(
+    filterValidIndicators(['volume', 'main_capital_absorption', 'banker_control', 'main_trading'])
+  );
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [cursorValues, setCursorValues] = useState<{
     attackLine?: number;
@@ -37,6 +45,10 @@ const VisualizationPage: React.FC = () => {
     bankerControl?: number;
     mainCapitalAbsorption?: number;
   }>({});
+
+  useEffect(() => {
+    setSelectedIndicators(prev => filterValidIndicators(prev));
+  }, []);
 
   // 图表引用
   const mainChartContainerRef = useRef<HTMLDivElement>(null);
@@ -1341,7 +1353,7 @@ const VisualizationPage: React.FC = () => {
     setStockCode(item.stock_code);
     setSelectedHistoryId(item.id);
     // 不使用历史记录中的指标，使用默认指标
-    setSelectedIndicators(['volume', 'main_capital_absorption', 'banker_control', 'main_trading']);
+    setSelectedIndicators(filterValidIndicators(['volume', 'main_capital_absorption', 'banker_control', 'main_trading']));
     setSidebarOpen(false);
 
     setIsLoading(true);
@@ -1362,11 +1374,13 @@ const VisualizationPage: React.FC = () => {
   // 切换指标选择
   const toggleIndicator = (indicatorId: string) => {
     setSelectedIndicators(prev => {
+      let newIndicators;
       if (prev.includes(indicatorId)) {
-        return prev.filter(id => id !== indicatorId);
+        newIndicators = prev.filter(id => id !== indicatorId);
       } else {
-        return [...prev, indicatorId];
+        newIndicators = [...prev, indicatorId];
       }
+      return filterValidIndicators(newIndicators);
     });
   };
 

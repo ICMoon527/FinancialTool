@@ -79,7 +79,7 @@ class VisualizationService:
 
         # 自动更新最新数据
         try:
-            self._refresh_stock_data(stock_code)
+            self._refresh_stock_data(stock_code, days)
         except Exception as e:
             logger.warning(f"自动更新数据失败: {e}", exc_info=False)
             # 数据更新失败不影响返回现有数据
@@ -108,37 +108,62 @@ class VisualizationService:
             'indicators': indicators_data
         }
 
-    def _refresh_stock_data(self, stock_code: str):
+    def _refresh_stock_data(self, stock_code: str, days: int = 3650):
         """
-        刷新股票最新数据
+        刷新股票数据，确保有足够的历史数据
 
         Args:
             stock_code: 股票代码
+            days: 需要的天数（默认十年）
         """
         try:
             fetcher_manager = DataFetcherManager()
             
-            # 检查是否需要更新
+            # 检查数据库中现有数据的范围
             latest_date = self._get_latest_kline_date(stock_code)
+            earliest_date = self._get_earliest_kline_date(stock_code)
             today = date.today()
+            target_start_date = today - timedelta(days=days)
             
-            if latest_date and latest_date >= today:
-                logger.info(f"{stock_code} 数据已是最新，无需更新")
+            need_update = False
+            start_date_str = None
+            end_date_str = None
+            
+            # 情况1：完全没有数据
+            if not latest_date or not earliest_date:
+                logger.info(f"{stock_code} 数据库中没有数据，正在获取最近 {days} 天数据...")
+                start_date = target_start_date
+                end_date = today
+                need_update = True
+            
+            # 情况2：数据不够十年
+            elif earliest_date > target_start_date:
+                missing_days = (earliest_date - target_start_date).days
+                logger.info(f"{stock_code} 历史数据不足，缺少 {missing_days} 天，正在补充历史数据...")
+                start_date = target_start_date
+                end_date = earliest_date - timedelta(days=1)  # 补充早于现有最早日期的数据
+                need_update = True
+            
+            # 情况3：只需要更新最新数据
+            elif latest_date < today:
+                logger.info(f"{stock_code} 正在更新最新数据...")
+                start_date = latest_date - timedelta(days=10)
+                end_date = today
+                need_update = True
+            
+            if not need_update:
+                logger.info(f"{stock_code} 数据已是最新且足够，无需更新")
                 return
-            
-            logger.info(f"正在更新 {stock_code} 的最新数据...")
-            
-            # 获取并保存最新数据
-            stock_name = fetcher_manager.get_stock_name(stock_code)
-            
-            # 只获取最近几天的数据来更新
-            start_date = latest_date - timedelta(days=10) if latest_date else today - timedelta(days=30)
             
             # 转换为字符串格式
             start_date_str = start_date.strftime('%Y-%m-%d')
-            end_date_str = today.strftime('%Y-%m-%d')
+            end_date_str = end_date.strftime('%Y-%m-%d')
+            
+            # 获取股票名称
+            stock_name = fetcher_manager.get_stock_name(stock_code)
             
             # 获取日线数据
+            logger.info(f"正在获取 {stock_code} 数据: {start_date_str} ~ {end_date_str}")
             daily_data, source_name = fetcher_manager.get_daily_data(
                 stock_code,
                 start_date=start_date_str,
@@ -154,6 +179,30 @@ class VisualizationService:
         except Exception as e:
             logger.error(f"刷新数据失败: {e}", exc_info=True)
             raise
+
+    def _get_earliest_kline_date(self, stock_code: str) -> Optional[date]:
+        """
+        获取最早K线日期
+
+        Args:
+            stock_code: 股票代码
+
+        Returns:
+            最早日期或None
+        """
+        try:
+            with self.db.session_scope() as session:
+                from src.storage import StockDaily
+                from sqlalchemy import func
+                
+                result = session.query(
+                    func.min(StockDaily.date).label('min_date')
+                ).filter(StockDaily.code == stock_code).first()
+                
+                return result.min_date if result else None
+        except Exception as e:
+            logger.error(f"获取最早日期失败: {e}", exc_info=True)
+            return None
 
     def _get_latest_kline_date(self, stock_code: str) -> Optional[date]:
         """

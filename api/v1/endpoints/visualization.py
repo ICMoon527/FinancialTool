@@ -207,7 +207,7 @@ def delete_search_history(
 )
 def get_visualization_data(
     stock_code: str,
-    days: int = Query(365, ge=1, le=3650, description="获取天数"),
+    days: int = Query(3650, ge=1, le=3650, description="获取天数"),
     indicator_types: Optional[str] = Query(None, description="指标类型列表，逗号分隔"),
     db_manager: DatabaseManager = Depends(get_database_manager)
 ) -> VisualizationResponse:
