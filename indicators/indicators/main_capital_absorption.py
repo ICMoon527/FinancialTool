@@ -112,6 +112,8 @@ class MainCapitalAbsorption(BaseIndicator):
         var8_value = np.where(var8_condition, (var4 + var6 * 2) / 2, 0)
         var8 = self._ema(pd.Series(var8_value, index=data.index), 3) / 618 * var7
 
+        var8 = np.where(np.abs(var8) < 1.01, 0, var8)
+
         result = data.copy()
         result["main_capital_absorption"] = var8
 

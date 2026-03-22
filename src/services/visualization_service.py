@@ -125,9 +125,23 @@ class VisualizationService:
             today = date.today()
             target_start_date = today - timedelta(days=days)
             
+            # 获取股票上市日期
+            list_date = fetcher_manager.get_list_date(stock_code)
+            
+            # 如果能获取到上市日期，调整目标开始日期
+            if list_date:
+                if target_start_date < list_date:
+                    logger.info(f"{stock_code} 上市日期为 {list_date}，调整数据获取起始日期")
+                    target_start_date = list_date
+            
+            # 判断市场和交易日
+            from src.core.trading_calendar import get_market_for_stock, is_market_open
+            market = get_market_for_stock(stock_code)
+            is_today_open = is_market_open(market, today) if market else True
+            
             need_update = False
-            start_date_str = None
-            end_date_str = None
+            start_date = None
+            end_date = None
             
             # 情况1：完全没有数据
             if not latest_date or not earliest_date:
@@ -138,18 +152,38 @@ class VisualizationService:
             
             # 情况2：数据不够十年
             elif earliest_date > target_start_date:
-                missing_days = (earliest_date - target_start_date).days
-                logger.info(f"{stock_code} 历史数据不足，缺少 {missing_days} 天，正在补充历史数据...")
-                start_date = target_start_date
-                end_date = earliest_date - timedelta(days=1)  # 补充早于现有最早日期的数据
-                need_update = True
+                # 如果有上市日期，检查是否还需要补充数据
+                if list_date:
+                    if earliest_date <= list_date:
+                        logger.info(f"{stock_code} 数据已覆盖上市日期，无需补充历史数据")
+                    else:
+                        missing_days = (earliest_date - target_start_date).days
+                        logger.info(f"{stock_code} 历史数据不足，缺少 {missing_days} 天，正在补充历史数据...")
+                        start_date = target_start_date
+                        end_date = earliest_date - timedelta(days=1)
+                        need_update = True
+                else:
+                    # 无法获取上市日期，保守策略：不补充历史数据，避免尝试获取上市前不存在的数据
+                    logger.info(f"{stock_code} 无法获取上市日期，跳过补充历史数据（避免尝试获取上市前数据）")
             
             # 情况3：只需要更新最新数据
             elif latest_date < today:
-                logger.info(f"{stock_code} 正在更新最新数据...")
-                start_date = latest_date - timedelta(days=10)
-                end_date = today
-                need_update = True
+                if is_today_open:
+                    # 今天是交易日，只获取从 latest_date + 1 天到 today 的数据
+                    start_date = latest_date + timedelta(days=1)
+                    end_date = today
+                    if start_date <= end_date:
+                        logger.info(f"{stock_code} 今天是交易日，正在更新最新数据...")
+                        need_update = True
+                    else:
+                        logger.info(f"{stock_code} 数据已是最新，无需更新")
+                else:
+                    # 今天不是交易日，检查是否需要补充之前的交易日数据
+                    # 获取最近5个交易日的数据以确保完整性
+                    start_date = latest_date - timedelta(days=5)
+                    end_date = latest_date
+                    logger.info(f"{stock_code} 今天不是交易日，检查最近5天数据完整性...")
+                    need_update = True
             
             if not need_update:
                 logger.info(f"{stock_code} 数据已是最新且足够，无需更新")
@@ -321,35 +355,17 @@ class VisualizationService:
         indicator_type: str
     ):
         """
-        计算并保存单个指标
+        计算并保存单个指标（每次都重新计算，确保使用最新策略）
 
         Args:
             stock_code: 股票代码
             df: K线数据DataFrame
             indicator_type: 指标类型
         """
-        # 获取已有的指标数据日期
         end_date = df.index.max()
         start_date = df.index.min()
 
-        existing_indicators = self.db.get_stock_indicators(
-            stock_code,
-            indicator_type,
-            start_date,
-            end_date
-        )
-
-        existing_dates = {ind.date for ind in existing_indicators}
-        all_dates = set(df.index)
-
-        # 找出缺失的日期
-        missing_dates = all_dates - existing_dates
-
-        if not missing_dates:
-            logger.debug(f"{stock_code} {indicator_type} 指标数据已完整")
-            return
-
-        logger.info(f"{stock_code} {indicator_type} 需要计算 {len(missing_dates)} 天的数据")
+        logger.info(f"{stock_code} {indicator_type} 正在重新计算指标 (策略可能已更新)...")
 
         # 计算指标
         calculator_class = INDICATOR_CALCULATORS.get(indicator_type)
@@ -381,7 +397,7 @@ class VisualizationService:
             'VisualizationService'
         )
 
-        logger.info(f"{stock_code} {indicator_type} 保存了 {saved_count} 条指标数据")
+        logger.info(f"{stock_code} {indicator_type} 重新计算并保存了 {saved_count} 条指标数据")
 
     def _get_indicators_data(
         self,

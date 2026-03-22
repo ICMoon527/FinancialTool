@@ -924,13 +924,17 @@ const VisualizationPage: React.FC = () => {
 
         } else if (indicatorId === 'main_capital_absorption' && indicatorData) {
           // 主力吸筹 - 显示柱状图
-          // 先过滤数据，确保时间范围与主图对齐
+          // 先过滤数据，确保时间范围与主图对齐，值小于1.01的柱体高度设为0
           const filteredIndicatorData = filterDataByTimeRange(indicatorData.data, 'date');
-          const barData = filteredIndicatorData.map((item: any) => ({
-            time: item.date,
-            value: item.main_capital_absorption || 0,
-            color: (item.main_capital_absorption || 0) >= 0 ? '#AA44FF' : '#44AA44',
-          })).filter((d: any) => d.value !== null && d.value !== undefined);
+          const barData = filteredIndicatorData.map((item: any) => {
+            const rawValue = item.main_capital_absorption || 0;
+            const value = Math.abs(rawValue) < 1.01 ? 0 : rawValue;
+            return {
+              time: item.date,
+              value: value,
+              color: value >= 0 ? '#AA44FF' : '#44AA44',
+            };
+          }).filter((d: any) => d.value !== null && d.value !== undefined);
 
           const histogramSeries = chart.addSeries(lightweightCharts.HistogramSeries, {
             color: '#AA44FF',

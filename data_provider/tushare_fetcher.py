@@ -18,7 +18,7 @@ import json as _json
 import logging
 import re
 import time
-from datetime import datetime
+from datetime import datetime, date
 from typing import Optional, Tuple, List, Dict, Any
 
 import pandas as pd
@@ -451,6 +451,62 @@ class TushareFetcher(BaseFetcher):
             
         except Exception as e:
             logger.warning(f"Tushare 获取股票名称失败 {stock_code}: {e}")
+        
+        return None
+    
+    def get_list_date(self, stock_code: str) -> Optional[date]:
+        """
+        获取股票上市日期
+        
+        使用 Tushare 的 stock_basic 接口获取股票上市日期
+        
+        Args:
+            stock_code: 股票代码
+            
+        Returns:
+            上市日期，失败返回 None
+        """
+        if self._api is None:
+            logger.warning("Tushare API 未初始化，无法获取上市日期")
+            return None
+        
+        # 检查缓存
+        if hasattr(self, '_list_date_cache') and stock_code in self._list_date_cache:
+            return self._list_date_cache[stock_code]
+        
+        # 初始化缓存
+        if not hasattr(self, '_list_date_cache'):
+            self._list_date_cache = {}
+        
+        try:
+            # 速率限制检查
+            self._check_rate_limit()
+            
+            # 转换代码格式
+            ts_code = self._convert_stock_code(stock_code)
+            
+            # ETF uses fund_basic, regular stocks use stock_basic
+            if _is_etf_code(stock_code):
+                df = self._api.fund_basic(
+                    ts_code=ts_code,
+                    fields='ts_code,list_date'
+                )
+            else:
+                df = self._api.stock_basic(
+                    ts_code=ts_code,
+                    fields='ts_code,list_date'
+                )
+            
+            if df is not None and not df.empty and 'list_date' in df.columns:
+                list_date_str = df.iloc[0]['list_date']
+                if list_date_str:
+                    list_date = datetime.strptime(str(list_date_str), '%Y%m%d').date()
+                    self._list_date_cache[stock_code] = list_date
+                    logger.debug(f"Tushare 获取上市日期成功: {stock_code} -> {list_date}")
+                    return list_date
+            
+        except Exception as e:
+            logger.warning(f"Tushare 获取上市日期失败 {stock_code}: {e}")
         
         return None
     

@@ -18,7 +18,7 @@ import logging
 import random
 import time
 from abc import ABC, abstractmethod
-from datetime import datetime
+from datetime import datetime, date
 from typing import Optional, List, Tuple, Dict, Any
 
 import pandas as pd
@@ -900,6 +900,47 @@ class DataFetcherManager:
         # 4. 所有数据源都失败
         logger.warning(f"[股票名称] 所有数据源都无法获取 {stock_code} 的名称")
         return ""
+    
+    def get_list_date(self, stock_code: str) -> Optional[date]:
+        """
+        获取股票上市日期（自动切换数据源）
+        
+        尝试从多个数据源获取股票上市日期：
+        1. 依次尝试各个数据源的 get_list_date 方法
+        
+        Args:
+            stock_code: 股票代码
+            
+        Returns:
+            上市日期，所有数据源都失败则返回 None
+        """
+        # Normalize code (strip SH/SZ prefix etc.)
+        stock_code = normalize_stock_code(stock_code)
+        
+        # 检查缓存
+        if hasattr(self, '_list_date_cache') and stock_code in self._list_date_cache:
+            return self._list_date_cache[stock_code]
+        
+        # 初始化缓存
+        if not hasattr(self, '_list_date_cache'):
+            self._list_date_cache = {}
+        
+        # 依次尝试各个数据源
+        for fetcher in self._fetchers:
+            if hasattr(fetcher, 'get_list_date'):
+                try:
+                    list_date = fetcher.get_list_date(stock_code)
+                    if list_date:
+                        self._list_date_cache[stock_code] = list_date
+                        logger.info(f"[上市日期] 从 {fetcher.name} 获取: {stock_code} -> {list_date}")
+                        return list_date
+                except Exception as e:
+                    logger.debug(f"[上市日期] {fetcher.name} 获取失败: {e}")
+                    continue
+        
+        # 所有数据源都失败
+        logger.warning(f"[上市日期] 所有数据源都无法获取 {stock_code} 的上市日期")
+        return None
 
     def batch_get_stock_names(self, stock_codes: List[str]) -> Dict[str, str]:
         """

@@ -1474,13 +1474,14 @@ class DatabaseManager:
             data_source: 数据来源名称
 
         Returns:
-            新增/更新的记录数
+            新增的记录数
         """
         if df is None or df.empty:
             logger.warning(f"保存数据为空，跳过 {code}")
             return 0
 
         saved_count = 0
+        updated_count = 0
 
         with self.get_session() as session:
             try:
@@ -1514,6 +1515,7 @@ class DatabaseManager:
                         existing.volume_ratio = row.get("volume_ratio")
                         existing.data_source = data_source
                         existing.updated_at = datetime.now()
+                        updated_count += 1
                     else:
                         # 创建新记录
                         record = StockDaily(
@@ -1536,7 +1538,7 @@ class DatabaseManager:
                         saved_count += 1
 
                 session.commit()
-                logger.info(f"保存 {code} 数据成功，新增 {saved_count} 条")
+                logger.info(f"保存 {code} 数据成功，新增 {saved_count} 条，更新 {updated_count} 条")
 
             except Exception as e:
                 session.rollback()
@@ -2142,13 +2144,14 @@ class DatabaseManager:
             data_source: 数据来源
 
         Returns:
-            保存的记录数
+            保存的记录数（新增+更新）
         """
         if df is None or df.empty:
             logger.warning(f"保存指标数据为空，跳过 {code} {indicator_type}")
             return 0
 
         saved_count = 0
+        updated_count = 0
 
         with self.get_session() as session:
             try:
@@ -2174,6 +2177,7 @@ class DatabaseManager:
                     if existing:
                         existing.indicator_data = json.dumps(indicator_data_dict, ensure_ascii=False)
                         existing.updated_at = datetime.now()
+                        updated_count += 1
                     else:
                         record = StockIndicator.create_from_dict(
                             code=code,
@@ -2185,8 +2189,8 @@ class DatabaseManager:
                         saved_count += 1
 
                 session.commit()
-                logger.info(f"保存 {code} {indicator_type} 指标数据成功，新增 {saved_count} 条")
-                return saved_count
+                logger.info(f"保存 {code} {indicator_type} 指标数据成功，新增 {saved_count} 条，更新 {updated_count} 条")
+                return saved_count + updated_count
             except Exception as e:
                 session.rollback()
                 logger.error(f"保存 {code} {indicator_type} 指标数据失败: {e}")

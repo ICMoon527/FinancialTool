@@ -18,9 +18,9 @@ class MainTrading(BaseIndicator):
     - 防守线：操盘线 - (EMA6 - 操盘线)
     - 攻击线：EMA6（6周期指数移动平均）
 
-    信号：
-    - 买入信号：三条线向上发散（攻击线 > 操盘线 > 防守线且三条线都在上升）
-    - 卖出信号：三条线向下发散（攻击线 < 操盘线 < 防守线且三条线都在下降）
+    信号（更敏感）：
+    - 买入信号：三条线向上发散（攻击线 > 操盘线 > 防守线且攻击操盘线都在上升）
+    - 卖出信号：三条线向下发散（攻击线 < 操盘线 < 防守线且攻击操盘线都在下降）
     """
 
     def _ema(self, data: pd.Series, period: int) -> pd.Series:
@@ -70,8 +70,10 @@ class MainTrading(BaseIndicator):
         trading_line_prev = trading_line.shift(1)
         defense_line_prev = defense_line.shift(1)
 
-        is_rising = (attack_line > attack_line_prev) & (trading_line > trading_line_prev) & (defense_line > defense_line_prev)
-        is_falling = (attack_line < attack_line_prev) & (trading_line < trading_line_prev) & (defense_line < defense_line_prev)
+        # is_rising = (attack_line > attack_line_prev) & (trading_line > trading_line_prev) & (defense_line > defense_line_prev)
+        is_rising = (attack_line > attack_line_prev) & (trading_line > trading_line_prev)
+        # is_falling = (attack_line < attack_line_prev) & (trading_line < trading_line_prev) & (defense_line < defense_line_prev)
+        is_falling = (attack_line < attack_line_prev) & (trading_line < trading_line_prev)
 
         is_diverging_up = (attack_line > trading_line) & (trading_line > defense_line)
         is_diverging_down = (attack_line < trading_line) & (trading_line < defense_line)
