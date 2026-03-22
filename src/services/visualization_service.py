@@ -54,16 +54,18 @@ class VisualizationService:
     def get_visualization_data(
         self,
         stock_code: str,
-        days: int = 150,
-        indicator_types: Optional[List[str]] = None
+        days: int = 365,
+        indicator_types: Optional[List[str]] = None,
+        start_date: Optional[date] = None
     ) -> Dict[str, Any]:
         """
-        获取股票可视化数据
+        获取股票可视化数据（每次都重新获取所有数据）
 
         Args:
             stock_code: 股票代码
-            days: 获取天数
+            days: 获取天数（如果提供了 start_date，则此参数被忽略）
             indicator_types: 指标类型列表，不填则使用所有可用指标
+            start_date: 起始日期（可选）
 
         Returns:
             包含K线数据和指标数据的字典
@@ -77,30 +79,100 @@ class VisualizationService:
             logger.warning(f"无效的指标类型: {invalid_indicators}")
             indicator_types = [t for t in indicator_types if t in AVAILABLE_INDICATORS]
 
-        # 自动更新最新数据
-        try:
-            self._refresh_stock_data(stock_code, days)
-        except Exception as e:
-            logger.warning(f"自动更新数据失败: {e}", exc_info=False)
-            # 数据更新失败不影响返回现有数据
-
-        # 获取K线数据
-        kline_data, stock_name = self._get_kline_data(stock_code, days)
-
-        if not kline_data:
+        # 每次都重新获取数据，不依赖数据库
+        logger.info(f"正在直接获取 {stock_code} 的数据...")
+        
+        fetcher_manager = DataFetcherManager()
+        today = date.today()
+        
+        # 确定查询范围
+        if start_date:
+            query_start_date = start_date
+        else:
+            query_start_date = today - timedelta(days=days)
+        
+        # 直接获取数据
+        daily_data, source_name = fetcher_manager.get_daily_data(
+            stock_code,
+            start_date=query_start_date.strftime('%Y-%m-%d'),
+            end_date=today.strftime('%Y-%m-%d')
+        )
+        
+        if daily_data is None or daily_data.empty:
+            logger.warning(f"未获取到 {stock_code} 的数据")
             return {
                 'stock_code': stock_code,
-                'stock_name': stock_name,
+                'stock_name': None,
                 'kline_data': [],
                 'indicators': []
             }
-
-        # 确保指标数据已计算并保存
-        self._ensure_indicators_calculated(stock_code, kline_data, indicator_types)
-
-        # 获取指标数据
-        indicators_data = self._get_indicators_data(stock_code, days, indicator_types)
-
+        
+        logger.info(f"成功获取 {stock_code} 数据: {len(daily_data)} 条 (来源: {source_name})")
+        
+        # 转换数据格式
+        kline_data = []
+        for _, row in daily_data.iterrows():
+            kline_data.append({
+                'date': row['date'].isoformat() if hasattr(row['date'], 'isoformat') else str(row['date']),
+                'open': float(row['open']),
+                'high': float(row['high']),
+                'low': float(row['low']),
+                'close': float(row['close']),
+                'volume': float(row['volume']) if pd.notna(row['volume']) else 0,
+                'amount': float(row['amount']) if pd.notna(row['amount']) else 0,
+                'pct_chg': float(row['pct_chg']) if pd.notna(row['pct_chg']) else 0
+            })
+        
+        # 获取股票名称
+        stock_name = fetcher_manager.get_stock_name(stock_code)
+        
+        # 计算指标（不保存到数据库，直接计算）
+        indicators_data = []
+        
+        if kline_data:
+            # 转换为 DataFrame 用于指标计算
+            df = pd.DataFrame(kline_data)
+            df['date'] = pd.to_datetime(df['date'])
+            df = df.sort_values('date').reset_index(drop=True)
+            # 指标计算器需要首字母大写的列名
+            df = df.rename(columns={
+                'open': 'Open',
+                'high': 'High',
+                'low': 'Low',
+                'close': 'Close',
+                'volume': 'Volume'
+            })
+            
+            for indicator_type in indicator_types:
+                calculator_class = INDICATOR_CALCULATORS.get(indicator_type)
+                if not calculator_class:
+                    continue
+                
+                try:
+                    calculator = calculator_class()
+                    result_df = calculator.calculate(df.copy())
+                    
+                    # 转换为指标数据格式
+                    indicator_data_list = []
+                    for _, row in result_df.iterrows():
+                        item = {
+                            'date': row['date'].isoformat() if hasattr(row['date'], 'isoformat') else str(row['date'])
+                        }
+                        # 添加指标特定字段
+                        for col in result_df.columns:
+                            if col != 'date':
+                                item[col] = float(row[col]) if pd.notna(row[col]) else None
+                        indicator_data_list.append(item)
+                    
+                    indicators_data.append({
+                        'indicator_type': indicator_type,
+                        'data': indicator_data_list
+                    })
+                    logger.info(f"计算完成 {stock_code} {indicator_type} 指标: {len(indicator_data_list)} 条")
+                    
+                except Exception as e:
+                    logger.warning(f"计算 {stock_code} {indicator_type} 指标失败: {e}")
+        
         return {
             'stock_code': stock_code,
             'stock_name': stock_name,
@@ -108,111 +180,115 @@ class VisualizationService:
             'indicators': indicators_data
         }
 
-    def _refresh_stock_data(self, stock_code: str, days: int = 3650):
+    def _refresh_stock_data(self, stock_code: str, days: int = 3650, start_date: Optional[date] = None):
         """
         刷新股票数据，确保有足够的历史数据
 
         Args:
             stock_code: 股票代码
-            days: 需要的天数（默认十年）
+            days: 需要的天数（如果提供了 start_date，则此参数被忽略）
+            start_date: 起始日期（可选）
         """
         try:
             fetcher_manager = DataFetcherManager()
             
             # 检查数据库中现有数据的范围
             latest_date = self._get_latest_kline_date(stock_code)
-            earliest_date = self._get_earliest_kline_date(stock_code)
             today = date.today()
-            target_start_date = today - timedelta(days=days)
             
-            # 获取股票上市日期
-            list_date = fetcher_manager.get_list_date(stock_code)
+            # 确定数据获取范围
+            if start_date:
+                target_start_date = start_date
+            else:
+                target_start_date = today - timedelta(days=days)
             
-            # 如果能获取到上市日期，调整目标开始日期
-            if list_date:
-                if target_start_date < list_date:
-                    logger.info(f"{stock_code} 上市日期为 {list_date}，调整数据获取起始日期")
-                    target_start_date = list_date
-            
-            # 判断市场和交易日
-            from src.core.trading_calendar import get_market_for_stock, is_market_open
-            market = get_market_for_stock(stock_code)
-            is_today_open = is_market_open(market, today) if market else True
-            
-            need_update = False
-            start_date = None
-            end_date = None
-            
-            # 情况1：完全没有数据
-            if not latest_date or not earliest_date:
-                logger.info(f"{stock_code} 数据库中没有数据，正在获取最近 {days} 天数据...")
-                start_date = target_start_date
-                end_date = today
-                need_update = True
-            
-            # 情况2：数据不够十年
-            elif earliest_date > target_start_date:
-                # 如果有上市日期，检查是否还需要补充数据
-                if list_date:
-                    if earliest_date <= list_date:
-                        logger.info(f"{stock_code} 数据已覆盖上市日期，无需补充历史数据")
-                    else:
-                        missing_days = (earliest_date - target_start_date).days
-                        logger.info(f"{stock_code} 历史数据不足，缺少 {missing_days} 天，正在补充历史数据...")
-                        start_date = target_start_date
-                        end_date = earliest_date - timedelta(days=1)
-                        need_update = True
-                else:
-                    # 无法获取上市日期，保守策略：不补充历史数据，避免尝试获取上市前不存在的数据
-                    logger.info(f"{stock_code} 无法获取上市日期，跳过补充历史数据（避免尝试获取上市前数据）")
-            
-            # 情况3：只需要更新最新数据
-            elif latest_date < today:
-                if is_today_open:
-                    # 今天是交易日，只获取从 latest_date + 1 天到 today 的数据
-                    start_date = latest_date + timedelta(days=1)
-                    end_date = today
-                    if start_date <= end_date:
-                        logger.info(f"{stock_code} 今天是交易日，正在更新最新数据...")
-                        need_update = True
-                    else:
-                        logger.info(f"{stock_code} 数据已是最新，无需更新")
-                else:
-                    # 今天不是交易日，检查是否需要补充之前的交易日数据
-                    # 获取最近5个交易日的数据以确保完整性
-                    start_date = latest_date - timedelta(days=5)
-                    end_date = latest_date
-                    logger.info(f"{stock_code} 今天不是交易日，检查最近5天数据完整性...")
-                    need_update = True
-            
-            if not need_update:
-                logger.info(f"{stock_code} 数据已是最新且足够，无需更新")
-                return
-            
-            # 转换为字符串格式
-            start_date_str = start_date.strftime('%Y-%m-%d')
-            end_date_str = end_date.strftime('%Y-%m-%d')
-            
-            # 获取股票名称
+            # 获取股票名称（只获取一次）
             stock_name = fetcher_manager.get_stock_name(stock_code)
             
-            # 获取日线数据
-            logger.info(f"正在获取 {stock_code} 数据: {start_date_str} ~ {end_date_str}")
-            daily_data, source_name = fetcher_manager.get_daily_data(
-                stock_code,
-                start_date=start_date_str,
-                end_date=end_date_str
-            )
+            # 情况1：完全没有数据
+            if not latest_date:
+                logger.info(f"{stock_code} 数据库中没有数据，正在获取数据...")
+                data_start_date = target_start_date
+                # 从今天开始，往前找能获取到数据的日期
+                data_end_date = today
+                max_attempts = 30
+                found = False
+                
+                for attempt in range(max_attempts):
+                    # 转换为字符串格式
+                    start_date_str = data_start_date.strftime('%Y-%m-%d')
+                    end_date_str = data_end_date.strftime('%Y-%m-%d')
+                    
+                    # 获取日线数据
+                    logger.info(f"正在获取 {stock_code} 数据: {start_date_str} ~ {end_date_str}")
+                    daily_data, source_name = fetcher_manager.get_daily_data(
+                        stock_code,
+                        start_date=start_date_str,
+                        end_date=end_date_str
+                    )
+                    
+                    if daily_data is not None and not daily_data.empty:
+                        saved_count = self.db.save_daily_data(daily_data, stock_code, 'VisualizationService')
+                        logger.info(f"{stock_code} 更新了 {saved_count} 条日线数据 (来源: {source_name})")
+                        found = True
+                        break
+                    
+                    # 如果没获取到数据，往前推一天
+                    logger.info(f"{stock_code} 未获取到数据，尝试往前推一天...")
+                    data_end_date = data_end_date - timedelta(days=1)
+                
+                if not found:
+                    logger.warning(f"{stock_code} 在 {max_attempts} 天内未获取到数据，请缩小查询范围")
             
-            if daily_data is not None and not daily_data.empty:
-                saved_count = self.db.save_daily_data(daily_data, stock_code, 'VisualizationService')
-                logger.info(f"{stock_code} 更新了 {saved_count} 条日线数据 (来源: {source_name})")
+            # 情况2：只需要更新最新数据
             else:
-                logger.warning(f"{stock_code} 未获取到新数据")
+                # 从今天开始，往前找能获取到数据的日期
+                data_end_date = today
+                data_start_date = latest_date + timedelta(days=1)
+                max_attempts = 30
+                found = False
+                query_window_expanded = False
+                
+                for attempt in range(max_attempts):
+                    if data_start_date > data_end_date:
+                        logger.info(f"{stock_code} 数据已是最新，无需更新")
+                        break
+                    
+                    # 转换为字符串格式
+                    start_date_str = data_start_date.strftime('%Y-%m-%d')
+                    end_date_str = data_end_date.strftime('%Y-%m-%d')
+                    
+                    # 获取日线数据
+                    logger.info(f"正在获取 {stock_code} 数据: {start_date_str} ~ {end_date_str}")
+                    daily_data, source_name = fetcher_manager.get_daily_data(
+                        stock_code,
+                        start_date=start_date_str,
+                        end_date=end_date_str
+                    )
+                    
+                    if daily_data is not None and not daily_data.empty:
+                        saved_count = self.db.save_daily_data(daily_data, stock_code, 'VisualizationService')
+                        logger.info(f"{stock_code} 更新了 {saved_count} 条日线数据 (来源: {source_name})")
+                        found = True
+                        break
+                    
+                    # 如果没获取到数据，根据情况调整查询策略
+                    if not query_window_expanded and (data_end_date - data_start_date).days < 14:
+                        # 策略1：如果查询窗口小于14天，先扩展窗口到14天，避免只查周末
+                        logger.info(f"{stock_code} 窄范围查询无数据，扩展查询窗口至14天...")
+                        data_start_date = data_end_date - timedelta(days=14)
+                        query_window_expanded = True
+                    else:
+                        # 策略2：窗口已足够大，往前推一天继续尝试
+                        logger.info(f"{stock_code} 未获取到数据，尝试往前推一天...")
+                        data_end_date = data_end_date - timedelta(days=1)
+                
+                if not found and max_attempts > 0:
+                    logger.info(f"{stock_code} 数据已是最新（最后交易日 {latest_date}）")
                 
         except Exception as e:
-            logger.error(f"刷新数据失败: {e}", exc_info=True)
-            raise
+            logger.warning(f"刷新数据失败: {e}", exc_info=False)
+            # 数据更新失败不影响返回现有数据，降级处理
 
     def _get_earliest_kline_date(self, stock_code: str) -> Optional[date]:
         """
@@ -265,20 +341,25 @@ class VisualizationService:
     def _get_kline_data(
         self,
         stock_code: str,
-        days: int
+        days: int,
+        start_date: Optional[date] = None
     ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
         """
         获取K线数据
 
         Args:
             stock_code: 股票代码
-            days: 获取天数
+            days: 获取天数（如果提供了 start_date，则此参数被忽略）
+            start_date: 起始日期（可选）
 
         Returns:
             (K线数据列表, 股票名称)
         """
         end_date = date.today()
-        start_date = end_date - timedelta(days=days)
+        if start_date:
+            start_date = start_date
+        else:
+            start_date = end_date - timedelta(days=days)
 
         try:
             stock_dailies = self.db.get_data_range(stock_code, start_date, end_date)
@@ -403,21 +484,26 @@ class VisualizationService:
         self,
         stock_code: str,
         days: int,
-        indicator_types: List[str]
+        indicator_types: List[str],
+        start_date: Optional[date] = None
     ) -> List[Dict[str, Any]]:
         """
         获取指标数据
 
         Args:
             stock_code: 股票代码
-            days: 获取天数
+            days: 获取天数（如果提供了 start_date，则此参数被忽略）
             indicator_types: 指标类型列表
+            start_date: 起始日期（可选）
 
         Returns:
             指标数据列表
         """
         end_date = date.today()
-        start_date = end_date - timedelta(days=days)
+        if start_date:
+            start_date = start_date
+        else:
+            start_date = end_date - timedelta(days=days)
 
         indicators_data = []
 

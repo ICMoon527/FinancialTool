@@ -38,6 +38,40 @@ from .baostock_fetcher import BaostockFetcher
 from .yfinance_fetcher import YfinanceFetcher
 from .us_index_mapping import is_us_index_code, is_us_stock_code, get_us_index_yf_symbol, US_INDEX_MAPPING
 
+from .config import (
+    DataProviderConfig,
+    RetryConfig,
+    CircuitBreakerConfig,
+    CacheConfig,
+    RateLimitConfig,
+    TimeoutConfig,
+    get_config,
+    set_config,
+)
+from .circuit_breaker import (
+    CircuitBreaker,
+    CircuitBreakerRegistry,
+    CircuitState,
+    CircuitMetrics,
+    get_circuit_breaker,
+    get_circuit_breaker_registry,
+    with_circuit_breaker,
+)
+from .utils import (
+    get_random_user_agent,
+    smart_sleep,
+    validate_date_range,
+    is_valid_stock_code,
+    safe_truncate_dict,
+    RequestRateLimiter,
+    get_rate_limiter,
+)
+from .diagnostics import (
+    DataProviderHealth,
+    check_health,
+    get_diagnostics_report,
+)
+
 __all__ = [
     'BaseFetcher',
     'DataFetcherManager',
@@ -55,4 +89,29 @@ __all__ = [
     'is_hk_stock_code',
     'get_us_index_yf_symbol',
     'US_INDEX_MAPPING',
+    'DataProviderConfig',
+    'RetryConfig',
+    'CircuitBreakerConfig',
+    'CacheConfig',
+    'RateLimitConfig',
+    'TimeoutConfig',
+    'get_config',
+    'set_config',
+    'CircuitBreaker',
+    'CircuitBreakerRegistry',
+    'CircuitState',
+    'CircuitMetrics',
+    'get_circuit_breaker',
+    'get_circuit_breaker_registry',
+    'with_circuit_breaker',
+    'get_random_user_agent',
+    'smart_sleep',
+    'validate_date_range',
+    'is_valid_stock_code',
+    'safe_truncate_dict',
+    'RequestRateLimiter',
+    'get_rate_limiter',
+    'DataProviderHealth',
+    'check_health',
+    'get_diagnostics_report',
 ]

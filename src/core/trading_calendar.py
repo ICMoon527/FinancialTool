@@ -13,7 +13,7 @@
 """
 
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Optional, Set
 
 logger = logging.getLogger(__name__)
@@ -111,6 +111,49 @@ def get_open_markets_today() -> Set[str]:
             logger.warning("get_open_markets_today fail-open for %s: %s", mkt, e)
             result.add(mkt)
     return result
+
+
+def get_latest_trading_day(market: str, check_date: date) -> date:
+    """
+    获取离指定日期最近的交易日（先检查当天，再向前查找）
+
+    Args:
+        market: 'cn' | 'hk' | 'us'
+        check_date: 要检查的日期
+
+    Returns:
+        最近的交易日日期
+    """
+    if not _XCALS_AVAILABLE:
+        return check_date
+    
+    ex = MARKET_EXCHANGE.get(market)
+    if not ex:
+        return check_date
+    
+    try:
+        cal = xcals.get_calendar(ex)
+        current_date = check_date
+        
+        # 先检查当天
+        session_date = datetime(current_date.year, current_date.month, current_date.day)
+        if cal.is_session(session_date):
+            return current_date
+        
+        # 如果当天不是交易日，向前查找最多30天
+        current_date = current_date - timedelta(days=1)
+        for i in range(30):
+            session_date = datetime(current_date.year, current_date.month, current_date.day)
+            if cal.is_session(session_date):
+                return current_date
+            current_date = current_date - timedelta(days=1)
+        
+        # 如果30天内都没找到，返回原始日期
+        logger.warning(f"未在 {check_date} 前30天内找到交易日，使用原始日期")
+        return check_date
+    except Exception as e:
+        logger.warning("trading_calendar.get_latest_trading_day fail-open: %s", e)
+        return check_date
 
 
 def compute_effective_region(

@@ -18,6 +18,17 @@ const INDICATOR_OPTIONS = [
 // 子图高度
 const SUBCHART_HEIGHT = 150;
 
+// 日期范围选项
+const DATE_RANGE_OPTIONS = [
+  { id: '30d', name: '最近30天', getStartDate: () => { const d = new Date(); d.setDate(d.getDate() - 30); return d; } },
+  { id: '90d', name: '最近90天', getStartDate: () => { const d = new Date(); d.setDate(d.getDate() - 90); return d; } },
+  { id: '180d', name: '最近180天', getStartDate: () => { const d = new Date(); d.setDate(d.getDate() - 180); return d; } },
+  { id: '1y', name: '最近1年', getStartDate: () => { const d = new Date(); d.setFullYear(d.getFullYear() - 1); return d; } },
+  { id: '3y', name: '最近3年', getStartDate: () => { const d = new Date(); d.setFullYear(d.getFullYear() - 3); return d; } },
+  { id: '5y', name: '最近5年', getStartDate: () => { const d = new Date(); d.setFullYear(d.getFullYear() - 5); return d; } },
+  { id: 'all', name: '全部数据', getStartDate: null },
+];
+
 const VisualizationPage: React.FC = () => {
   const validIndicatorIds = INDICATOR_OPTIONS.map(opt => opt.id);
   
@@ -37,6 +48,7 @@ const VisualizationPage: React.FC = () => {
     filterValidIndicators(['volume', 'main_capital_absorption', 'banker_control', 'main_trading'])
   );
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [selectedDateRange, setSelectedDateRange] = useState('1y');
   const [cursorValues, setCursorValues] = useState<{
     attackLine?: number;
     tradingLine?: number;
@@ -1325,10 +1337,20 @@ const VisualizationPage: React.FC = () => {
 
     try {
       console.log('Fetching visualization data for:', normalized);
+      
+      // 获取起始日期
+      const dateRangeOption = DATE_RANGE_OPTIONS.find(opt => opt.id === selectedDateRange);
+      let startDateStr: string | undefined;
+      if (dateRangeOption?.getStartDate) {
+        const startDate = dateRangeOption.getStartDate();
+        startDateStr = startDate.toISOString().split('T')[0];
+      }
+      
       const response = await visualizationApi.getVisualizationData(
         normalized,
         3650,
-        selectedIndicators
+        selectedIndicators,
+        startDateStr
       );
 
       console.log('Visualization data received:', response);
@@ -1363,9 +1385,19 @@ const VisualizationPage: React.FC = () => {
     setIsLoading(true);
 
     try {
+      // 获取起始日期
+      const dateRangeOption = DATE_RANGE_OPTIONS.find(opt => opt.id === selectedDateRange);
+      let startDateStr: string | undefined;
+      if (dateRangeOption?.getStartDate) {
+        const startDate = dateRangeOption.getStartDate();
+        startDateStr = startDate.toISOString().split('T')[0];
+      }
+      
       const response = await visualizationApi.getVisualizationData(
         item.stock_code,
-        item.days || 3650
+        item.days || 3650,
+        filterValidIndicators(['volume', 'main_capital_absorption', 'banker_control', 'main_trading']),
+        startDateStr
       );
       setVisualizationData(response);
     } catch (err) {
@@ -1500,6 +1532,21 @@ const VisualizationPage: React.FC = () => {
             {inputError && (
               <p className="absolute -bottom-4 left-0 text-xs text-danger">{inputError}</p>
             )}
+          </div>
+          
+          <div className="flex-shrink-0">
+            <select
+              value={selectedDateRange}
+              onChange={(e) => setSelectedDateRange(e.target.value)}
+              disabled={isLoading}
+              className="input-terminal bg-[#1a1a2e] text-sm border border-white/10 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-cyan/50"
+            >
+              {DATE_RANGE_OPTIONS.map((option) => (
+                <option key={option.id} value={option.id}>
+                  {option.name}
+                </option>
+              ))}
+            </select>
           </div>
           
           <button

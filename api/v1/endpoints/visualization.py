@@ -11,6 +11,7 @@
 """
 
 import logging
+from datetime import datetime
 from typing import Optional, List
 
 from fastapi import APIRouter, HTTPException, Query, Depends
@@ -207,8 +208,9 @@ def delete_search_history(
 )
 def get_visualization_data(
     stock_code: str,
-    days: int = Query(3650, ge=1, le=3650, description="获取天数"),
+    days: int = Query(3650, ge=1, le=3650, description="获取天数（如果提供了 start_date，则此参数被忽略）"),
     indicator_types: Optional[str] = Query(None, description="指标类型列表，逗号分隔"),
+    start_date: Optional[str] = Query(None, description="起始日期，格式为 YYYY-MM-DD"),
     db_manager: DatabaseManager = Depends(get_database_manager)
 ) -> VisualizationResponse:
     """
@@ -216,8 +218,9 @@ def get_visualization_data(
 
     Args:
         stock_code: 股票代码
-        days: 获取天数
+        days: 获取天数（如果提供了 start_date，则此参数被忽略）
         indicator_types: 指标类型列表（逗号分隔）
+        start_date: 起始日期，格式为 YYYY-MM-DD
         db_manager: 数据库管理器依赖
 
     Returns:
@@ -231,10 +234,19 @@ def get_visualization_data(
         if indicator_types:
             indicator_list = [t.strip() for t in indicator_types.split(',') if t.strip()]
 
+        # 解析起始日期
+        start_date_obj = None
+        if start_date:
+            try:
+                start_date_obj = datetime.strptime(start_date, '%Y-%m-%d').date()
+            except ValueError:
+                logger.warning(f"无效的起始日期格式: {start_date}，使用默认天数")
+
         result = service.get_visualization_data(
             stock_code=stock_code,
             days=days,
-            indicator_types=indicator_list
+            indicator_types=indicator_list,
+            start_date=start_date_obj
         )
 
         if not result.get('kline_data'):

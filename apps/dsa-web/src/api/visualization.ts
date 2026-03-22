@@ -52,9 +52,15 @@ export const visualizationApi = {
   async getVisualizationData(
     stockCode: string,
     days: number = 3650,
-    indicatorTypes?: string[]
+    indicatorTypes?: string[],
+    startDate?: string
   ): Promise<VisualizationResponse> {
-    const params: Record<string, any> = { days };
+    const params: Record<string, any> = {};
+    if (startDate) {
+      params.start_date = startDate;
+    } else {
+      params.days = days;
+    }
     if (indicatorTypes && indicatorTypes.length > 0) {
       params.indicator_types = indicatorTypes.join(',');
     }
