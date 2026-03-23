@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Stock Selector Command Line Interface
-负责选股
+负责选股策略
 Command line tool to interact with the stock selector system.
 """
 
@@ -55,7 +55,7 @@ def deactivate_strategy(service: StockSelectorService, strategy_ids: List[str]):
     print(f"Deactivated strategies: {', '.join(strategy_ids)}")
 
 
-def screen_stocks(service: StockSelectorService, stock_codes: Optional[List[str]], top_n: int, update_data: bool = False, update_days: int = 365):
+def screen_stocks(service: StockSelectorService, stock_codes: Optional[List[str]], top_n: int, update_data: bool = False, update_days: int = 365, use_enhanced: bool = True, max_workers: int = 4, validate_data: bool = False, report_path: Optional[str] = None, use_tushare: bool = True, rate_limit: int = 50):
     print("Screening stocks...")
     print(f"Top N: {top_n}")
     if stock_codes:
@@ -65,52 +65,59 @@ def screen_stocks(service: StockSelectorService, stock_codes: Optional[List[str]
     
     # 如果需要先更新数据
     if update_data:
-        from stock_selector.batch_data_updater import get_batch_updater
-        from stock_selector.data_update_tracker import get_update_tracker
         from datetime import date, timedelta
         from stock_selector.stock_pool import get_all_stock_codes
         
-        print(f"\nChecking and updating stock data (up to last {update_days} days)...")
+        print(f"\nUpdating stock data (last {update_days} days) using Tushare...")
         
         if stock_codes is None:
             stock_codes = get_all_stock_codes()
         
-        end_date = date.today()
-        target_start_date = end_date - timedelta(days=update_days - 1)
+        # 使用 Tushare 专用下载器强制更新数据
+        if use_tushare:
+            try:
+                from stock_selector.tushare_data_downloader import get_tushare_downloader
+                
+                print(f"Using Tushare data downloader (rate limit: {rate_limit} calls/min)\n")
+                
+                downloader = get_tushare_downloader(rate_limit_per_minute=rate_limit)
+                stats = downloader.download_data(
+                    stock_codes=stock_codes,
+                    days=update_days,
+                    batch_size=10
+                )
+                
+                print(f"\nData update complete using Tushare!\n")
+                
+            except Exception as e:
+                print(f"\nTushare downloader failed: {e}")
+                print("Falling back to legacy updater...\n")
+                use_tushare = False
         
-        # 使用更新追踪器来智能判断需要更新的日期范围
-        update_tracker = get_update_tracker()
-        
-        # 统计需要更新的股票和日期
-        latest_last_updated = None
-        
-        for code in stock_codes:
-            record = update_tracker.get_update_record(code)
-            if record is not None and record.last_updated_date is not None:
-                if latest_last_updated is None or record.last_updated_date > latest_last_updated:
-                    latest_last_updated = record.last_updated_date
-        
-        # 确定实际需要更新的开始日期
-        if latest_last_updated is None:
-            actual_start_date = target_start_date
-            print(f"No existing data found, will update full {update_days} days")
-        else:
-            actual_start_date = latest_last_updated + timedelta(days=1)
-            actual_start_date = max(actual_start_date, target_start_date)
-            days_to_update = (end_date - actual_start_date).days + 1
-            print(f"Existing data found up to {latest_last_updated}, will update {days_to_update} day(s)")
-        
-        if actual_start_date <= end_date:
-            batch_updater = get_batch_updater()
-            stats = batch_updater.update_stocks_for_date_range(
-                stock_codes=stock_codes,
-                start_date=actual_start_date,
-                end_date=end_date
-            )
+        # 如果 Tushare 不可用，回退到旧版更新器
+        if not use_tushare:
+            from stock_selector.data_update_tracker import get_update_tracker
+            from stock_selector.batch_data_updater import get_batch_updater
             
-            print(f"Data update complete: {stats['stocks_updated']} updated, {stats['stocks_failed']} failed\n")
-        else:
-            print("All data is already up to date!\n")
+            end_date = date.today()
+            target_start_date = end_date - timedelta(days=update_days - 1)
+            
+            # --update-data 时强制更新所有数据，不检查已有数据
+            actual_start_date = target_start_date
+            print(f"强制更新全部 {update_days} 天数据")
+            print(f"日期范围：{actual_start_date} 至 {end_date}")
+            
+            if actual_start_date <= end_date:
+                batch_updater = get_batch_updater()
+                stats = batch_updater.update_stocks_for_date_range(
+                    stock_codes=stock_codes,
+                    start_date=actual_start_date,
+                    end_date=end_date
+                )
+                
+                print(f"Data update complete: {stats['stocks_updated']} updated, {stats['stocks_failed']} failed\n")
+            else:
+                print("Invalid date range!\n")
 
     candidates = service.screen_stocks(
         stock_codes=stock_codes,
@@ -177,16 +184,6 @@ Examples:
   # List all strategies
   python -m stock_selector.main list
 
-  # Activate strategies
-  python -m stock_selector.main activate short_term_strategy ma_golden_cross
-
-  # 激活 DragonLeader 组合策略（将同时激活三个子策略）
-  python -m stock_selector.main activate dragon_leader
-
-  # Deactivate strategies
-  python -m stock_selector.main deactivate volume_breakout
-
-  # Screen stocks (top 5)
   # 推荐用法：智能更新（默认检查365天）
   python -m stock_selector.main screen --update-data
 
@@ -199,11 +196,17 @@ Examples:
   # Screen with custom log level (ERROR/WARNING/INFO/DEBUG)
   python -m stock_selector.main screen --log-level ERROR
 
-  # Screen with smart data update (default: check and update up to last 365 days)
-  python -m stock_selector.main screen --update-data
-
   # Screen with custom check window (e.g., only check last 7 days)
   python -m stock_selector.main screen --update-data --update-days 7
+
+  # 使用 Tushare 专用下载器（默认）
+  python -m stock_selector.main screen --update-data
+
+  # 不使用 Tushare，回退到旧版
+  python -m stock_selector.main screen --update-data --no-tushare
+
+  # 自定义 Tushare 速率限制
+  python -m stock_selector.main screen --update-data --rate-limit 50
         """)
 
     # Add global log level argument
@@ -246,6 +249,53 @@ Examples:
         default=365,
         help='Number of days to check and update data for (default: 365, smart incremental update)'
     )
+    screen_parser.add_argument(
+        '--use-enhanced',
+        action='store_true',
+        default=True,
+        help='Use enhanced batch updater with concurrency (default: True)'
+    )
+    screen_parser.add_argument(
+        '--no-enhanced',
+        action='store_false',
+        dest='use_enhanced',
+        help='Use legacy batch updater instead of enhanced'
+    )
+    screen_parser.add_argument(
+        '--max-workers',
+        type=int,
+        default=4,
+        help='Maximum number of concurrent workers for enhanced updater (default: 4)'
+    )
+    screen_parser.add_argument(
+        '--validate-data',
+        action='store_true',
+        help='Validate data integrity after update (default: False)'
+    )
+    screen_parser.add_argument(
+        '--report-path',
+        type=str,
+        default=None,
+        help='Path to save detailed update report (optional)'
+    )
+    screen_parser.add_argument(
+        '--use-tushare',
+        action='store_true',
+        default=True,
+        help='Use Tushare dedicated downloader (default: True)'
+    )
+    screen_parser.add_argument(
+        '--no-tushare',
+        action='store_false',
+        dest='use_tushare',
+        help='Use legacy updater instead of Tushare'
+    )
+    screen_parser.add_argument(
+        '--rate-limit',
+        type=int,
+        default=50,
+        help='Tushare API calls per minute (default: 50)'
+    )
 
     args = parser.parse_args()
 
@@ -280,7 +330,7 @@ Examples:
     elif args.command == 'deactivate':
         deactivate_strategy(service, args.strategy_ids)
     elif args.command == 'screen':
-        screen_stocks(service, args.stocks, args.top, args.update_data, args.update_days)
+        screen_stocks(service, args.stocks, args.top, args.update_data, args.update_days, args.use_enhanced, args.max_workers, args.validate_data, args.report_path, args.use_tushare, args.rate_limit)
     else:
         parser.print_help()
         return 1

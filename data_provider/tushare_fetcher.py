@@ -14,6 +14,9 @@ TushareFetcher - 备用数据源 1 (Priority 2)
 3. 使用 tenacity 实现指数退避重试
 """
 
+import warnings
+warnings.filterwarnings('ignore', category=FutureWarning)
+
 import json as _json
 import logging
 import re
@@ -206,14 +209,12 @@ class TushareFetcher(BaseFetcher):
         """
         return self._api is not None
 
-    def _check_rate_limit(self) -> None:
+    def will_need_to_wait(self) -> bool:
         """
-        检查并执行速率限制
+        检查下一次调用是否需要等待配额
         
-        流控策略：
-        1. 检查是否进入新的一分钟
-        2. 如果是，重置计数器
-        3. 如果当前分钟调用次数超过限制，强制休眠
+        Returns:
+            True 表示需要等待，False 表示可以直接调用
         """
         current_time = time.time()
         
@@ -227,14 +228,44 @@ class TushareFetcher(BaseFetcher):
             self._call_count = 0
             logger.debug("速率限制计数器已重置")
         
-        # 检查是否超过配额
-        if self._call_count >= self.rate_limit_per_minute:
+        # 检查是否达到阈值
+        threshold = self.rate_limit_per_minute - 1
+        if self._call_count >= threshold:
+            return True
+        
+        return False
+    
+    def _check_rate_limit(self) -> None:
+        """
+        检查并执行速率限制
+        
+        流控策略：
+        1. 检查是否进入新的一分钟
+        2. 如果是，重置计数器
+        3. 在第49次调用后就开始等待，确保不超过50次限制
+        """
+        current_time = time.time()
+        
+        # 检查是否需要重置计数器（新的一分钟）
+        if self._minute_start is None:
+            self._minute_start = current_time
+            self._call_count = 0
+        elif current_time - self._minute_start >= 60:
+            # 已经过了一分钟，重置计数器
+            self._minute_start = current_time
+            self._call_count = 0
+            logger.debug("速率限制计数器已重置")
+        
+        # 检查是否达到阈值（第49次调用后就开始等待）
+        # 保留1次调用作为缓冲，避免触碰到50次限制
+        threshold = self.rate_limit_per_minute - 1
+        if self._call_count >= threshold:
             # 计算需要等待的时间（到下一分钟）
             elapsed = current_time - self._minute_start
-            sleep_time = max(0, 60 - elapsed) + 1  # +1 秒缓冲
+            sleep_time = max(0, 60 - elapsed) + 2  # +2 秒缓冲
             
-            logger.warning(
-                f"Tushare 达到速率限制 ({self._call_count}/{self.rate_limit_per_minute} 次/分钟)，"
+            logger.info(
+                f"Tushare 即将达到速率限制 ({self._call_count}/{self.rate_limit_per_minute} 次/分钟)，"
                 f"等待 {sleep_time:.1f} 秒..."
             )
             
@@ -247,6 +278,23 @@ class TushareFetcher(BaseFetcher):
         # 增加调用计数
         self._call_count += 1
         logger.debug(f"Tushare 当前分钟调用次数: {self._call_count}/{self.rate_limit_per_minute}")
+    
+    def increment_call_count(self) -> None:
+        """
+        手动增加调用计数（当使用其他数据源时，不消耗 Tushare 配额，但仍需要追踪）
+        """
+        current_time = time.time()
+        
+        # 检查是否需要重置计数器（新的一分钟）
+        if self._minute_start is None:
+            self._minute_start = current_time
+            self._call_count = 0
+        elif current_time - self._minute_start >= 60:
+            self._minute_start = current_time
+            self._call_count = 0
+        
+        # 不增加计数，因为我们使用了其他数据源
+        logger.debug(f"Tushare 调用计数保持不变（使用其他数据源）: {self._call_count}/{self.rate_limit_per_minute}")
     
     def _convert_stock_code(self, stock_code: str) -> str:
         """
@@ -286,6 +334,64 @@ class TushareFetcher(BaseFetcher):
         else:
             logger.warning(f"无法确定股票 {code} 的市场，默认使用深市")
             return f"{code}.SZ"
+    
+    def get_daily_data_batch(
+        self,
+        stock_codes: List[str],
+        start_date: str,
+        end_date: str
+    ) -> pd.DataFrame:
+        """
+        批量获取多只股票的日线数据（一次性调用，节省 API 配额）
+        
+        Args:
+            stock_codes: 股票代码列表
+            start_date: 开始日期，格式 'YYYY-MM-DD'
+            end_date: 结束日期，格式 'YYYY-MM-DD'
+            
+        Returns:
+            包含所有股票数据的 DataFrame，列名包含 ts_code
+        """
+        if self._api is None:
+            raise DataFetchError("Tushare API 未初始化，请检查 Token 配置")
+        
+        # 检查是否有美股
+        for code in stock_codes:
+            if _is_us_code(code):
+                raise DataFetchError(f"TushareFetcher 不支持美股 {code}")
+        
+        # Rate-limit check
+        self._check_rate_limit()
+        
+        # 转换所有股票代码格式
+        ts_codes = [self._convert_stock_code(code) for code in stock_codes]
+        ts_code_str = ','.join(ts_codes)
+        
+        # 转换日期格式（Tushare requires YYYYMMDD）
+        ts_start = start_date.replace('-', '')
+        ts_end = end_date.replace('-', '')
+        
+        logger.debug(f"调用 Tushare daily 批量接口({len(stock_codes)}只股票): {ts_code_str}, {ts_start}, {ts_end}")
+        
+        try:
+            # 调用 daily 接口，传入多个股票代码
+            df = self._api.daily(
+                ts_code=ts_code_str,
+                start_date=ts_start,
+                end_date=ts_end
+            )
+            
+            return df
+            
+        except Exception as e:
+            error_msg = str(e).lower()
+            
+            # 检测配额超限
+            if any(keyword in error_msg for keyword in ['quota', '配额', 'limit', '权限']):
+                logger.warning(f"Tushare 配额可能超限: {e}")
+                raise RateLimitError(f"Tushare 配额超限: {e}") from e
+            
+            raise DataFetchError(f"Tushare 批量获取数据失败: {e}") from e
     
     @retry(
         stop=stop_after_attempt(3),
@@ -814,6 +920,63 @@ class TushareFetcher(BaseFetcher):
         获取板块涨跌榜 (Tushare Pro)
         """
         # Tushare 获取板块数据较复杂，暂时返回 None，让 AkShare 处理
+        return None
+    
+    def get_trade_calendar(
+        self, 
+        start_date: Optional[str] = None, 
+        end_date: Optional[str] = None,
+        is_open: str = '1'
+    ) -> Optional[List[date]]:
+        """
+        获取交易日历
+        
+        Args:
+            start_date: 开始日期，格式 YYYY-MM-DD，默认一年前
+            end_date: 结束日期，格式 YYYY-MM-DD，默认今天
+            is_open: 是否只返回交易日，'1'=是，'0'=否，默认'1'
+            
+        Returns:
+            日期列表（按升序排列），失败返回 None
+        """
+        if self._api is None:
+            logger.warning("Tushare API 未初始化，无法获取交易日历")
+            return None
+        
+        try:
+            # 速率限制检查
+            self._check_rate_limit()
+            
+            # 设置默认日期
+            if end_date is None:
+                end_date = datetime.now().strftime('%Y-%m-%d')
+            if start_date is None:
+                start_date = (datetime.now() - timedelta(days=730)).strftime('%Y-%m-%d')
+            
+            # 转换日期格式为 YYYYMMDD
+            ts_start = start_date.replace('-', '')
+            ts_end = end_date.replace('-', '')
+            
+            # 调用 trade_cal 接口
+            df = self._api.trade_cal(
+                exchange='',
+                start_date=ts_start,
+                end_date=ts_end,
+                is_open=is_open
+            )
+            
+            if df is not None and not df.empty:
+                # 转换日期格式并排序
+                df['cal_date'] = pd.to_datetime(df['cal_date'], format='%Y%m%d').dt.date
+                df = df.sort_values('cal_date')
+                
+                trade_dates = df['cal_date'].tolist()
+                logger.info(f"Tushare 获取交易日历成功: {len(trade_dates)} 个交易日")
+                return trade_dates
+            
+        except Exception as e:
+            logger.warning(f"Tushare 获取交易日历失败: {e}")
+        
         return None
 
 

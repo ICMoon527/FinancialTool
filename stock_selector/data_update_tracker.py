@@ -174,6 +174,8 @@ class DataUpdateTracker:
                     if record.last_updated_date is None or data_end_date > record.last_updated_date:
                         record.last_updated_date = data_end_date
                 
+                if record.update_count is None:
+                    record.update_count = 0
                 record.update_count += 1
                 record.last_updated_at = datetime.now()
                 
