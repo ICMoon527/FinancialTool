@@ -86,7 +86,13 @@ class StrategyManager:
 
         self._apply_config()
         self._apply_config_multipliers()
-        self.activate_all_strategies()
+        
+        if self._config and self._config.auto_activate_all:
+            self.activate_all_strategies()
+        elif self._config and self._config.default_active_strategies:
+            self.activate_strategies(self._config.default_active_strategies)
+        else:
+            self.activate_all_strategies()
 
     def _apply_config(self) -> None:
         """
@@ -178,12 +184,35 @@ class StrategyManager:
         if strategy_id not in self._active_strategy_ids:
             self._active_strategy_ids.append(strategy_id)
             logger.info("Activated strategy: %s", strategy_id)
+        
+        if strategy_id == "dragon_leader":
+            sub_strategies = [
+                "dragon_leader_start",
+                "dragon_leader_main_rise",
+                "dragon_leader_second_wave"
+            ]
+            for sub_id in sub_strategies:
+                if sub_id in self._strategies and sub_id not in self._active_strategy_ids:
+                    self._active_strategy_ids.append(sub_id)
+                    logger.info("Activated sub-strategy for dragon_leader: %s", sub_id)
+        
         return True
 
     def deactivate_strategy(self, strategy_id: str) -> None:
         if strategy_id in self._active_strategy_ids:
             self._active_strategy_ids.remove(strategy_id)
             logger.info("Deactivated strategy: %s", strategy_id)
+        
+        if strategy_id == "dragon_leader":
+            sub_strategies = [
+                "dragon_leader_start",
+                "dragon_leader_main_rise",
+                "dragon_leader_second_wave"
+            ]
+            for sub_id in sub_strategies:
+                if sub_id in self._active_strategy_ids:
+                    self._active_strategy_ids.remove(sub_id)
+                    logger.info("Deactivated sub-strategy for dragon_leader: %s", sub_id)
 
     def activate_strategies(self, strategy_ids: List[str]) -> None:
         for sid in strategy_ids:
@@ -226,7 +255,7 @@ class StrategyManager:
             from datetime import date
             today = date.today()
             if self._db_manager.has_today_data(stock_code, today):
-                logger.info(f"Using cached data for {stock_code} from database")
+                logger.debug(f"Using cached data for {stock_code} from database")
                 # Get cached data from database
                 context = self._db_manager.get_analysis_context(stock_code, today)
                 if context:

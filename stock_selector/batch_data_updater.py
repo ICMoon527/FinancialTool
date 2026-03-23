@@ -15,6 +15,7 @@ import time
 from datetime import date, datetime, timedelta
 from typing import Optional, List, Tuple, Dict, Set
 from collections import defaultdict
+from tqdm import tqdm
 
 import pandas as pd
 from tenacity import (
@@ -377,8 +378,8 @@ class BatchDataUpdater:
         
         logger.info(f"Updating data for {len(stock_codes)} stocks across {len(trading_days)} days")
         
-        # 按交易日处理
-        for trade_date in trading_days:
+        # 按交易日处理，带进度条
+        for trade_date in tqdm(trading_days, desc="Processing dates", unit="day"):
             logger.info(f"Processing date: {trade_date}")
             
             # 筛选出这一天需要更新的股票
@@ -400,8 +401,8 @@ class BatchDataUpdater:
             
             logger.info(f"Split into {len(groups)} batches ({stocks_per_batch} stocks/batch)")
             
-            # 按组处理
-            for group in groups:
+            # 按组处理，带进度条
+            for group in tqdm(groups, desc=f"  Processing batches for {trade_date}", unit="batch", leave=False):
                 try:
                     if use_batch:
                         df, failed = self.fetch_batch_by_trade_date(trade_date, group)

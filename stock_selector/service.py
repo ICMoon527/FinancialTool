@@ -7,6 +7,7 @@ import logging
 import concurrent.futures
 from pathlib import Path
 from typing import List, Optional
+from tqdm import tqdm
 
 from stock_selector.base import StockCandidate, StrategyMetadata
 from stock_selector.config import StockSelectorConfig, get_config
@@ -75,8 +76,8 @@ class StockSelectorService:
 
         candidates: List[StockCandidate] = []
 
-        # Use thread pool for parallel processing
-        max_workers = min(10, len(stock_codes))  # Limit concurrent workers to avoid rate limiting
+        # Use thread pool for parallel processing - increased worker count for better performance
+        max_workers = min(20, len(stock_codes))  # Increase to 20 workers for faster processing
         logger.info("Using thread pool with %d workers", max_workers)
 
         def process_stock(code):
@@ -86,9 +87,18 @@ class StockSelectorService:
                 logger.error("Failed to screen stock %s: %s", code, e)
                 return None
 
-        # Process stocks in parallel
+        # Process stocks in parallel with progress bar
+        results = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            results = list(executor.map(process_stock, stock_codes))
+            futures = {executor.submit(process_stock, code): code for code in stock_codes}
+            
+            for future in tqdm(
+                concurrent.futures.as_completed(futures),
+                total=len(futures),
+                desc="Screening stocks",
+                unit="stock"
+            ):
+                results.append(future.result())
 
         # Collect valid candidates
         for result in results:
@@ -104,14 +114,6 @@ class StockSelectorService:
         stock_code: str,
         strategy_ids: Optional[List[str]] = None,
     ) -> Optional[StockCandidate]:
-        matches = self.strategy_manager.execute_strategies(
-            stock_code=stock_code,
-            strategy_ids=strategy_ids,
-        )
-
-        if not matches:
-            return None
-
         current_price = 0.0
         stock_name = stock_code
 
@@ -120,31 +122,32 @@ class StockSelectorService:
             from datetime import date
             today = date.today()
             if self._db_manager.has_today_data(stock_code, today):
-                logger.info(f"Using cached data for {stock_code} from database in service")
+                logger.debug(f"Using cached data for {stock_code} from database in service")
                 context = self._db_manager.get_analysis_context(stock_code, today)
                 if context:
                     current_price = context.get('today', {}).get('close', 0.0)
                     stock_name = context.get('stock_name', stock_code)
-                    # Create a candidate with cached data
-                    candidate = StockCandidate(
-                        code=stock_code,
-                        name=stock_name,
-                        current_price=current_price,
-                    )
-                    for match in matches:
-                        candidate.add_strategy_match(match)
-                    return candidate
 
-        # Fallback to realtime data if no cache
-        try:
-            if self.strategy_manager._data_provider:
-                quote = self.strategy_manager._data_provider.get_realtime_quote(stock_code)
-                if quote:
-                    current_price = getattr(quote, "price", 0.0)
-                    if getattr(quote, "name", None):
-                        stock_name = quote.name
-        except Exception as e:
-            logger.warning("Failed to get realtime quote for %s: %s", stock_code, e)
+        # Now execute strategies with potential cached data
+        matches = self.strategy_manager.execute_strategies(
+            stock_code=stock_code,
+            strategy_ids=strategy_ids,
+        )
+
+        if not matches:
+            return None
+
+        # Fallback to realtime data if still no price
+        if current_price == 0.0:
+            try:
+                if self.strategy_manager._data_provider:
+                    quote = self.strategy_manager._data_provider.get_realtime_quote(stock_code)
+                    if quote:
+                        current_price = getattr(quote, "price", 0.0)
+                        if getattr(quote, "name", None):
+                            stock_name = quote.name
+            except Exception as e:
+                logger.debug("Failed to get realtime quote for %s: %s", stock_code, e)
 
         candidate = StockCandidate(
             code=stock_code,

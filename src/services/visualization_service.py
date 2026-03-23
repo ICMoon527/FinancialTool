@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 
 # 定义所有支持的指标类型
 AVAILABLE_INDICATORS = [
+    'volume',
     'banker_control',
     'main_capital_absorption',
     'main_cost',
@@ -424,6 +425,8 @@ class VisualizationService:
 
         # 为每个指标类型检查和计算
         for indicator_type in indicator_types:
+            if indicator_type == 'volume':
+                continue
             try:
                 self._calculate_and_save_indicator(stock_code, df, indicator_type)
             except Exception as e:
@@ -451,7 +454,8 @@ class VisualizationService:
         # 计算指标
         calculator_class = INDICATOR_CALCULATORS.get(indicator_type)
         if not calculator_class:
-            logger.warning(f"未知的指标类型: {indicator_type}")
+            if indicator_type != 'volume':
+                logger.warning(f"未知的指标类型: {indicator_type}")
             return
 
         calculator = calculator_class()
@@ -508,6 +512,8 @@ class VisualizationService:
         indicators_data = []
 
         for indicator_type in indicator_types:
+            if indicator_type == 'volume':
+                continue
             try:
                 df = self.db.get_stock_indicators_as_df(
                     stock_code,

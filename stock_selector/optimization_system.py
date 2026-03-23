@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Strategy Optimization System Data Structures.
-
+负责优化策略权重
 Core data structures for the strategy continuous optimization and iteration system.
 """
 
