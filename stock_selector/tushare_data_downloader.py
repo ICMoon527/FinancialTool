@@ -72,71 +72,83 @@ class TushareDataDownloader:
             return
         
         saved_count = 0
+        session = None
         
         try:
-            with self.db_manager.get_session() as session:
-                for _, row in df.iterrows():
-                    code = stock_code
-                    
-                    record_date = None
-                    if 'date' in row:
-                        d = row['date']
-                        if isinstance(d, str):
-                            record_date = datetime.strptime(d, '%Y-%m-%d').date()
-                        elif hasattr(d, 'date'):
-                            record_date = d.date()
-                        else:
-                            record_date = d
-                    
-                    if not record_date:
-                        continue
-                    
-                    existing = session.execute(
-                        select(StockDaily)
-                        .where(and_(
-                            StockDaily.code == code,
-                            StockDaily.date == record_date
-                        ))
-                    ).scalar_one_or_none()
-                    
-                    if existing:
-                        if 'open' in row:
-                            existing.open = row.get('open')
-                        if 'high' in row:
-                            existing.high = row.get('high')
-                        if 'low' in row:
-                            existing.low = row.get('low')
-                        if 'close' in row:
-                            existing.close = row.get('close')
-                        if 'volume' in row:
-                            existing.volume = row.get('volume')
-                        if 'amount' in row:
-                            existing.amount = row.get('amount')
-                        if 'pct_chg' in row:
-                            existing.pct_chg = row.get('pct_chg')
-                    else:
-                        new_record = StockDaily(
-                            code=code,
-                            date=record_date,
-                            open=row.get('open'),
-                            high=row.get('high'),
-                            low=row.get('low'),
-                            close=row.get('close'),
-                            volume=row.get('volume', 0),
-                            amount=row.get('amount', 0),
-                            pct_chg=row.get('pct_chg')
-                        )
-                        session.add(new_record)
-                    
-                    saved_count += 1
+            session = self.db_manager.get_session()
+            
+            for _, row in df.iterrows():
+                code = stock_code
                 
-                session.commit()
-                logger.debug(f"Saved {saved_count} records for {stock_code}")
+                record_date = None
+                if 'date' in row:
+                    d = row['date']
+                    if isinstance(d, str):
+                        record_date = datetime.strptime(d, '%Y-%m-%d').date()
+                    elif hasattr(d, 'date'):
+                        record_date = d.date()
+                    else:
+                        record_date = d
+                
+                if not record_date:
+                    continue
+                
+                existing = session.execute(
+                    select(StockDaily)
+                    .where(and_(
+                        StockDaily.code == code,
+                        StockDaily.date == record_date
+                    ))
+                ).scalar_one_or_none()
+                
+                if existing:
+                    if 'open' in row:
+                        existing.open = row.get('open')
+                    if 'high' in row:
+                        existing.high = row.get('high')
+                    if 'low' in row:
+                        existing.low = row.get('low')
+                    if 'close' in row:
+                        existing.close = row.get('close')
+                    if 'volume' in row:
+                        existing.volume = row.get('volume')
+                    if 'amount' in row:
+                        existing.amount = row.get('amount')
+                    if 'pct_chg' in row:
+                        existing.pct_chg = row.get('pct_chg')
+                else:
+                    new_record = StockDaily(
+                        code=code,
+                        date=record_date,
+                        open=row.get('open'),
+                        high=row.get('high'),
+                        low=row.get('low'),
+                        close=row.get('close'),
+                        volume=row.get('volume', 0),
+                        amount=row.get('amount', 0),
+                        pct_chg=row.get('pct_chg')
+                    )
+                    session.add(new_record)
+                
+                saved_count += 1
+            
+            session.commit()
+            logger.debug(f"Saved {saved_count} records for {stock_code}")
         
         except Exception as e:
             logger.error(f"Error saving data for {stock_code}: {e}")
-            if 'session' in locals():
-                session.rollback()
+            if session:
+                try:
+                    session.rollback()
+                    logger.debug(f"Session rolled back for {stock_code}")
+                except Exception as rollback_error:
+                    logger.error(f"Error rolling back session for {stock_code}: {rollback_error}")
+        finally:
+            if session:
+                try:
+                    session.close()
+                except Exception as close_error:
+                    logger.error(f"Error closing session for {stock_code}: {close_error}")
     
     def _download_single_stock_from_tushare(
         self,

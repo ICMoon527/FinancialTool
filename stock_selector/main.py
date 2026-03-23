@@ -199,9 +199,6 @@ Examples:
   # Screen with custom check window (e.g., only check last 7 days)
   python -m stock_selector.main screen --update-data --update-days 7
 
-  # 使用 Tushare 专用下载器（默认）
-  python -m stock_selector.main screen --update-data
-
   # 不使用 Tushare，回退到旧版
   python -m stock_selector.main screen --update-data --no-tushare
 

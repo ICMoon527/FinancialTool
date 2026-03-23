@@ -22,7 +22,7 @@ class StockSelectorConfig:
 
     nl_strategy_dir: Optional[str] = None
     python_strategy_dir: Optional[str] = None
-    default_top_n: int = 5
+    default_top_n: int = 10
     min_match_score: float = 50.0
     
     auto_activate_all: bool = False

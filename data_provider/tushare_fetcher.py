@@ -279,9 +279,9 @@ class TushareFetcher(BaseFetcher):
         self._call_count += 1
         logger.debug(f"Tushare 当前分钟调用次数: {self._call_count}/{self.rate_limit_per_minute}")
     
-    def increment_call_count(self) -> None:
+    def track_call_usage(self) -> None:
         """
-        手动增加调用计数（当使用其他数据源时，不消耗 Tushare 配额，但仍需要追踪）
+        追踪调用状态（当使用其他数据源时，不消耗 Tushare 配额，但仍需要追踪时间）
         """
         current_time = time.time()
         
