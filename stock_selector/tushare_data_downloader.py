@@ -576,7 +576,9 @@ class TushareDataDownloader:
             stock_codes = get_all_stock_codes()
         
         # 1. 过滤北交所的股票代码（8开头和92开头）
+        original_count = len(stock_codes)
         stock_codes = filter_beijing_stock_exchange(stock_codes)
+        filtered_count = original_count - len(stock_codes)
         
         # 使用交易日历计算准确的日期范围
         start_date, end_date = self._calculate_date_range(days)

@@ -68,12 +68,15 @@ def screen_stocks(service: StockSelectorService, stock_codes: Optional[List[str]
     # 如果需要先更新数据
     if update_data:
         from datetime import date, timedelta
-        from stock_selector.stock_pool import get_all_stock_codes
+        from stock_selector.stock_pool import get_all_stock_codes, filter_beijing_stock_exchange
         
         print(f"\nUpdating stock data (last {update_days} days) using Tushare...")
         
         if stock_codes is None:
             stock_codes = get_all_stock_codes()
+        
+        # 过滤北交所的股票代码（8开头和92开头），保持与下载器一致
+        stock_codes = filter_beijing_stock_exchange(stock_codes)
         
         # 使用 Tushare 专用下载器强制更新数据
         if use_tushare:
