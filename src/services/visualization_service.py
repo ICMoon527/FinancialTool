@@ -113,8 +113,16 @@ class VisualizationService:
         # 转换数据格式
         kline_data = []
         for _, row in daily_data.iterrows():
+            # 确保日期格式为 YYYY-MM-DD
+            if hasattr(row['date'], 'strftime'):
+                date_str = row['date'].strftime('%Y-%m-%d')
+            elif hasattr(row['date'], 'date'):
+                date_str = row['date'].date().strftime('%Y-%m-%d')
+            else:
+                date_str = str(row['date']).split('T')[0]
+            
             kline_data.append({
-                'date': row['date'].isoformat() if hasattr(row['date'], 'isoformat') else str(row['date']),
+                'date': date_str,
                 'open': float(row['open']),
                 'high': float(row['high']),
                 'low': float(row['low']),
@@ -156,8 +164,16 @@ class VisualizationService:
                     # 转换为指标数据格式
                     indicator_data_list = []
                     for _, row in result_df.iterrows():
+                        # 确保日期格式为 YYYY-MM-DD
+                        if hasattr(row['date'], 'strftime'):
+                            date_str = row['date'].strftime('%Y-%m-%d')
+                        elif hasattr(row['date'], 'date'):
+                            date_str = row['date'].date().strftime('%Y-%m-%d')
+                        else:
+                            date_str = str(row['date']).split('T')[0]
+                        
                         item = {
-                            'date': row['date'].isoformat() if hasattr(row['date'], 'isoformat') else str(row['date'])
+                            'date': date_str
                         }
                         # 添加指标特定字段
                         for col in result_df.columns:

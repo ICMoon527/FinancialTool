@@ -275,6 +275,27 @@ def get_stock_pool_manager() -> StockPoolManager:
     return _stock_pool_manager
 
 
+def filter_beijing_stock_exchange(stock_codes: List[str]) -> List[str]:
+    """
+    过滤北交所的股票代码（8开头和92开头）
+    
+    Args:
+        stock_codes: 股票代码列表
+        
+    Returns:
+        过滤后的股票代码列表
+    """
+    original_count = len(stock_codes)
+    filtered_codes = [
+        code for code in stock_codes 
+        if not (code.startswith('8') or code.startswith('92'))
+    ]
+    filtered_count = original_count - len(filtered_codes)
+    if filtered_count > 0:
+        logger.info(f"过滤掉 {filtered_count} 只北交所股票（8开头和92开头）")
+    return filtered_codes
+
+
 def get_all_stock_codes(force_refresh: bool = False) -> List[str]:
     """
     Get all stock codes from the stock pool.

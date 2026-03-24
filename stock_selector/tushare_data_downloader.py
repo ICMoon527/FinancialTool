@@ -21,11 +21,12 @@ from tqdm import tqdm
 import pandas as pd
 
 from data_provider.tushare_fetcher import TushareFetcher
+from data_provider.efinance_fetcher import EfinanceFetcher
 from src.storage import DatabaseManager, StockDaily
 from sqlalchemy import select, and_
 
 from .data_update_tracker import DataUpdateTracker, get_update_tracker
-from .stock_pool import get_all_stock_codes
+from .stock_pool import get_all_stock_codes, filter_beijing_stock_exchange
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,7 @@ class TushareDataDownloader:
         self.update_tracker = update_tracker or get_update_tracker()
         
         self.tushare_fetcher = TushareFetcher(rate_limit_per_minute=rate_limit_per_minute)
+        self.efinance_fetcher = EfinanceFetcher(sleep_min=1.5, sleep_max=3.0)
         
         if not self.tushare_fetcher.is_available():
             logger.error("Tushare API 不可用，请检查 Token 配置")
@@ -75,30 +77,45 @@ class TushareDataDownloader:
         
         try:
             with self.db_manager.session_scope() as session:
+                record_dates = []
+                valid_rows = []
+                
                 for _, row in df.iterrows():
+                    code = stock_code
+                    
+                    record_date = None
+                    if 'date' in row:
+                        d = row['date']
+                        if isinstance(d, str):
+                            record_date = datetime.strptime(d, '%Y-%m-%d').date()
+                        elif hasattr(d, 'date'):
+                            record_date = d.date()
+                        else:
+                            record_date = d
+                    
+                    if record_date:
+                        record_dates.append(record_date)
+                        valid_rows.append((record_date, row))
+                
+                if not record_dates:
+                    return
+                
+                existing_records = {
+                    r.date: r for r in session.execute(
+                        select(StockDaily).where(
+                            and_(
+                                StockDaily.code == stock_code,
+                                StockDaily.date.in_(record_dates)
+                            )
+                        )
+                    ).scalars().all()
+                }
+                
+                for record_date, row in valid_rows:
                     try:
                         code = stock_code
                         
-                        record_date = None
-                        if 'date' in row:
-                            d = row['date']
-                            if isinstance(d, str):
-                                record_date = datetime.strptime(d, '%Y-%m-%d').date()
-                            elif hasattr(d, 'date'):
-                                record_date = d.date()
-                            else:
-                                record_date = d
-                        
-                        if not record_date:
-                            continue
-                        
-                        existing = session.execute(
-                            select(StockDaily)
-                            .where(and_(
-                                StockDaily.code == code,
-                                StockDaily.date == record_date
-                            ))
-                        ).scalar_one_or_none()
+                        existing = existing_records.get(record_date)
                         
                         if existing:
                             if 'open' in row:
@@ -131,7 +148,7 @@ class TushareDataDownloader:
                             session.add(new_record)
                             saved_count += 1
                     except Exception as row_error:
-                        logger.warning(f"Failed to process row for {stock_code}: {row_error}, skipping this record")
+                        logger.warning(f"Failed to process row for {stock_code} on {record_date}: {row_error}, skipping this record")
                         continue
                 
                 logger.debug(f"Saved {saved_count} records for {stock_code}")
@@ -202,7 +219,11 @@ class TushareDataDownloader:
         end_date: date
     ) -> Tuple[bool, int, str]:
         """
-        从其他数据源下载单只股票的数据（不使用 Tushare）
+        从其他数据源下载单只股票的数据（不使用 Tushare 和 efinance）
+        
+        注意：根据要求，efinance 不用作单一股票获取 API 途径
+        
+        尝试顺序：AKshare → Pytdx → Baostock → Yahoo Finance
         
         Args:
             stock_code: 股票代码
@@ -212,13 +233,14 @@ class TushareDataDownloader:
         Returns:
             Tuple of (success, records_count, error_message)
         """
+        start_str = start_date.strftime('%Y-%m-%d')
+        end_str = end_date.strftime('%Y-%m-%d')
+        
+        # 1. 尝试 AKshare
         try:
-            start_str = start_date.strftime('%Y-%m-%d')
-            end_str = end_date.strftime('%Y-%m-%d')
-            
-            from data_provider import DataFetcherManager
-            fetcher_manager = DataFetcherManager()
-            df, source = fetcher_manager.get_daily_data(
+            from data_provider.akshare_fetcher import AkshareFetcher
+            akshare_fetcher = AkshareFetcher(sleep_min=1.0, sleep_max=2.0)
+            df = akshare_fetcher.get_daily_data(
                 stock_code,
                 start_date=start_str,
                 end_date=end_str
@@ -231,15 +253,80 @@ class TushareDataDownloader:
                     data_start_date=start_date,
                     data_end_date=end_date
                 )
-                logger.debug(f"Successfully downloaded {stock_code} from {source}")
+                logger.debug(f"Successfully downloaded {stock_code} from akshare")
                 return True, len(df), ""
-            else:
-                return False, 0, "No data returned"
-        
         except Exception as e:
-            error_msg = str(e)
-            logger.error(f"Failed to download {stock_code} from other sources: {error_msg}")
-            return False, 0, error_msg
+            logger.debug(f"akshare failed for {stock_code}: {e}")
+        
+        # 2. 尝试 Pytdx
+        try:
+            from data_provider.pytdx_fetcher import PytdxFetcher
+            pytdx_fetcher = PytdxFetcher()
+            df = pytdx_fetcher.get_daily_data(
+                stock_code,
+                start_date=start_str,
+                end_date=end_str
+            )
+            
+            if df is not None and not df.empty:
+                self._save_stock_data(df, stock_code)
+                self.update_tracker.update_record(
+                    stock_code,
+                    data_start_date=start_date,
+                    data_end_date=end_date
+                )
+                logger.debug(f"Successfully downloaded {stock_code} from pytdx")
+                return True, len(df), ""
+        except Exception as e:
+            logger.debug(f"pytdx failed for {stock_code}: {e}")
+        
+        # 3. 尝试 Baostock
+        try:
+            from data_provider.baostock_fetcher import BaostockFetcher
+            baostock_fetcher = BaostockFetcher()
+            df = baostock_fetcher.get_daily_data(
+                stock_code,
+                start_date=start_str,
+                end_date=end_str
+            )
+            
+            if df is not None and not df.empty:
+                self._save_stock_data(df, stock_code)
+                self.update_tracker.update_record(
+                    stock_code,
+                    data_start_date=start_date,
+                    data_end_date=end_date
+                )
+                logger.debug(f"Successfully downloaded {stock_code} from baostock")
+                return True, len(df), ""
+        except Exception as e:
+            logger.debug(f"baostock failed for {stock_code}: {e}")
+        
+        # 4. 尝试 Yahoo Finance
+        try:
+            from data_provider.yahoo_fetcher import YahooFetcher
+            yahoo_fetcher = YahooFetcher()
+            df = yahoo_fetcher.get_daily_data(
+                stock_code,
+                start_date=start_str,
+                end_date=end_str
+            )
+            
+            if df is not None and not df.empty:
+                self._save_stock_data(df, stock_code)
+                self.update_tracker.update_record(
+                    stock_code,
+                    data_start_date=start_date,
+                    data_end_date=end_date
+                )
+                logger.debug(f"Successfully downloaded {stock_code} from yahoo")
+                return True, len(df), ""
+        except Exception as e:
+            logger.debug(f"yahoo failed for {stock_code}: {e}")
+        
+        # 所有数据源都失败了
+        return False, 0, "All sources failed"
+
     
     def _download_single_stock(
         self,
@@ -410,30 +497,86 @@ class TushareDataDownloader:
                         'error': error
                     })
     
+    def _process_efinance_batch_data(self, batch_result: Dict[str, pd.DataFrame], batch_stocks: List[str], start_date: date, end_date: date, stats: Dict[str, any]):
+        """
+        处理 efinance 批量获取的数据
+        
+        Args:
+            batch_result: efinance 批量获取返回的字典 {code: DataFrame}
+            batch_stocks: 本批股票代码列表
+            start_date: 开始日期
+            end_date: 结束日期
+            stats: 统计信息字典
+        """
+        if batch_result is None:
+            return
+        
+        success_stocks = set()
+        
+        for stock_code, df in batch_result.items():
+            if df is not None and not df.empty:
+                try:
+                    self._save_stock_data(df, stock_code)
+                    self.update_tracker.update_record(
+                        stock_code,
+                        data_start_date=start_date,
+                        data_end_date=end_date
+                    )
+                    stats['stocks_success'] += 1
+                    stats['total_records'] += len(df)
+                    success_stocks.add(stock_code)
+                    logger.debug(f"Successfully processed {stock_code} from efinance batch")
+                except Exception as e:
+                    logger.warning(f"Error processing {stock_code} from efinance batch: {e}, will retry with other sources")
+        
+        # 补救措施：所有未成功获取的股票，都尝试用其他数据源单独获取
+        for stock_code in batch_stocks:
+            if stock_code not in success_stocks:
+                logger.debug(f"Trying to recover {stock_code} with other sources")
+                success, records, error = self._download_single_stock_from_other_sources(
+                    stock_code, start_date, end_date
+                )
+                if success:
+                    stats['stocks_success'] += 1
+                    stats['total_records'] += records
+                else:
+                    stats['stocks_failed'] += 1
+                    stats['failed_stocks'].append({
+                        'code': stock_code,
+                        'error': error
+                    })
+    
     def download_data(
         self,
         stock_codes: Optional[List[str]] = None,
         days: int = 365,
-        batch_size: int = 10
+        efinance_batch_size: int = 50,
+        tushare_batch_size: int = 13
     ) -> Dict[str, any]:
         """
         下载股票数据
         
-        策略：
-        1. 使用 Tushare 批量获取每批 10 只股票的数据（节省配额）
-        2. 如果 Tushare 需要等待配额，使用其他数据源单独获取
-        3. 60 秒后继续使用 Tushare 批量获取
+        策略（优先级从高到低）：
+        1. 使用 Tushare 批量获取每批 tushare_batch_size 只股票的数据（稳定可靠）
+        2. Tushare 需要等待配额或失败时，使用 efinance 批量获取每批 efinance_batch_size 只股票的数据（免费，无配额限制）
+        3. 如果都失败，使用其他数据源单独获取
+        
+        注意：efinance 不用作单一股票获取 API 途径，只用于批量获取
         
         Args:
             stock_codes: 股票代码列表（默认所有股票）
             days: 获取多少个交易日的数据（默认 365）
-            batch_size: 每批处理多少只股票（默认 10）
+            efinance_batch_size: efinance 每批处理多少只股票（默认 50）
+            tushare_batch_size: Tushare 每批处理多少只股票（默认 13）
             
         Returns:
             下载统计信息
         """
         if stock_codes is None:
             stock_codes = get_all_stock_codes()
+        
+        # 1. 过滤北交所的股票代码（8开头和92开头）
+        stock_codes = filter_beijing_stock_exchange(stock_codes)
         
         # 使用交易日历计算准确的日期范围
         start_date, end_date = self._calculate_date_range(days)
@@ -452,29 +595,36 @@ class TushareDataDownloader:
             'end_time': None
         }
         
-        total_batches = (len(stock_codes) + batch_size - 1) // batch_size
+        total_batches = (len(stock_codes) + tushare_batch_size - 1) // tushare_batch_size
         
         print("\n" + "=" * 80)
         print(f"开始下载：{len(stock_codes)} 只股票，{days} 个交易日数据")
-        print(f"每批 {batch_size} 只，共 {total_batches} 批")
+        if filtered_count > 0:
+            print(f"（已过滤 {filtered_count} 只北交所股票）")
+        print(f"Tushare批量：{tushare_batch_size} 只/批，efinance批量：{efinance_batch_size} 只/批")
+        print(f"共 {total_batches} 批")
         print(f"日期范围：{start_date} 至 {end_date}")
+        print(f"数据源优先级：Tushare (批量) > efinance (批量) > 其他数据源 (单独)")
         print("=" * 80 + "\n")
         
         try:
-            for batch_idx in tqdm(range(total_batches), desc="总体进度", unit="batch"):
-                start_idx = batch_idx * batch_size
-                end_idx = min((batch_idx + 1) * batch_size, len(stock_codes))
+            pbar = tqdm(range(total_batches), desc="总体进度", unit="batch")
+            for batch_idx in pbar:
+                start_idx = batch_idx * tushare_batch_size
+                end_idx = min((batch_idx + 1) * tushare_batch_size, len(stock_codes))
                 batch_stocks = stock_codes[start_idx:end_idx]
                 
                 logger.info(f"处理第 {batch_idx + 1}/{total_batches} 批：{len(batch_stocks)} 只股票")
                 
+                # 策略 1: 优先使用 Tushare 批量获取（稳定可靠）
+                pbar.set_description(f"总体进度 | 数据源: Tushare")
                 # 检查 Tushare 是否需要等待配额
                 need_to_wait = self.tushare_fetcher.will_need_to_wait()
                 
                 if not need_to_wait:
                     # 不需要等待，尝试批量获取
                     try:
-                        logger.debug(f"Trying batch download for {len(batch_stocks)} stocks")
+                        logger.debug(f"Trying Tushare batch download for {len(batch_stocks)} stocks")
                         batch_df = self.tushare_fetcher.get_daily_data_batch(
                             batch_stocks,
                             start_date=start_str,
@@ -483,13 +633,32 @@ class TushareDataDownloader:
                         
                         if batch_df is not None and not batch_df.empty:
                             # 成功批量获取，处理数据
-                            logger.debug(f"Batch download successful, processing {len(batch_df)} records")
+                            logger.debug(f"Tushare batch download successful, processing {len(batch_df)} records")
                             self._process_batch_data(batch_df, batch_stocks, start_date, end_date, stats)
                             continue
                     except Exception as e:
-                        logger.debug(f"Batch download failed: {e}, falling back to individual download")
+                        logger.debug(f"Tushare batch download failed: {e}, trying efinance")
                 
-                # 需要等待或者批量获取失败，使用其他数据源单独获取
+                # 策略 2: Tushare 需要等待或失败，尝试 efinance 批量获取
+                pbar.set_description(f"总体进度 | 数据源: efinance")
+                try:
+                    logger.debug(f"Trying efinance batch download for {len(batch_stocks)} stocks")
+                    batch_result = self.efinance_fetcher.get_daily_data_batch(
+                        batch_stocks,
+                        start_date=start_str,
+                        end_date=end_str
+                    )
+                    
+                    if batch_result and len(batch_result) > 0:
+                        # 成功批量获取，处理数据
+                        logger.debug(f"efinance batch download successful, got {len(batch_result)} stocks")
+                        self._process_efinance_batch_data(batch_result, batch_stocks, start_date, end_date, stats)
+                        continue
+                except Exception as e:
+                    logger.debug(f"efinance batch download failed: {e}, falling back to individual download")
+                
+                # 策略 3: 都失败或需要等待，使用其他数据源单独获取
+                pbar.set_description(f"总体进度 | 数据源: 其他")
                 logger.debug(f"Using other sources for batch {batch_idx + 1}")
                 for stock_code in tqdm(
                     batch_stocks,

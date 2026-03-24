@@ -42,7 +42,7 @@ class StockSelectorConfig:
     ma_golden_cross_slow_period: int = 20
     volume_breakout_lookback_days: int = 20
     volume_breakout_multiplier: float = 2.0
-    log_level: str = "INFO"
+    log_level: str = "DEBUG"
     debug_strategy_execution: bool = False
     strategy_multipliers: Dict[str, float] = field(default_factory=dict)
     
@@ -90,55 +90,121 @@ class StockSelectorConfig:
         default_nl_dir = project_root / "stock_selector" / "strategies"
         default_python_dir = project_root / "stock_selector" / "strategies"
 
-        return cls(
-            nl_strategy_dir=os.getenv(
-                "STOCK_SELECTOR_NL_STRATEGY_DIR",
-                str(default_nl_dir) if default_nl_dir.exists() else None
-            ),
-            python_strategy_dir=os.getenv(
-                "STOCK_SELECTOR_PYTHON_STRATEGY_DIR",
-                str(default_python_dir) if default_python_dir.exists() else None
-            ),
-            default_top_n=int(os.getenv("STOCK_SELECTOR_DEFAULT_TOP_N", "5")),
-            min_match_score=float(os.getenv("STOCK_SELECTOR_MIN_MATCH_SCORE", "50.0")),
-            auto_activate_all=os.getenv("STOCK_SELECTOR_AUTO_ACTIVATE_ALL", "true").lower() == "true",
-            default_active_strategies=[
-                s.strip() for s in os.getenv("STOCK_SELECTOR_DEFAULT_ACTIVE_STRATEGIES", "").split(",")
-                if s.strip()
-            ],
-            excluded_strategies=[
-                s.strip() for s in os.getenv("STOCK_SELECTOR_EXCLUDED_STRATEGIES", "").split(",")
-                if s.strip()
-            ],
-            preferred_strategy_type=os.getenv("STOCK_SELECTOR_PREFERRED_STRATEGY_TYPE") or None,
-            price_condition_weight=float(os.getenv("STOCK_SELECTOR_PRICE_WEIGHT", "20.0")),
-            volume_condition_weight=float(os.getenv("STOCK_SELECTOR_VOLUME_WEIGHT", "20.0")),
-            technical_indicator_weight=float(os.getenv("STOCK_SELECTOR_TECHNICAL_WEIGHT", "25.0")),
-            market_condition_weight=float(os.getenv("STOCK_SELECTOR_MARKET_WEIGHT", "15.0")),
-            trend_condition_weight=float(os.getenv("STOCK_SELECTOR_TREND_WEIGHT", "20.0")),
-            short_term_gain_min=float(os.getenv("STOCK_SELECTOR_SHORT_TERM_GAIN_MIN", "1.0")),
-            short_term_gain_max=float(os.getenv("STOCK_SELECTOR_SHORT_TERM_GAIN_MAX", "5.0")),
-            short_term_volume_ratio_threshold=float(os.getenv("STOCK_SELECTOR_SHORT_TERM_VOLUME_RATIO", "1.5")),
-            short_term_volume_avg_threshold=float(os.getenv("STOCK_SELECTOR_SHORT_TERM_VOLUME_AVG", "1.5")),
-            ma_golden_cross_fast_period=int(os.getenv("STOCK_SELECTOR_MA_GOLDEN_CROSS_FAST", "5")),
-            ma_golden_cross_slow_period=int(os.getenv("STOCK_SELECTOR_MA_GOLDEN_CROSS_SLOW", "20")),
-            volume_breakout_lookback_days=int(os.getenv("STOCK_SELECTOR_VOLUME_BREAKOUT_LOOKBACK", "20")),
-            volume_breakout_multiplier=float(os.getenv("STOCK_SELECTOR_VOLUME_BREAKOUT_MULTIPLIER", "2.0")),
-            log_level=os.getenv("STOCK_SELECTOR_LOG_LEVEL", "INFO"),
-            debug_strategy_execution=os.getenv("STOCK_SELECTOR_DEBUG_EXECUTION", "false").lower() == "true",
-            strategy_multipliers=cls._parse_strategy_multipliers(
-                os.getenv("STOCK_SELECTOR_STRATEGY_MULTIPLIERS", "")
-            ),
-            enable_sector_analysis=os.getenv("STOCK_SELECTOR_ENABLE_SECTOR_ANALYSIS", "true").lower() == "true",
-            sector_hot_threshold=float(os.getenv("STOCK_SELECTOR_SECTOR_THRESHOLD", "2.0")),
-            sector_cache_ttl=int(os.getenv("STOCK_SELECTOR_SECTOR_CACHE_TTL", "1800")),
-            sector_bonus_low=float(os.getenv("STOCK_SELECTOR_SECTOR_BONUS_LOW", "3.0")),
-            sector_bonus_mid=float(os.getenv("STOCK_SELECTOR_SECTOR_BONUS_MID", "5.0")),
-            sector_bonus_high=float(os.getenv("STOCK_SELECTOR_SECTOR_BONUS_HIGH", "10.0")),
-            sector_bonus_threshold_low=float(os.getenv("STOCK_SELECTOR_SECTOR_BONUS_THRESHOLD_LOW", "2.0")),
-            sector_bonus_threshold_high=float(os.getenv("STOCK_SELECTOR_SECTOR_BONUS_THRESHOLD_HIGH", "5.0")),
-            update_sector_data=os.getenv("UPDATE_SECTOR_DATA", "false").lower() == "true",
+        # 先创建默认配置（使用 dataclass 字段默认值）
+        config = cls()
+        
+        # 用环境变量覆盖
+        config.nl_strategy_dir = os.getenv(
+            "STOCK_SELECTOR_NL_STRATEGY_DIR",
+            str(default_nl_dir) if default_nl_dir.exists() else None
         )
+        config.python_strategy_dir = os.getenv(
+            "STOCK_SELECTOR_PYTHON_STRATEGY_DIR",
+            str(default_python_dir) if default_python_dir.exists() else None
+        )
+        
+        # 只有设置了环境变量才覆盖
+        if os.getenv("STOCK_SELECTOR_DEFAULT_TOP_N"):
+            config.default_top_n = int(os.getenv("STOCK_SELECTOR_DEFAULT_TOP_N"))
+        
+        if os.getenv("STOCK_SELECTOR_MIN_MATCH_SCORE"):
+            config.min_match_score = float(os.getenv("STOCK_SELECTOR_MIN_MATCH_SCORE"))
+        
+        if os.getenv("STOCK_SELECTOR_AUTO_ACTIVATE_ALL"):
+            config.auto_activate_all = os.getenv("STOCK_SELECTOR_AUTO_ACTIVATE_ALL").lower() == "true"
+        
+        if os.getenv("STOCK_SELECTOR_DEFAULT_ACTIVE_STRATEGIES"):
+            config.default_active_strategies = [
+                s.strip() for s in os.getenv("STOCK_SELECTOR_DEFAULT_ACTIVE_STRATEGIES").split(",")
+                if s.strip()
+            ]
+        
+        if os.getenv("STOCK_SELECTOR_EXCLUDED_STRATEGIES"):
+            config.excluded_strategies = [
+                s.strip() for s in os.getenv("STOCK_SELECTOR_EXCLUDED_STRATEGIES").split(",")
+                if s.strip()
+            ]
+        
+        config.preferred_strategy_type = os.getenv("STOCK_SELECTOR_PREFERRED_STRATEGY_TYPE") or None
+        
+        if os.getenv("STOCK_SELECTOR_PRICE_WEIGHT"):
+            config.price_condition_weight = float(os.getenv("STOCK_SELECTOR_PRICE_WEIGHT"))
+        
+        if os.getenv("STOCK_SELECTOR_VOLUME_WEIGHT"):
+            config.volume_condition_weight = float(os.getenv("STOCK_SELECTOR_VOLUME_WEIGHT"))
+        
+        if os.getenv("STOCK_SELECTOR_TECHNICAL_WEIGHT"):
+            config.technical_indicator_weight = float(os.getenv("STOCK_SELECTOR_TECHNICAL_WEIGHT"))
+        
+        if os.getenv("STOCK_SELECTOR_MARKET_WEIGHT"):
+            config.market_condition_weight = float(os.getenv("STOCK_SELECTOR_MARKET_WEIGHT"))
+        
+        if os.getenv("STOCK_SELECTOR_TREND_WEIGHT"):
+            config.trend_condition_weight = float(os.getenv("STOCK_SELECTOR_TREND_WEIGHT"))
+        
+        if os.getenv("STOCK_SELECTOR_SHORT_TERM_GAIN_MIN"):
+            config.short_term_gain_min = float(os.getenv("STOCK_SELECTOR_SHORT_TERM_GAIN_MIN"))
+        
+        if os.getenv("STOCK_SELECTOR_SHORT_TERM_GAIN_MAX"):
+            config.short_term_gain_max = float(os.getenv("STOCK_SELECTOR_SHORT_TERM_GAIN_MAX"))
+        
+        if os.getenv("STOCK_SELECTOR_SHORT_TERM_VOLUME_RATIO"):
+            config.short_term_volume_ratio_threshold = float(os.getenv("STOCK_SELECTOR_SHORT_TERM_VOLUME_RATIO"))
+        
+        if os.getenv("STOCK_SELECTOR_SHORT_TERM_VOLUME_AVG"):
+            config.short_term_volume_avg_threshold = float(os.getenv("STOCK_SELECTOR_SHORT_TERM_VOLUME_AVG"))
+        
+        if os.getenv("STOCK_SELECTOR_MA_GOLDEN_CROSS_FAST"):
+            config.ma_golden_cross_fast_period = int(os.getenv("STOCK_SELECTOR_MA_GOLDEN_CROSS_FAST"))
+        
+        if os.getenv("STOCK_SELECTOR_MA_GOLDEN_CROSS_SLOW"):
+            config.ma_golden_cross_slow_period = int(os.getenv("STOCK_SELECTOR_MA_GOLDEN_CROSS_SLOW"))
+        
+        if os.getenv("STOCK_SELECTOR_VOLUME_BREAKOUT_LOOKBACK"):
+            config.volume_breakout_lookback_days = int(os.getenv("STOCK_SELECTOR_VOLUME_BREAKOUT_LOOKBACK"))
+        
+        if os.getenv("STOCK_SELECTOR_VOLUME_BREAKOUT_MULTIPLIER"):
+            config.volume_breakout_multiplier = float(os.getenv("STOCK_SELECTOR_VOLUME_BREAKOUT_MULTIPLIER"))
+        
+        if os.getenv("STOCK_SELECTOR_LOG_LEVEL"):
+            config.log_level = os.getenv("STOCK_SELECTOR_LOG_LEVEL")
+        
+        if os.getenv("STOCK_SELECTOR_DEBUG_EXECUTION"):
+            config.debug_strategy_execution = os.getenv("STOCK_SELECTOR_DEBUG_EXECUTION").lower() == "true"
+        
+        if os.getenv("STOCK_SELECTOR_STRATEGY_MULTIPLIERS"):
+            config.strategy_multipliers = cls._parse_strategy_multipliers(
+                os.getenv("STOCK_SELECTOR_STRATEGY_MULTIPLIERS")
+            )
+        
+        if os.getenv("STOCK_SELECTOR_ENABLE_SECTOR_ANALYSIS"):
+            config.enable_sector_analysis = os.getenv("STOCK_SELECTOR_ENABLE_SECTOR_ANALYSIS").lower() == "true"
+        
+        if os.getenv("STOCK_SELECTOR_SECTOR_THRESHOLD"):
+            config.sector_hot_threshold = float(os.getenv("STOCK_SELECTOR_SECTOR_THRESHOLD"))
+        
+        if os.getenv("STOCK_SELECTOR_SECTOR_CACHE_TTL"):
+            config.sector_cache_ttl = int(os.getenv("STOCK_SELECTOR_SECTOR_CACHE_TTL"))
+        
+        if os.getenv("STOCK_SELECTOR_SECTOR_BONUS_LOW"):
+            config.sector_bonus_low = float(os.getenv("STOCK_SELECTOR_SECTOR_BONUS_LOW"))
+        
+        if os.getenv("STOCK_SELECTOR_SECTOR_BONUS_MID"):
+            config.sector_bonus_mid = float(os.getenv("STOCK_SELECTOR_SECTOR_BONUS_MID"))
+        
+        if os.getenv("STOCK_SELECTOR_SECTOR_BONUS_HIGH"):
+            config.sector_bonus_high = float(os.getenv("STOCK_SELECTOR_SECTOR_BONUS_HIGH"))
+        
+        if os.getenv("STOCK_SELECTOR_SECTOR_BONUS_THRESHOLD_LOW"):
+            config.sector_bonus_threshold_low = float(os.getenv("STOCK_SELECTOR_SECTOR_BONUS_THRESHOLD_LOW"))
+        
+        if os.getenv("STOCK_SELECTOR_SECTOR_BONUS_THRESHOLD_HIGH"):
+            config.sector_bonus_threshold_high = float(os.getenv("STOCK_SELECTOR_SECTOR_BONUS_THRESHOLD_HIGH"))
+        
+        if os.getenv("UPDATE_SECTOR_DATA"):
+            config.update_sector_data = os.getenv("UPDATE_SECTOR_DATA").lower() == "true"
+        
+        return config
 
 
 _config_instance: Optional[StockSelectorConfig] = None

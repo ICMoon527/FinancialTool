@@ -979,6 +979,108 @@ class EfinanceFetcher(BaseFetcher):
         result['belong_board'] = self.get_belong_board(stock_code)
         
         return result
+    
+    def get_daily_data_batch(self, stock_codes: List[str], start_date: str, end_date: str) -> Optional[Dict[str, pd.DataFrame]]:
+        """
+        批量获取多只股票的日线数据（一次性调用，节省 API 调用次数）
+        
+        Args:
+            stock_codes: 股票代码列表
+            start_date: 开始日期，格式 'YYYY-MM-DD'
+            end_date: 结束日期，格式 'YYYY-MM-DD'
+            
+        Returns:
+            字典，key=股票代码，value=对应股票的 DataFrame；完全失败返回 None
+        """
+        import efinance as ef
+        
+        logger.info(f"[API调用] ef.stock.get_quote_history 批量获取 {len(stock_codes)} 只股票")
+        
+        try:
+            # 防封禁策略 1: 随机 User-Agent
+            self._set_random_user_agent()
+            
+            # 防封禁策略 2: 强制休眠
+            self._enforce_rate_limit()
+            
+            # 格式化日期
+            beg_date = start_date.replace('-', '')
+            end_date_fmt = end_date.replace('-', '')
+            
+            import time as _time
+            api_start = _time.time()
+            
+            # 调用 efinance 批量获取
+            result = ef.stock.get_quote_history(
+                stock_codes=stock_codes,
+                beg=beg_date,
+                end=end_date_fmt,
+                klt=101,
+                fqt=1
+            )
+            
+            api_elapsed = _time.time() - api_start
+            
+            # 处理返回结果
+            valid_result: Dict[str, pd.DataFrame] = {}
+            
+            # 检查返回类型
+            if isinstance(result, dict):
+                # 返回的是字典 {code: DataFrame}
+                for code, df in result.items():
+                    if df is not None and not df.empty:
+                        # 标准化数据，确保与 get_daily_data 方法返回格式一致
+                        normalized_df = self._normalize_data(df, code)
+                        valid_result[code] = normalized_df
+                        logger.debug(f"  - {code}: {len(normalized_df)} 条记录")
+                
+                success_count = len(valid_result)
+                total_count = len(stock_codes)
+                logger.info(f"[API返回] 批量获取完成: {success_count}/{total_count} 只股票成功, 耗时 {api_elapsed:.2f}s")
+                
+                # 只要有成功的就返回，不要完全失败
+                if valid_result:
+                    return valid_result
+                else:
+                    logger.warning(f"[API返回] 批量获取返回空数据")
+                    return None
+                    
+            elif isinstance(result, pd.DataFrame) and not result.empty:
+                # 单只股票返回的是 DataFrame，转换为字典
+                logger.info(f"[API返回] 批量获取返回单只股票 DataFrame, 耗时 {api_elapsed:.2f}s")
+                if '股票代码' in result.columns:
+                    code = result['股票代码'].iloc[0]
+                    # 标准化数据
+                    normalized_df = self._normalize_data(result, code)
+                    return {code: normalized_df}
+                return None
+            else:
+                logger.warning(f"[API返回] 批量获取返回空数据, 耗时 {api_elapsed:.2f}s")
+                return None
+                
+        except Exception as e:
+            error_msg = str(e).lower()
+            
+            # 检测连接错误 - 一旦出现直接判定失败
+            is_connection_error = any(
+                keyword in error_msg 
+                for keyword in ['connection', 'remote', 'disconnected', 'max retries', 'protocolerror', 'connectionerror']
+            )
+            
+            if is_connection_error:
+                logger.warning(f"检测到连接错误，efinance 批量获取直接判定失败: {e}")
+                return None
+            
+            # 检测反爬封禁
+            if any(keyword in error_msg for keyword in ['banned', 'blocked', '频率', 'rate', '限制']):
+                logger.warning(f"检测到可能被封禁: {e}")
+                return None
+            
+            # 记录其他异常
+            logger.error(f"efinance 批量获取异常: {e}")
+            import traceback
+            logger.debug(f"异常详情: {traceback.format_exc()}")
+            return None
 
 
 if __name__ == "__main__":

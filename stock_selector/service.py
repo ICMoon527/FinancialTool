@@ -12,7 +12,7 @@ from tqdm import tqdm
 from stock_selector.base import StockCandidate, StrategyMetadata
 from stock_selector.config import StockSelectorConfig, get_config
 from stock_selector.manager import StrategyManager
-from stock_selector.stock_pool import get_all_stock_codes
+from stock_selector.stock_pool import get_all_stock_codes, filter_beijing_stock_exchange
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +72,8 @@ class StockSelectorService:
         # Use complete stock pool if none provided
         if stock_codes is None:
             stock_codes = get_all_stock_codes()
+            # 过滤北交所的股票代码（8开头和92开头）
+            stock_codes = filter_beijing_stock_exchange(stock_codes)
             logger.info("No stock codes provided, using complete stock pool: %d stocks", len(stock_codes))
 
         candidates: List[StockCandidate] = []

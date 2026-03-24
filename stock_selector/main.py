@@ -55,8 +55,10 @@ def deactivate_strategy(service: StockSelectorService, strategy_ids: List[str]):
     print(f"Deactivated strategies: {', '.join(strategy_ids)}")
 
 
-def screen_stocks(service: StockSelectorService, stock_codes: Optional[List[str]], top_n: int, update_data: bool = False, update_days: int = 365, use_enhanced: bool = True, max_workers: int = 4, validate_data: bool = False, report_path: Optional[str] = None, use_tushare: bool = True, rate_limit: int = 50):
+def screen_stocks(service: StockSelectorService, stock_codes: Optional[List[str]], top_n: Optional[int] = None, update_data: bool = False, update_days: int = 365, use_enhanced: bool = True, max_workers: int = 4, validate_data: bool = False, report_path: Optional[str] = None, use_tushare: bool = True, rate_limit: int = 50):
     print("Screening stocks...")
+    if top_n is None:
+        top_n = service.config.default_top_n
     print(f"Top N: {top_n}")
     if stock_codes:
         print(f"Stock codes: {', '.join(stock_codes)}")
@@ -83,8 +85,7 @@ def screen_stocks(service: StockSelectorService, stock_codes: Optional[List[str]
                 downloader = get_tushare_downloader(rate_limit_per_minute=rate_limit)
                 stats = downloader.download_data(
                     stock_codes=stock_codes,
-                    days=update_days,
-                    batch_size=10
+                    days=update_days
                 )
                 
                 print(f"\nData update complete using Tushare!\n")
@@ -227,7 +228,7 @@ Examples:
 
     screen_parser = subparsers.add_parser('screen', help='Screen stocks using active strategies')
     screen_parser.add_argument('--stocks', nargs='*', help='Stock codes to screen (default: all)')
-    screen_parser.add_argument('--top', type=int, default=5, help='Number of top candidates to return (default: 5)')
+    screen_parser.add_argument('--top', type=int, default=None, help='Number of top candidates to return (default: from config, typically 10)')
     screen_parser.add_argument(
         '--log-level',
         type=str,
