@@ -12,12 +12,13 @@
 """
 
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, time
 from typing import Optional, List, Dict, Any, Tuple
 
 import pandas as pd
 
 from data_provider import DataFetcherManager
+from data_provider.realtime_types import UnifiedRealtimeQuote
 from indicators.indicators.banker_control import BankerControl
 from indicators.indicators.main_capital_absorption import MainCapitalAbsorption
 from indicators.indicators.main_cost import MainCost
@@ -25,6 +26,77 @@ from indicators.indicators.main_trading import MainTrading
 from src.storage import DatabaseManager, get_db
 
 logger = logging.getLogger(__name__)
+
+
+def _is_trading_time() -> bool:
+    """
+    判断当前是否为交易时间
+    
+    Returns:
+        True 如果是交易时间，否则返回 False
+    """
+    now = datetime.now()
+    
+    # 检查是否为周末（周六、周日）
+    if now.weekday() >= 5:
+        return False
+    
+    # 检查当前时间是否在 9:30-15:00 之间
+    current_time = now.time()
+    trading_start = time(9, 30)
+    trading_end = time(15, 0)
+    
+    return trading_start <= current_time <= trading_end
+
+
+def _should_add_realtime_quote(kline_data: List[Dict[str, Any]]) -> bool:
+    """
+    判断是否应该添加实时行情
+    
+    Args:
+        kline_data: 现有的 K线数据列表，每个元素是包含 'date' 字段的字典
+        
+    Returns:
+        True 如果应该添加实时行情，否则返回 False
+    """
+    # 首先检查是否为交易时间
+    if not _is_trading_time():
+        return False
+    
+    # 获取今天的日期字符串
+    today_str = date.today().strftime('%Y-%m-%d')
+    
+    # 检查 kline_data 中是否已经有今天的数据
+    for kline in kline_data:
+        if kline.get('date') == today_str:
+            return False
+    
+    # 没有今天的数据，应该添加实时行情
+    return True
+
+
+def _convert_realtime_quote_to_kline(quote: UnifiedRealtimeQuote) -> Dict[str, Any]:
+    """
+    将 UnifiedRealtimeQuote 对象转换为 K线数据格式字典
+    
+    Args:
+        quote: 实时行情对象
+        
+    Returns:
+        符合 K线数据格式的字典
+    """
+    today = date.today()
+    return {
+        'date': today.strftime('%Y-%m-%d'),
+        'open': float(quote.open_price) if quote.open_price is not None else 0.0,
+        'high': float(quote.high) if quote.high is not None else 0.0,
+        'low': float(quote.low) if quote.low is not None else 0.0,
+        'close': float(quote.price) if quote.price is not None else 0.0,
+        'volume': float(quote.volume) if quote.volume is not None else 0.0,
+        'amount': float(quote.amount) if quote.amount is not None else 0.0,
+        'pct_chg': float(quote.change_pct) if quote.change_pct is not None else 0.0
+    }
+
 
 # 定义所有支持的指标类型
 AVAILABLE_INDICATORS = [
@@ -131,6 +203,22 @@ class VisualizationService:
                 'amount': float(row['amount']) if pd.notna(row['amount']) else 0,
                 'pct_chg': float(row['pct_chg']) if pd.notna(row['pct_chg']) else 0
             })
+        
+        # 整合实时行情数据
+        try:
+            logger.info(f"正在获取 {stock_code} 实时行情数据...")
+            quote = fetcher_manager.get_realtime_quote(stock_code)
+            
+            # 判断是否需要添加实时行情
+            if _should_add_realtime_quote(kline_data) and quote is not None:
+                logger.info(f"将 {stock_code} 实时行情整合到 K线数据中...")
+                realtime_kline = _convert_realtime_quote_to_kline(quote)
+                kline_data.append(realtime_kline)
+                logger.info(f"成功整合 {stock_code} 实时行情数据")
+            else:
+                logger.info(f"{stock_code} 不需要整合实时行情或获取失败，使用历史数据")
+        except Exception as e:
+            logger.warning(f"获取或整合 {stock_code} 实时行情失败: {e}，继续使用历史数据")
         
         # 获取股票名称
         stock_name = fetcher_manager.get_stock_name(stock_code)
