@@ -1,6 +1,9 @@
+import logging
 import pandas as pd
 import numpy as np
 from ..base import BaseIndicator
+
+logger = logging.getLogger(__name__)
 
 
 class Momentum2(BaseIndicator):
@@ -30,9 +33,10 @@ class Momentum2(BaseIndicator):
             DataFrame with indicator values
         """
         self.validate_input(data)
+        logger.info("[动能二号指标] 数据验证通过，开始计算指标")
 
         df = data.copy()
-        result = pd.DataFrame(index=df.index)
+        result = df.copy()
 
         # TT:=(2*CLOSE+OPEN+HIGH+LOW)
         tt = 2 * df['Close'] + df['Open'] + df['High'] + df['Low']

@@ -245,7 +245,7 @@ def get_visualization_data(
         result = service.get_visualization_data(
             stock_code=stock_code,
             days=days,
-            indicator_types=indicator_list,
+            indicator_types=None,
             start_date=start_date_obj
         )
 

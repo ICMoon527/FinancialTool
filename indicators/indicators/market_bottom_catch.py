@@ -1,7 +1,10 @@
+import logging
 import numpy as np
 import pandas as pd
 
 from ..base import BaseIndicator
+
+logger = logging.getLogger(__name__)
 
 
 class MarketBottomCatch(BaseIndicator):
@@ -53,6 +56,7 @@ class MarketBottomCatch(BaseIndicator):
             添加了相关抄底信号列的DataFrame
         """
         self.validate_input(data)
+        logger.warning("[大盘抄底指标] 注意：本指标使用个股数据模拟大盘分析，非真实大盘数据")
 
         result = data.copy()
 

@@ -78,9 +78,9 @@ class StockSelectorService:
 
         candidates: List[StockCandidate] = []
 
-        # Use thread pool for parallel processing - increased worker count for better performance
-        max_workers = min(20, len(stock_codes))  # Increase to 20 workers for faster processing
-        logger.info("Using thread pool with %d workers", max_workers)
+        # 根据配置决定使用多线程还是单线程模式
+        enable_multithreading = self.config.enable_multithreading
+        results = []
 
         def process_stock(code):
             try:
@@ -89,18 +89,36 @@ class StockSelectorService:
                 logger.error("Failed to screen stock %s: %s", code, e)
                 return None
 
-        # Process stocks in parallel with progress bar
-        results = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {executor.submit(process_stock, code): code for code in stock_codes}
-            
-            for future in tqdm(
-                concurrent.futures.as_completed(futures),
-                total=len(futures),
+        if enable_multithreading:
+            # 多线程模式：使用 ThreadPoolExecutor 并发处理
+            # 线程数从配置读取，并与股票数量取最小值，避免创建过多线程
+            max_workers = min(self.config.multithreading_workers, len(stock_codes))
+            logger.info("使用多线程模式筛选股票，工作线程数: %d", max_workers)
+
+            # 使用线程池进行并发处理
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # 提交所有股票处理任务
+                futures = {executor.submit(process_stock, code): code for code in stock_codes}
+                
+                # 带进度条处理完成的任务
+                for future in tqdm(
+                    concurrent.futures.as_completed(futures),
+                    total=len(futures),
+                    desc="Screening stocks",
+                    unit="stock"
+                ):
+                    results.append(future.result())
+        else:
+            # 单线程模式：顺序处理，不使用线程池
+            logger.info("使用单线程模式筛选股票")
+            # 带进度条顺序处理每只股票
+            for code in tqdm(
+                stock_codes,
                 desc="Screening stocks",
                 unit="stock"
             ):
-                results.append(future.result())
+                result = process_stock(code)
+                results.append(result)
 
         # Collect valid candidates
         for result in results:
@@ -119,6 +137,21 @@ class StockSelectorService:
         current_price = 0.0
         stock_name = stock_code
 
+        # 首先从股票池获取股票名称
+        if self._db_manager:
+            try:
+                from stock_selector.stock_pool import StockPoolItem
+                with self._db_manager.get_session() as session:
+                    from sqlalchemy import select
+                    result = session.execute(
+                        select(StockPoolItem.name)
+                        .where(StockPoolItem.code == stock_code)
+                    ).scalar_one_or_none()
+                    if result:
+                        stock_name = result
+            except Exception as e:
+                logger.debug(f"Failed to get stock name from pool for {stock_code}: {e}")
+
         # Try to get data from database cache first
         if self._db_manager:
             from datetime import date
@@ -128,7 +161,7 @@ class StockSelectorService:
                 context = self._db_manager.get_analysis_context(stock_code, today)
                 if context:
                     current_price = context.get('today', {}).get('close', 0.0)
-                    stock_name = context.get('stock_name', stock_code)
+                    stock_name = context.get('stock_name', stock_name)
 
         # Now execute strategies with potential cached data
         matches = self.strategy_manager.execute_strategies(
@@ -160,7 +193,11 @@ class StockSelectorService:
         for match in matches:
             candidate.add_strategy_match(match)
 
-        return candidate
+        has_matched_strategy = any(match.matched for match in matches)
+        if has_matched_strategy:
+            return candidate
+        else:
+            return None
 
     def get_available_strategies(self) -> List[StrategyMetadata]:
         strategies = self.strategy_manager.get_all_strategies()

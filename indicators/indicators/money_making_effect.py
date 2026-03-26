@@ -1,6 +1,9 @@
+import logging
 import pandas as pd
 import numpy as np
 from ..base import BaseIndicator
+
+logger = logging.getLogger(__name__)
 
 
 class MoneyMakingEffect(BaseIndicator):
@@ -30,6 +33,7 @@ class MoneyMakingEffect(BaseIndicator):
             DataFrame with indicator values
         """
         self.validate_input(data)
+        logger.warning("[赚钱效应指标] 注意：本指标使用个股收益率模拟市场赚钱效应，非真实市场数据")
 
         df = data.copy()
         result = pd.DataFrame(index=df.index)

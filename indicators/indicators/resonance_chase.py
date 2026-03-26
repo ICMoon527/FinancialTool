@@ -1,7 +1,10 @@
+import logging
 import numpy as np
 import pandas as pd
 
 from ..base import BaseIndicator
+
+logger = logging.getLogger(__name__)
 
 
 class ResonanceChase(BaseIndicator):
@@ -49,6 +52,7 @@ class ResonanceChase(BaseIndicator):
             添加了相关共振追涨列的DataFrame
         """
         self.validate_input(data)
+        logger.info("[共振追涨指标] 数据验证通过，开始计算指标")
 
         result = data.copy()
 
@@ -77,11 +81,11 @@ class ResonanceChase(BaseIndicator):
 
         resonance = OUT1 > 2
 
-        result["bull_line"] = bull_line
-        result["bear_line"] = bear_line
+        result["bull_line"] = bull_line.round(2)
+        result["bear_line"] = bear_line.round(2)
         result["mid_bullish"] = mid_bullish
-        result["OUT1"] = OUT1
-        result["OUT2"] = OUT2
+        result["OUT1"] = OUT1.round(2)
+        result["OUT2"] = OUT2.round(2)
         result["resonance"] = resonance
 
         return result

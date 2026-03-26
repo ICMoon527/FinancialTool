@@ -23,6 +23,9 @@ from indicators.indicators.banker_control import BankerControl
 from indicators.indicators.main_capital_absorption import MainCapitalAbsorption
 from indicators.indicators.main_cost import MainCost
 from indicators.indicators.main_trading import MainTrading
+from indicators.indicators.momentum_2 import Momentum2
+from indicators.indicators.strong_detonation import StrongDetonation
+from indicators.indicators.resonance_chase import ResonanceChase
 from src.storage import DatabaseManager, get_db
 
 logger = logging.getLogger(__name__)
@@ -30,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 def _is_trading_time() -> bool:
     """
-    判断当前是否为交易时间
+    判断当前是否为交易时间（包含集合竞价）
     
     Returns:
         True 如果是交易时间，否则返回 False
@@ -41,9 +44,9 @@ def _is_trading_time() -> bool:
     if now.weekday() >= 5:
         return False
     
-    # 检查当前时间是否在 9:30-15:00 之间
+    # 检查当前时间是否在 9:15-15:00 之间（包含集合竞价时间）
     current_time = now.time()
-    trading_start = time(9, 30)
+    trading_start = time(9, 15)
     trading_end = time(15, 0)
     
     return trading_start <= current_time <= trading_end
@@ -104,7 +107,10 @@ AVAILABLE_INDICATORS = [
     'banker_control',
     'main_capital_absorption',
     'main_cost',
-    'main_trading'
+    'main_trading',
+    'momentum_2',
+    'strong_detonation',
+    'resonance_chase'
 ]
 
 # 指标计算器映射
@@ -112,7 +118,10 @@ INDICATOR_CALCULATORS = {
     'banker_control': BankerControl,
     'main_capital_absorption': MainCapitalAbsorption,
     'main_cost': MainCost,
-    'main_trading': MainTrading
+    'main_trading': MainTrading,
+    'momentum_2': Momentum2,
+    'strong_detonation': StrongDetonation,
+    'resonance_chase': ResonanceChase
 }
 
 
@@ -226,6 +235,49 @@ class VisualizationService:
         # 计算指标（不保存到数据库，直接计算）
         indicators_data = []
         
+        # 获取资金流向数据（如果需要）
+        fund_flow_data = None
+        if 'main_cost' in indicator_types or 'main_capital_absorption' in indicator_types:
+            try:
+                logger.info(f"正在获取 {stock_code} 的资金流向数据...")
+                fund_flow_data = fetcher_manager.get_fund_flow_data(stock_code)
+                if fund_flow_data is not None and not fund_flow_data.empty:
+                    logger.info(f"成功获取 {stock_code} 资金流向数据: {len(fund_flow_data)} 条")
+                else:
+                    logger.warning(f"未获取到 {stock_code} 资金流向数据，将使用模拟数据")
+            except Exception as e:
+                logger.warning(f"获取 {stock_code} 资金流向数据失败: {e}，将使用模拟数据")
+        
+        # 获取大盘指数数据（如果需要）
+        index_data = None
+        if 'strong_detonation' in indicator_types:
+            try:
+                # 根据股票代码判断对应的大盘指数
+                index_symbol = None
+                if stock_code.startswith('60') or stock_code.startswith('688'):
+                    # 上海股票对应上证指数
+                    index_symbol = 'sh000001'
+                elif stock_code.startswith('00') or stock_code.startswith('30'):
+                    # 深圳股票对应深证成指
+                    index_symbol = 'sz399001'
+                
+                if index_symbol:
+                    logger.info(f"正在获取 {stock_code} 对应的大盘指数数据 ({index_symbol})...")
+                    # 获取与K线数据相同日期范围的大盘指数
+                    if kline_data:
+                        start_date = kline_data[0].get('date')
+                        end_date = kline_data[-1].get('date')
+                        index_data = fetcher_manager.get_index_daily_data(index_symbol, start_date, end_date)
+                    else:
+                        index_data = fetcher_manager.get_index_daily_data(index_symbol)
+                    
+                    if index_data is not None and not index_data.empty:
+                        logger.info(f"成功获取 {index_symbol} 大盘指数数据: {len(index_data)} 条")
+                    else:
+                        logger.warning(f"未获取到 {index_symbol} 大盘指数数据，将使用代理模式")
+            except Exception as e:
+                logger.warning(f"获取大盘指数数据失败: {e}，将使用代理模式")
+        
         if kline_data:
             # 转换为 DataFrame 用于指标计算
             df = pd.DataFrame(kline_data)
@@ -247,7 +299,14 @@ class VisualizationService:
                 
                 try:
                     calculator = calculator_class()
-                    result_df = calculator.calculate(df.copy())
+                    # 如果是主力成本指标且有资金流向数据，传递资金流向数据
+                    # 如果是强势起爆指标且有大盘数据，传递大盘数据
+                    if (indicator_type == 'main_cost') and fund_flow_data is not None:
+                        result_df = calculator.calculate(df.copy(), fund_flow_data=fund_flow_data)
+                    elif (indicator_type == 'strong_detonation') and index_data is not None:
+                        result_df = calculator.calculate(df.copy(), index_data=index_data)
+                    else:
+                        result_df = calculator.calculate(df.copy())
                     
                     # 转换为指标数据格式
                     indicator_data_list = []
@@ -269,9 +328,26 @@ class VisualizationService:
                                 item[col] = float(row[col]) if pd.notna(row[col]) else None
                         indicator_data_list.append(item)
                     
+                    # 如果是主力成本指标且有资金流向数据，添加资金流向信息
+                    indicator_metadata = {}
+                    if indicator_type == 'main_cost' and fund_flow_data is not None and not fund_flow_data.empty:
+                        try:
+                            # 获取最新一天的资金流向数据
+                            latest_fund_flow = fund_flow_data.iloc[-1]
+                            indicator_metadata = {
+                                'main_net_inflow': float(latest_fund_flow.get('main_net_inflow', 0)),
+                                'super_net_inflow': float(latest_fund_flow.get('super_net_inflow', 0)),
+                                'big_net_inflow': float(latest_fund_flow.get('big_net_inflow', 0)),
+                                'medium_net_inflow': float(latest_fund_flow.get('medium_net_inflow', 0)),
+                                'small_net_inflow': float(latest_fund_flow.get('small_net_inflow', 0)),
+                            }
+                        except Exception as e:
+                            logger.warning(f"获取最新资金流向数据失败: {e}")
+                    
                     indicators_data.append({
                         'indicator_type': indicator_type,
-                        'data': indicator_data_list
+                        'data': indicator_data_list,
+                        'metadata': indicator_metadata
                     })
                     logger.info(f"计算完成 {stock_code} {indicator_type} 指标: {len(indicator_data_list)} 条")
                     

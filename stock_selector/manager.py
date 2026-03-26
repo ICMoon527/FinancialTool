@@ -295,10 +295,10 @@ class StrategyManager:
                                 return self.mock_quote
                                 
                             def get_daily_data(self, code, days=60):
-                                # Get historical data from database
+                                # Get historical data from database - use 120 days to ensure enough trading days
                                 from datetime import timedelta
                                 end_date = date.today()
-                                start_date = end_date - timedelta(days=days)
+                                start_date = end_date - timedelta(days=120)
                                 data = self.db_manager.get_data_range(code, start_date, end_date)
                                 if data:
                                     import pandas as pd

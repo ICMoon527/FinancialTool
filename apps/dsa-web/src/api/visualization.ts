@@ -19,6 +19,14 @@ export type IndicatorDataPoint = {
 export type IndicatorData = {
   indicator_type: string;
   data: IndicatorDataPoint[];
+  metadata?: {
+    main_net_inflow?: number;
+    super_net_inflow?: number;
+    big_net_inflow?: number;
+    medium_net_inflow?: number;
+    small_net_inflow?: number;
+    [key: string]: any;
+  };
 };
 
 export type VisualizationResponse = {

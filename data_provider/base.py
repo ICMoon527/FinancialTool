@@ -941,6 +941,71 @@ class DataFetcherManager:
         # 所有数据源都失败
         logger.warning(f"[上市日期] 所有数据源都无法获取 {stock_code} 的上市日期")
         return None
+    
+    def get_fund_flow_data(self, stock_code: str) -> Optional[pd.DataFrame]:
+        """
+        获取资金流向数据（自动切换数据源）
+
+        尝试从多个数据源获取资金流向数据：
+        1. 优先使用 AkshareFetcher（因为它有完整的资金流向API）
+
+        Args:
+            stock_code: 股票代码
+
+        Returns:
+            包含资金流向数据的DataFrame，所有数据源都失败则返回None
+        """
+        # Normalize code (strip SH/SZ prefix etc.)
+        stock_code = normalize_stock_code(stock_code)
+
+        # 只尝试 AkshareFetcher，因为它有完整的资金流向API
+        for fetcher in self._fetchers:
+            if fetcher.name == "AkshareFetcher":
+                if hasattr(fetcher, 'get_fund_flow_data'):
+                    try:
+                        logger.info(f"尝试使用 [{fetcher.name}] 获取 {stock_code} 资金流向数据...")
+                        df = fetcher.get_fund_flow_data(stock_code)
+                        if df is not None and not df.empty:
+                            logger.info(f"[{fetcher.name}] 成功获取 {stock_code} 资金流向数据")
+                            return df
+                    except Exception as e:
+                        logger.warning(f"[{fetcher.name}] 获取 {stock_code} 资金流向数据失败: {e}")
+                break
+
+        # 所有数据源都失败
+        logger.warning(f"[资金流向] 所有数据源都无法获取 {stock_code} 的资金流向数据")
+        return None
+
+    def get_index_daily_data(self, symbol: str, start_date: Optional[str] = None,
+                              end_date: Optional[str] = None) -> Optional[pd.DataFrame]:
+        """
+        获取大盘指数历史数据
+
+        Args:
+            symbol: 指数代码，如 sh000001 (上证指数), sz399001 (深证成指)
+            start_date: 开始日期，格式 YYYY-MM-DD
+            end_date: 结束日期，格式 YYYY-MM-DD
+
+        Returns:
+            DataFrame with columns: date, open, high, low, close, volume, amount
+            or None if failed
+        """
+        for i, fetcher in enumerate(self._fetchers):
+            fetcher_name = fetcher.__class__.__name__
+            try:
+                logger.info(f"尝试使用 [{fetcher_name}] 获取 {symbol} 指数历史数据...")
+                if hasattr(fetcher, 'get_index_daily_data'):
+                    df = fetcher.get_index_daily_data(symbol, start_date, end_date)
+                    if df is not None and not df.empty:
+                        logger.info(f"[{fetcher_name}] 成功获取 {symbol} 指数历史数据")
+                        return df
+                    else:
+                        logger.warning(f"[{fetcher_name}] 未获取到 {symbol} 指数历史数据")
+            except Exception as e:
+                logger.warning(f"[{fetcher_name}] 获取 {symbol} 指数历史数据失败: {e}")
+        
+        logger.warning(f"所有数据源都无法获取 {symbol} 指数历史数据")
+        return None
 
     def batch_get_stock_names(self, stock_codes: List[str]) -> Dict[str, str]:
         """

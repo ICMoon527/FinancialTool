@@ -56,6 +56,10 @@ class StockSelectorConfig:
     sector_bonus_threshold_low: float = 2.0
     sector_bonus_threshold_high: float = 5.0
     update_sector_data: bool = False
+    
+    # 多线程配置
+    enable_multithreading: bool = True
+    multithreading_workers: int = 15
 
     @classmethod
     def _parse_strategy_multipliers(cls, env_str: str) -> Dict[str, float]:
@@ -203,6 +207,12 @@ class StockSelectorConfig:
         
         if os.getenv("UPDATE_SECTOR_DATA"):
             config.update_sector_data = os.getenv("UPDATE_SECTOR_DATA").lower() == "true"
+        
+        if os.getenv("STOCK_SELECTOR_ENABLE_MULTITHREADING"):
+            config.enable_multithreading = os.getenv("STOCK_SELECTOR_ENABLE_MULTITHREADING").lower() == "true"
+        
+        if os.getenv("STOCK_SELECTOR_MULTITHREADING_WORKERS"):
+            config.multithreading_workers = int(os.getenv("STOCK_SELECTOR_MULTITHREADING_WORKERS"))
         
         return config
 

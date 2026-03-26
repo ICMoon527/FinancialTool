@@ -1,6 +1,9 @@
+import logging
 import pandas as pd
 import numpy as np
 from ..base import BaseIndicator
+
+logger = logging.getLogger(__name__)
 
 
 class MarketEscapeTop(BaseIndicator):
@@ -40,6 +43,7 @@ class MarketEscapeTop(BaseIndicator):
             DataFrame with indicator values
         """
         self.validate_input(data)
+        logger.warning("[大盘逃顶指标] 注意：本指标使用个股数据模拟大盘分析，非真实大盘数据")
 
         df = data.copy()
         result = pd.DataFrame(index=df.index)

@@ -624,6 +624,9 @@ class DatabaseManager:
             db_url,
             echo=False,  # 设为 True 可查看 SQL 语句
             pool_pre_ping=True,  # 连接健康检查
+            pool_size=20,  # 连接池大小，匹配线程池数量
+            max_overflow=10,  # 最大溢出连接数
+            pool_recycle=3600,  # 连接回收时间（秒），避免长时间连接
         )
 
         # 创建 Session 工厂

@@ -1622,6 +1622,154 @@ class AkshareFetcher(BaseFetcher):
             logger.warning(f"[Akshare] 获取股票 {stock_code} 所属板块失败: {e}")
             return None
 
+    def get_fund_flow_data(self, stock_code: str) -> Optional[pd.DataFrame]:
+        """
+        获取个股资金流向数据
+
+        数据来源：ak.stock_individual_fund_flow()
+        包含：主力净流入、小单净流入、中单净流入、大单净流入、超大单净流入等
+
+        Args:
+            stock_code: 股票代码
+
+        Returns:
+            包含资金流向数据的DataFrame，获取失败返回None
+        """
+        import akshare as ak
+
+        if _is_us_code(stock_code):
+            logger.debug(f"[API跳过] {stock_code} 是美股，无资金流向数据")
+            return None
+
+        if _is_etf_code(stock_code):
+            logger.debug(f"[API跳过] {stock_code} 是ETF，无资金流向数据")
+            return None
+
+        if _is_hk_code(stock_code):
+            logger.debug(f"[API跳过] {stock_code} 是港股，无资金流向数据")
+            return None
+
+        try:
+            self._set_random_user_agent()
+            self._enforce_rate_limit()
+
+            # 判断市场
+            if stock_code.startswith(('6', '5', '9')):
+                market = "sh"
+            else:
+                market = "sz"
+
+            logger.info(f"[API调用] ak.stock_individual_fund_flow(stock={stock_code}, market={market}) 获取资金流向...")
+            import time as _time
+            api_start = _time.time()
+
+            df = ak.stock_individual_fund_flow(stock=stock_code, market=market)
+
+            api_elapsed = _time.time() - api_start
+
+            if df is not None and not df.empty:
+                logger.info(f"[API返回] ak.stock_individual_fund_flow 成功: 返回 {len(df)} 天数据, 耗时 {api_elapsed:.2f}s")
+                logger.debug(f"[API返回] 资金流向数据列名: {list(df.columns)}")
+
+                # 标准化列名
+                column_mapping = {
+                    '日期': 'date',
+                    '主力净流入-净额': 'main_net_inflow',
+                    '小单净流入-净额': 'small_net_inflow',
+                    '中单净流入-净额': 'medium_net_inflow',
+                    '大单净流入-净额': 'big_net_inflow',
+                    '超大单净流入-净额': 'super_net_inflow',
+                    '主力净流入-净占比': 'main_net_ratio',
+                    '小单净流入-净占比': 'small_net_ratio',
+                    '中单净流入-净占比': 'medium_net_ratio',
+                    '大单净流入-净占比': 'big_net_ratio',
+                    '超大单净流入-净占比': 'super_net_ratio',
+                    '收盘价': 'close',
+                    '涨跌幅': 'pct_chg',
+                }
+
+                df = df.rename(columns=column_mapping)
+
+                # 转换日期格式
+                if 'date' in df.columns:
+                    df['date'] = pd.to_datetime(df['date']).dt.date
+
+                # 添加股票代码
+                df['code'] = stock_code
+
+                return df
+            else:
+                logger.warning(f"[API返回] ak.stock_individual_fund_flow 返回空数据")
+                return None
+
+        except Exception as e:
+            error_msg = str(e).lower()
+            if any(keyword in error_msg for keyword in ['banned', 'blocked', '频率', 'rate', '限制']):
+                raise RateLimitError(f"Akshare 资金流向可能被限流: {e}") from e
+            logger.error(f"[API错误] 获取 {stock_code} 资金流向失败: {e}")
+            return None
+
+    def get_index_daily_data(self, symbol: str, start_date: Optional[str] = None, 
+                               end_date: Optional[str] = None) -> Optional[pd.DataFrame]:
+        """
+        获取大盘指数历史数据
+
+        Args:
+            symbol: 指数代码，如 sh000001 (上证指数), sz399001 (深证成指)
+            start_date: 开始日期，格式 YYYY-MM-DD
+            end_date: 结束日期，格式 YYYY-MM-DD
+
+        Returns:
+            DataFrame with columns: date, open, high, low, close, volume, amount
+            or None if failed
+        """
+        import akshare as ak
+        try:
+            self._set_random_user_agent()
+            self._enforce_rate_limit()
+
+            logger.info(f"[API调用] ak.stock_zh_index_daily(symbol={symbol}) 获取指数历史数据...")
+            start_time = time.time()
+            
+            df = ak.stock_zh_index_daily(symbol=symbol)
+            
+            if df is None or df.empty:
+                logger.warning(f"[API返回] ak.stock_zh_index_daily 返回空数据")
+                return None
+            
+            elapsed = time.time() - start_time
+            logger.info(f"[API返回] ak.stock_zh_index_daily 成功: 返回 {len(df)} 天数据, 耗时 {elapsed:.2f}s")
+
+            # 标准化列名
+            df = df.rename(columns={
+                '日期': 'date',
+                '开盘': 'open',
+                '最高': 'high',
+                '最低': 'low',
+                '收盘': 'close',
+                '成交量': 'volume',
+                '成交额': 'amount'
+            })
+            
+            # 确保日期格式正确
+            df['date'] = pd.to_datetime(df['date']).dt.date
+            
+            # 日期筛选
+            if start_date:
+                start_date_obj = datetime.strptime(start_date, '%Y-%m-%d').date()
+                df = df[df['date'] >= start_date_obj]
+            
+            if end_date:
+                end_date_obj = datetime.strptime(end_date, '%Y-%m-%d').date()
+                df = df[df['date'] <= end_date_obj]
+            
+            df = df.sort_values('date').reset_index(drop=True)
+            
+            return df
+
+        except Exception as e:
+            logger.error(f"[API调用] ak.stock_zh_index_daily 失败: {e}")
+            return None
 
 if __name__ == "__main__":
     # 测试代码

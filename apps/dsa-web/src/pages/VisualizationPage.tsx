@@ -13,6 +13,9 @@ const INDICATOR_OPTIONS = [
   { id: 'main_capital_absorption', name: '主力吸筹', description: '主力资金吸筹情况', color: '#AA44FF' },
   { id: 'main_cost', name: '主力成本', description: '主力资金成本', color: '#FFAA00' },
   { id: 'main_trading', name: '主力操盘', description: '主力操盘三线', color: '#FF4444' },
+  { id: 'momentum_2', name: '动能二号', description: '动能二号指标，四种颜色表示不同动能状态', color: '#FF4444' },
+  { id: 'strong_detonation', name: '强势起爆', description: '强势起爆指标，识别强势起爆阶段', color: '#AA44FF' },
+  { id: 'resonance_chase', name: '共振追涨', description: '共振追涨指标，识别共振追涨机会', color: '#FFAA00' },
 ];
 
 // 子图高度
@@ -45,7 +48,7 @@ const VisualizationPage: React.FC = () => {
   const [searchHistory, setSearchHistory] = useState<VisualizationSearchHistoryItem[]>([]);
   const [selectedHistoryId, setSelectedHistoryId] = useState<number | null>(null);
   const [selectedIndicators, setSelectedIndicators] = useState<string[]>(
-    filterValidIndicators(['volume', 'main_capital_absorption', 'banker_control', 'main_trading'])
+    filterValidIndicators(['volume', 'main_capital_absorption', 'banker_control', 'main_trading', 'main_cost'])
   );
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [selectedDateRange, setSelectedDateRange] = useState('1y');
@@ -56,6 +59,10 @@ const VisualizationPage: React.FC = () => {
     signal?: 'buy' | 'sell';
     bankerControl?: number;
     mainCapitalAbsorption?: number;
+    mainCost?: number;
+    momentum2?: number;
+    strongDetonation?: number;
+    resonanceChase?: number;
   }>({});
 
   useEffect(() => {
@@ -112,6 +119,83 @@ const VisualizationPage: React.FC = () => {
   useEffect(() => {
     loadSearchHistory();
   }, [loadSearchHistory]);
+
+  // 获取所有指标在指定时间点的值
+  const getAllIndicatorValuesAtTime = (time: any) => {
+    const values: {
+      bankerControl?: number;
+      mainCapitalAbsorption?: number;
+      mainCost?: number;
+      momentum2?: number;
+      strongDetonation?: number;
+      resonanceChase?: number;
+    } = {};
+
+    if (indicatorsDataRef.current['banker_control']) {
+      const bankerData = indicatorsDataRef.current['banker_control'].data.find((item: any) => {
+        const itemDate = item.date || item.time;
+        return itemDate === time;
+      });
+      if (bankerData) {
+        values.bankerControl = bankerData.control_degree;
+      }
+    }
+
+    if (indicatorsDataRef.current['main_capital_absorption']) {
+      const absorptionData = indicatorsDataRef.current['main_capital_absorption'].data.find((item: any) => {
+        const itemDate = item.date || item.time;
+        return itemDate === time;
+      });
+      if (absorptionData) {
+        values.mainCapitalAbsorption = absorptionData.main_capital_absorption;
+      }
+    }
+
+    if (indicatorsDataRef.current['main_cost']) {
+      const mainCostData = indicatorsDataRef.current['main_cost'].data.find((item: any) => {
+        const itemDate = item.date || item.time;
+        return itemDate === time;
+      });
+      if (mainCostData) {
+        values.mainCost = mainCostData.main_cost || mainCostData.cost;
+      }
+    }
+
+    if (indicatorsDataRef.current['momentum_2']) {
+      const momentum2Data = indicatorsDataRef.current['momentum_2'].data.find((item: any) => {
+        const itemDate = item.date || item.time;
+        return itemDate === time;
+      });
+      if (momentum2Data) {
+        values.momentum2 = momentum2Data.strong_momentum || momentum2Data.medium_momentum || 
+                           momentum2Data.no_momentum || momentum2Data.recovery_momentum;
+      }
+    }
+
+    if (indicatorsDataRef.current['strong_detonation']) {
+      const strongDetonationData = indicatorsDataRef.current['strong_detonation'].data.find((item: any) => {
+        const itemDate = item.date || item.time;
+        return itemDate === time;
+      });
+      if (strongDetonationData) {
+        values.strongDetonation = strongDetonationData.bull_line;
+      }
+    }
+
+    if (indicatorsDataRef.current['resonance_chase']) {
+      const resonanceChaseData = indicatorsDataRef.current['resonance_chase'].data.find((item: any) => {
+        const itemDate = item.date || item.time;
+        return itemDate === time;
+      });
+      if (resonanceChaseData && resonanceChaseData.resonance) {
+        const originalHeight = Math.abs(resonanceChaseData.OUT1 || 0);
+        const topValue = originalHeight - 0.5;
+        values.resonanceChase = topValue > 0 ? topValue : undefined;
+      }
+    }
+
+    return values;
+  };
 
   // 初始化主图表
   useEffect(() => {
@@ -229,81 +313,6 @@ const VisualizationPage: React.FC = () => {
       });
       resizeObserver.observe(mainChartContainerRef.current);
 
-      // 验证并限制时间范围函数
-      const validateAndClampTimeRange = (timeRange: any) => {
-        if (!timeRange || !timeRange.from || !timeRange.to) {
-          return { clampedRange: timeRange, wasClamped: false };
-        }
-
-        let clampedFrom = timeRange.from;
-        let clampedTo = timeRange.to;
-        let wasClamped = false;
-
-        // 转换为时间戳进行比较
-        const toTimestamp = (time: any): number => {
-          if (typeof time === 'string' && time.includes('-')) {
-            return new Date(time).getTime() / 1000;
-          }
-          return Number(time);
-        };
-
-        const fromTs = toTimestamp(clampedFrom);
-        const toTs = toTimestamp(clampedTo);
-        const earliestTs = earliestDateRef.current ? toTimestamp(earliestDateRef.current) : -Infinity;
-        const latestTs = latestDateRef.current ? toTimestamp(latestDateRef.current) : Infinity;
-
-        // 检查并限制边界
-        if (fromTs < earliestTs) {
-          const originalRange = toTs - fromTs;
-          clampedFrom = earliestDateRef.current;
-          const newFromTs = earliestTs;
-          const newToTs = newFromTs + originalRange;
-          
-          // 确保新的 to 不超过 latestDateRef.current
-          if (newToTs > latestTs && latestDateRef.current) {
-            clampedTo = latestDateRef.current;
-            clampedFrom = earliestDateRef.current;
-          } else {
-            clampedTo = timeRange.to;
-          }
-          wasClamped = true;
-        }
-
-        if (toTs > latestTs) {
-          const originalRange = toTs - fromTs;
-          clampedTo = latestDateRef.current;
-          const newToTs = latestTs;
-          const newFromTs = newToTs - originalRange;
-          
-          // 确保新的 from 不小于 earliestDateRef.current
-          if (newFromTs < earliestTs && earliestDateRef.current) {
-            clampedFrom = earliestDateRef.current;
-            clampedTo = latestDateRef.current;
-          } else {
-            clampedFrom = timeRange.from;
-          }
-          wasClamped = true;
-        }
-
-        // 最终确保边界不超出
-        const finalFromTs = toTimestamp(clampedFrom);
-        const finalToTs = toTimestamp(clampedTo);
-        
-        if (finalFromTs < earliestTs && earliestDateRef.current) {
-          clampedFrom = earliestDateRef.current;
-          wasClamped = true;
-        }
-        if (finalToTs > latestTs && latestDateRef.current) {
-          clampedTo = latestDateRef.current;
-          wasClamped = true;
-        }
-
-        return { 
-          clampedRange: { from: clampedFrom, to: clampedTo }, 
-          wasClamped 
-        };
-      };
-
       // 订阅主图时间轴变化，同步到所有子图
       const handleTimeScaleChange = () => {
         if (!mainChartRef.current || isTimeRangeUpdatingRef.current) return;
@@ -311,19 +320,12 @@ const VisualizationPage: React.FC = () => {
           isTimeRangeUpdatingRef.current = true;
           const timeRange = mainChartRef.current.timeScale().getVisibleRange();
           if (timeRange && timeRange.from && timeRange.to) {
-            // 验证并限制时间范围
-            const { clampedRange, wasClamped } = validateAndClampTimeRange(timeRange);
-            
-            // 如果被限制了，应用到主图
-            if (wasClamped) {
-              mainChartRef.current.timeScale().setVisibleRange(clampedRange);
-            }
-            
+            // 直接使用时间范围，不限制，让缩放更自由
             // 同步时间范围到子图
             Object.values(subChartRefs.current).forEach(subChart => {
               if (subChart) {
                 try {
-                  subChart.timeScale().setVisibleRange(clampedRange);
+                  subChart.timeScale().setVisibleRange(timeRange);
                 } catch (e) {
                   console.warn('Failed to sync time range to subchart:', e);
                 }
@@ -357,28 +359,13 @@ const VisualizationPage: React.FC = () => {
           // 同步十字线到所有子图 - 更新光标值显示和十字线位置
           if (param.time) {
             // 获取所有子图指标的值
-            let bankerControl: number | undefined = cursorValues.bankerControl;
-            let mainCapitalAbsorption: number | undefined = cursorValues.mainCapitalAbsorption;
-            
-            if (indicatorsDataRef.current['banker_control']) {
-              const bankerData = indicatorsDataRef.current['banker_control'].data.find((item: any) => {
-                const itemDate = item.date || item.time;
-                return itemDate === param.time;
-              });
-              if (bankerData) {
-                bankerControl = bankerData.control_degree;
-              }
-            }
-            
-            if (indicatorsDataRef.current['main_capital_absorption']) {
-              const absorptionData = indicatorsDataRef.current['main_capital_absorption'].data.find((item: any) => {
-                const itemDate = item.date || item.time;
-                return itemDate === param.time;
-              });
-              if (absorptionData) {
-                mainCapitalAbsorption = absorptionData.main_capital_absorption;
-              }
-            }
+            const indicatorValues = getAllIndicatorValuesAtTime(param.time);
+            const bankerControl = indicatorValues.bankerControl;
+            const mainCapitalAbsorption = indicatorValues.mainCapitalAbsorption;
+            const mainCost = indicatorValues.mainCost;
+            const momentum2 = indicatorValues.momentum2;
+            const strongDetonation = indicatorValues.strongDetonation;
+            const resonanceChase = indicatorValues.resonanceChase;
             
             // 同步十字线位置到所有子图
             Object.entries(subChartRefs.current).forEach(([indicatorId, subChart]) => {
@@ -411,6 +398,17 @@ const VisualizationPage: React.FC = () => {
                           price = dataPoint.main_capital_absorption;
                         } else if (indicatorId === 'main_cost') {
                           price = dataPoint.main_cost || dataPoint.cost;
+                        } else if (indicatorId === 'momentum_2') {
+                          price = dataPoint.strong_momentum || dataPoint.medium_momentum || 
+                                  dataPoint.no_momentum || dataPoint.recovery_momentum;
+                        } else if (indicatorId === 'strong_detonation') {
+                          price = dataPoint.bull_line;
+                        } else if (indicatorId === 'resonance_chase') {
+                          if (dataPoint.resonance) {
+                            const originalHeight = Math.abs(dataPoint.OUT1 || 0);
+                            const topValue = originalHeight - 0.5;
+                            price = topValue > 0 ? topValue : undefined;
+                          }
                         }
                       }
                     }
@@ -433,6 +431,10 @@ const VisualizationPage: React.FC = () => {
               setCursorValues({
                 bankerControl,
                 mainCapitalAbsorption,
+                mainCost,
+                momentum2,
+                strongDetonation,
+                resonanceChase,
               });
             } else {
               const dataPoint = mainTradingDataRef.current.data.find((item: any) => item.date === param.time);
@@ -484,11 +486,19 @@ const VisualizationPage: React.FC = () => {
                   signal: signal,
                   bankerControl,
                   mainCapitalAbsorption,
+                  mainCost,
+                  momentum2,
+                  strongDetonation,
+                  resonanceChase,
                 });
               } else {
                 setCursorValues({
                   bankerControl,
                   mainCapitalAbsorption,
+                  mainCost,
+                  momentum2,
+                  strongDetonation,
+                  resonanceChase,
                 });
               }
             }
@@ -607,7 +617,9 @@ const VisualizationPage: React.FC = () => {
         // 攻击线
         const attackLineData = mainTradingData.data.map((item: any) => ({
           time: item.date,
-          value: item.attack_line || null,
+          value: item.attack_line !== null && item.attack_line !== undefined 
+            ? Number(item.attack_line.toFixed(2)) 
+            : null,
         })).filter((d: any) => d.value !== null && d.value !== undefined);
         
         const attackSeries = mainChartRef.current.addSeries(lightweightCharts.LineSeries, {
@@ -622,7 +634,9 @@ const VisualizationPage: React.FC = () => {
         // 操盘线
         const tradingLineData = mainTradingData.data.map((item: any) => ({
           time: item.date,
-          value: item.trading_line || null,
+          value: item.trading_line !== null && item.trading_line !== undefined 
+            ? Number(item.trading_line.toFixed(2)) 
+            : null,
         })).filter((d: any) => d.value !== null && d.value !== undefined);
         
         const tradingSeries = mainChartRef.current.addSeries(lightweightCharts.LineSeries, {
@@ -637,7 +651,9 @@ const VisualizationPage: React.FC = () => {
         // 防守线
         const defenseLineData = mainTradingData.data.map((item: any) => ({
           time: item.date,
-          value: item.defense_line || null,
+          value: item.defense_line !== null && item.defense_line !== undefined 
+            ? Number(item.defense_line.toFixed(2)) 
+            : null,
         })).filter((d: any) => d.value !== null && d.value !== undefined);
         
         const defenseSeries = mainChartRef.current.addSeries(lightweightCharts.LineSeries, {
@@ -822,6 +838,13 @@ const VisualizationPage: React.FC = () => {
         createdCharts.push({ id: indicatorId, chart });
 
         // 根据指标类型渲染不同的内容
+        if (indicatorId === 'resonance_chase') {
+          // 共振追涨：启用 Y 轴刻度显示，但只显示共振柱高度
+          chart.priceScale('right').applyOptions({
+            visible: true,
+          });
+        }
+        
         if (indicatorId === 'volume') {
           // 成交量 - 显示柱状图，颜色与K线一致
           // 先过滤数据，确保时间范围与主图对齐
@@ -856,15 +879,14 @@ const VisualizationPage: React.FC = () => {
           
           histogramSeries.setData(histogramData);
           subChartSeriesRefs.current[indicatorId] = histogramSeries;
-          chart.timeScale().fitContent();
 
         } else if (indicatorId === 'banker_control' && indicatorData) {
           // 庄家控盘 - 显示能量柱，分三段颜色
           // 先过滤数据，确保时间范围与主图对齐
           const filteredIndicatorData = filterDataByTimeRange(indicatorData.data, 'date');
           const barData = filteredIndicatorData.map((item: any) => {
-            const value = item.control_degree || 0;
-            let color = 'transparent';
+            const value = Number((item.control_degree || 0).toFixed(2));
+            let color = '#666666';
             if (value >= 80) {
               color = '#AA44FF';
             } else if (value >= 60) {
@@ -874,7 +896,7 @@ const VisualizationPage: React.FC = () => {
             }
             return {
               time: item.date,
-              value: value >= 50 ? value : 50,
+              value: value,
               color: color,
             };
           }).filter((d: any) => d.value !== null && d.value !== undefined);
@@ -889,7 +911,7 @@ const VisualizationPage: React.FC = () => {
             crosshairMarkerVisible: false,
           } as any);
           
-          // 将庄家控盘的零轴（基准）设为50
+          // 将庄家控盘的价格范围设为50-100（零轴为50）
           chart.priceScale('right').applyOptions({
             autoScale: false,
           });
@@ -907,31 +929,6 @@ const VisualizationPage: React.FC = () => {
           histogramSeries.setData(histogramData);
           subChartSeriesRefs.current[indicatorId] = histogramSeries;
 
-          // 添加标记线
-          const level50Line = chart.addSeries(lightweightCharts.LineSeries, {
-            color: '#666666',
-            lineWidth: 1,
-            lineStyle: 2,
-            crosshairMarkerVisible: false,
-          });
-          level50Line.setData(barData.map((d: any) => ({ time: d.time, value: 50 })));
-
-          const level60Line = chart.addSeries(lightweightCharts.LineSeries, {
-            color: '#666666',
-            lineWidth: 1,
-            lineStyle: 2,
-            crosshairMarkerVisible: false,
-          });
-          level60Line.setData(barData.map((d: any) => ({ time: d.time, value: 60 })));
-
-          const level80Line = chart.addSeries(lightweightCharts.LineSeries, {
-            color: '#666666',
-            lineWidth: 1,
-            lineStyle: 2,
-            crosshairMarkerVisible: false,
-          });
-          level80Line.setData(barData.map((d: any) => ({ time: d.time, value: 80 })));
-
           chart.timeScale().fitContent();
 
         } else if (indicatorId === 'main_capital_absorption' && indicatorData) {
@@ -940,7 +937,7 @@ const VisualizationPage: React.FC = () => {
           const filteredIndicatorData = filterDataByTimeRange(indicatorData.data, 'date');
           const barData = filteredIndicatorData.map((item: any) => {
             const rawValue = item.main_capital_absorption || 0;
-            const value = Math.abs(rawValue) < 1.01 ? 0 : rawValue;
+            const value = Math.abs(rawValue) < 1.01 ? 0 : Number(rawValue.toFixed(2));
             return {
               time: item.date,
               value: value,
@@ -964,25 +961,316 @@ const VisualizationPage: React.FC = () => {
           
           histogramSeries.setData(histogramData);
           subChartSeriesRefs.current[indicatorId] = histogramSeries;
-          chart.timeScale().fitContent();
 
         } else if (indicatorId === 'main_cost' && indicatorData) {
           // 主力成本 - 显示成本曲线
           // 先过滤数据，确保时间范围与主图对齐
           const filteredIndicatorData = filterDataByTimeRange(indicatorData.data, 'date');
-          const lineData = filteredIndicatorData.map((item: any) => ({
+          
+          // 主力成本线（红实线）
+          const mainCostLineData = filteredIndicatorData.map((item: any) => ({
             time: item.date,
-            value: item.main_cost || item.cost || 0,
+            value: Number((item.main_cost || item.cost || 0).toFixed(2)),
           })).filter((d: any) => d.value !== null && d.value !== undefined);
 
-          if (lineData.length > 0) {
-            const lineSeries = chart.addSeries(lightweightCharts.LineSeries, {
-              color: '#FFAA00',
+          if (mainCostLineData.length > 0) {
+            const mainCostLineSeries = chart.addSeries(lightweightCharts.LineSeries, {
+              color: '#FF4444',
               lineWidth: 2,
+              priceLineVisible: false,
+              lastValueVisible: false,
             });
-            lineSeries.setData(lineData);
-            subChartSeriesRefs.current[indicatorId] = lineSeries;
-            chart.timeScale().fitContent();
+            mainCostLineSeries.setData(mainCostLineData);
+            subChartSeriesRefs.current[indicatorId] = mainCostLineSeries;
+          }
+          
+          // 成交均价线（黄虚线）
+          const avgPriceLineData = filteredIndicatorData.map((item: any) => ({
+            time: item.date,
+            value: Number((item.avg_price || 0).toFixed(2)),
+          })).filter((d: any) => d.value !== null && d.value !== undefined);
+
+          if (avgPriceLineData.length > 0) {
+            const avgPriceLineSeries = chart.addSeries(lightweightCharts.LineSeries, {
+              color: '#FF9900',
+              lineWidth: 1,
+              lineStyle: 2,
+              priceLineVisible: false,
+              lastValueVisible: false,
+            });
+            avgPriceLineSeries.setData(avgPriceLineData);
+          }
+
+        } else if (indicatorId === 'momentum_2' && indicatorData) {
+          const filteredIndicatorData = filterDataByTimeRange(indicatorData.data, 'date');
+          const barData = filteredIndicatorData.map((item: any) => {
+            let value = 0;
+            let color = 'transparent';
+            
+            if (item.strong_momentum !== 0) {
+              value = Number(item.strong_momentum.toFixed(2));
+              color = '#FF4444';
+            } else if (item.medium_momentum !== 0) {
+              value = Number(item.medium_momentum.toFixed(2));
+              color = '#FFAA00';
+            } else if (item.no_momentum !== 0) {
+              value = Number(item.no_momentum.toFixed(2));
+              color = '#44AA44';
+            } else if (item.recovery_momentum !== 0) {
+              value = Number(item.recovery_momentum.toFixed(2));
+              color = '#4477FF';
+            }
+            
+            return {
+              time: item.date,
+              value: value,
+              color: color,
+            };
+          }).filter((d: any) => d.value !== null && d.value !== undefined);
+
+          const histogramSeries = chart.addSeries(lightweightCharts.HistogramSeries, {
+            color: '#FF4444',
+            priceFormat: {
+              type: 'price',
+              precision: 2,
+            },
+            crosshairMarkerVisible: false,
+          } as any);
+          
+          const histogramData = barData.map((d: any) => ({
+            time: d.time,
+            value: d.value,
+            color: d.color,
+          }));
+          
+          histogramSeries.setData(histogramData);
+          subChartSeriesRefs.current[indicatorId] = histogramSeries;
+
+        } else if (indicatorId === 'strong_detonation' && indicatorData) {
+          const filteredIndicatorData = filterDataByTimeRange(indicatorData.data, 'date');
+          
+          const bullLineData = filteredIndicatorData.map((item: any) => ({
+            time: item.date,
+            value: Number((item.bull_line || 0).toFixed(2)),
+          })).filter((d: any) => d.value !== null && d.value !== undefined);
+          
+          const bearLineData = filteredIndicatorData.map((item: any) => ({
+            time: item.date,
+            value: Number((item.bear_line || 0).toFixed(2)),
+          })).filter((d: any) => d.value !== null && d.value !== undefined);
+          
+          const marketMidlineData = filteredIndicatorData.map((item: any) => ({
+            time: item.date,
+            value: Number((item.market_midline || 0).toFixed(2)),
+          })).filter((d: any) => d.value !== null && d.value !== undefined);
+          
+          // 红色箱体K线
+          const redBoxData = filteredIndicatorData
+            .filter((item: any) => item.red_box_open !== null && item.red_box_open !== undefined && !isNaN(item.red_box_open))
+            .map((item: any) => ({
+              time: item.date,
+              open: Number(item.red_box_open.toFixed(2)),
+              high: Number(item.red_box_high.toFixed(2)),
+              low: Number(item.red_box_low.toFixed(2)),
+              close: Number(item.red_box_close.toFixed(2)),
+            }));
+
+          if (redBoxData.length > 0) {
+            const redBoxSeries = chart.addSeries(lightweightCharts.CandlestickSeries, {
+              upColor: '#FF4444',
+              downColor: '#FF4444',
+              borderDownColor: '#FF4444',
+              borderUpColor: '#FF4444',
+              wickDownColor: '#FF4444',
+              wickUpColor: '#FF4444',
+              priceLineVisible: false,
+              lastValueVisible: false,
+            });
+            redBoxSeries.setData(redBoxData);
+            subChartSeriesRefs.current[indicatorId] = redBoxSeries;
+          }
+
+          // 紫色箱体K线
+          const purpleBoxData = filteredIndicatorData
+            .filter((item: any) => item.purple_box_open !== null && item.purple_box_open !== undefined && !isNaN(item.purple_box_open))
+            .map((item: any) => ({
+              time: item.date,
+              open: Number(item.purple_box_open.toFixed(2)),
+              high: Number(item.purple_box_high.toFixed(2)),
+              low: Number(item.purple_box_low.toFixed(2)),
+              close: Number(item.purple_box_close.toFixed(2)),
+            }));
+
+          if (purpleBoxData.length > 0) {
+            const purpleBoxSeries = chart.addSeries(lightweightCharts.CandlestickSeries, {
+              upColor: '#AA44FF',
+              downColor: '#AA44FF',
+              borderDownColor: '#AA44FF',
+              borderUpColor: '#AA44FF',
+              wickDownColor: '#AA44FF',
+              wickUpColor: '#AA44FF',
+              priceLineVisible: false,
+              lastValueVisible: false,
+            });
+            purpleBoxSeries.setData(purpleBoxData);
+            if (!subChartSeriesRefs.current[indicatorId]) {
+              subChartSeriesRefs.current[indicatorId] = purpleBoxSeries;
+            }
+          }
+
+          if (bullLineData.length > 0) {
+            const bullLineSeries = chart.addSeries(lightweightCharts.LineSeries, {
+              color: '#FFAA00',
+              lineWidth: 1,
+              priceLineVisible: false,
+              lastValueVisible: false,
+            });
+            bullLineSeries.setData(bullLineData);
+            if (!subChartSeriesRefs.current[indicatorId]) {
+              subChartSeriesRefs.current[indicatorId] = bullLineSeries;
+            }
+          }
+          
+          if (bearLineData.length > 0) {
+            const bearLineSeries = chart.addSeries(lightweightCharts.LineSeries, {
+              color: '#44AA44',
+              lineWidth: 1,
+              priceLineVisible: false,
+              lastValueVisible: false,
+            });
+            bearLineSeries.setData(bearLineData);
+          }
+          
+          if (marketMidlineData.length > 0) {
+            const marketMidlineSeries = chart.addSeries(lightweightCharts.LineSeries, {
+              color: '#FF4444',
+              lineWidth: 1,
+              lineStyle: 2,
+              priceLineVisible: false,
+              lastValueVisible: false,
+            });
+            marketMidlineSeries.setData(marketMidlineData);
+          }
+
+        } else if (indicatorId === 'resonance_chase' && indicatorData) {
+          const filteredIndicatorData = filterDataByTimeRange(indicatorData.data, 'date');
+          
+          const midBarData = filteredIndicatorData.map((item: any) => {
+            const value = item.mid_bullish ? 1 : -1;
+            const color = item.mid_bullish ? '#FF4444' : '#44AA44';
+            return {
+              time: item.date,
+              value: value,
+              color: color,
+            };
+          }).filter((d: any) => d.value !== null && d.value !== undefined);
+
+          const out1Data = filteredIndicatorData.map((item: any) => ({
+            time: item.date,
+            value: Number((item.OUT1 || 0).toFixed(2)),
+          })).filter((d: any) => d.value !== null && d.value !== undefined);
+
+          const out2Data = filteredIndicatorData.map((item: any) => ({
+            time: item.date,
+            value: Number((item.OUT2 || 0).toFixed(2)),
+          })).filter((d: any) => d.value !== null && d.value !== undefined);
+
+          // 共振柱：K线箱体显示，底部固定为0.5，顶部为原高度-0.5
+          const resonanceBoxData = filteredIndicatorData
+            .filter((item: any) => item.resonance)
+            .map((item: any) => {
+              const baseValue = 0.5;
+              const originalHeight = Math.abs(item.OUT1 || 0);
+              const topValue = originalHeight - 0.5;
+              const finalTopValue = topValue > baseValue ? topValue : baseValue + 0.1;
+              
+              return {
+                time: item.date,
+                open: Number(baseValue.toFixed(2)),
+                high: Number(finalTopValue.toFixed(2)),
+                low: Number(baseValue.toFixed(2)),
+                close: Number(finalTopValue.toFixed(2)),
+              };
+            });
+
+          // 先画中线柱（在底部）
+          if (midBarData.length > 0) {
+            const midHistogramSeries = chart.addSeries(lightweightCharts.HistogramSeries, {
+              color: '#FF4444',
+              priceFormat: {
+                type: 'price',
+                precision: 0,
+              },
+              crosshairMarkerVisible: false,
+              priceLineVisible: false,
+              lastValueVisible: false,
+            } as any);
+            
+            const midHistogramData = midBarData.map((d: any) => ({
+              time: d.time,
+              value: d.value,
+              color: d.color,
+            }));
+            
+            midHistogramSeries.setData(midHistogramData);
+          }
+
+          // 再画共振柱（在中间，使用K线箱体）
+          if (resonanceBoxData.length > 0) {
+            const resonanceBoxSeries = chart.addSeries(lightweightCharts.CandlestickSeries, {
+              upColor: '#AA44FF',
+              downColor: '#AA44FF',
+              borderDownColor: '#AA44FF',
+              borderUpColor: '#AA44FF',
+              wickDownColor: '#AA44FF',
+              wickUpColor: '#AA44FF',
+              priceLineVisible: false,
+              lastValueVisible: false,
+            });
+            resonanceBoxSeries.setData(resonanceBoxData);
+          }
+          
+          // 添加一个仅用于显示 Last Value 的 LineSeries，显示 OUT1 的值（取整）
+          // 使用完整的 out1Data 确保有最新日期的数据
+          if (out1Data.length > 0) {
+            const lastValueLineData = out1Data.map((item: any) => ({
+              time: item.time,
+              value: Math.max(0, item.value - 0.5), // 和共振柱计算方式一致
+            }));
+            
+            const lastValueLineSeries = chart.addSeries(lightweightCharts.LineSeries, {
+              color: 'transparent',
+              priceLineVisible: false,
+              lastValueVisible: true,
+              priceFormat: {
+                type: 'price',
+                precision: 0,
+                minMove: 1,
+              },
+            });
+            lastValueLineSeries.setData(lastValueLineData);
+          }
+
+          // 最后画OUT1线和OUT2线（在顶部）
+          if (out1Data.length > 0) {
+            const out1LineSeries = chart.addSeries(lightweightCharts.LineSeries, {
+              color: '#FFAA00',
+              lineWidth: 1,
+              priceLineVisible: false,
+              lastValueVisible: false,
+            });
+            out1LineSeries.setData(out1Data);
+            subChartSeriesRefs.current[indicatorId] = out1LineSeries;
+          }
+
+          if (out2Data.length > 0) {
+            const out2LineSeries = chart.addSeries(lightweightCharts.LineSeries, {
+              color: '#4477FF',
+              lineWidth: 1,
+              priceLineVisible: false,
+              lastValueVisible: false,
+            });
+            out2LineSeries.setData(out2Data);
           }
 
         }
@@ -1002,81 +1290,6 @@ const VisualizationPage: React.FC = () => {
         resizeObserver.observe(containerRef);
         subChartResizeObservers.current[indicatorId] = resizeObserver;
         
-        // 子图验证并限制时间范围函数
-        const validateAndClampTimeRangeSub = (timeRange: any) => {
-          if (!timeRange || !timeRange.from || !timeRange.to) {
-            return { clampedRange: timeRange, wasClamped: false };
-          }
-
-          let clampedFrom = timeRange.from;
-          let clampedTo = timeRange.to;
-          let wasClamped = false;
-
-          // 转换为时间戳进行比较
-          const toTimestamp = (time: any): number => {
-            if (typeof time === 'string' && time.includes('-')) {
-              return new Date(time).getTime() / 1000;
-            }
-            return Number(time);
-          };
-
-          const fromTs = toTimestamp(clampedFrom);
-          const toTs = toTimestamp(clampedTo);
-          const earliestTs = earliestDateRef.current ? toTimestamp(earliestDateRef.current) : -Infinity;
-          const latestTs = latestDateRef.current ? toTimestamp(latestDateRef.current) : Infinity;
-
-          // 检查并限制边界
-          if (fromTs < earliestTs) {
-            const originalRange = toTs - fromTs;
-            clampedFrom = earliestDateRef.current;
-            const newFromTs = earliestTs;
-            const newToTs = newFromTs + originalRange;
-            
-            // 确保新的 to 不超过 latestDateRef.current
-            if (newToTs > latestTs && latestDateRef.current) {
-              clampedTo = latestDateRef.current;
-              clampedFrom = earliestDateRef.current;
-            } else {
-              clampedTo = timeRange.to;
-            }
-            wasClamped = true;
-          }
-
-          if (toTs > latestTs) {
-            const originalRange = toTs - fromTs;
-            clampedTo = latestDateRef.current;
-            const newToTs = latestTs;
-            const newFromTs = newToTs - originalRange;
-            
-            // 确保新的 from 不小于 earliestDateRef.current
-            if (newFromTs < earliestTs && earliestDateRef.current) {
-              clampedFrom = earliestDateRef.current;
-              clampedTo = latestDateRef.current;
-            } else {
-              clampedFrom = timeRange.from;
-            }
-            wasClamped = true;
-          }
-
-          // 最终确保边界不超出
-          const finalFromTs = toTimestamp(clampedFrom);
-          const finalToTs = toTimestamp(clampedTo);
-          
-          if (finalFromTs < earliestTs && earliestDateRef.current) {
-            clampedFrom = earliestDateRef.current;
-            wasClamped = true;
-          }
-          if (finalToTs > latestTs && latestDateRef.current) {
-            clampedTo = latestDateRef.current;
-            wasClamped = true;
-          }
-
-          return { 
-            clampedRange: { from: clampedFrom, to: clampedTo }, 
-            wasClamped 
-          };
-        };
-
         // 添加子图时间轴变化监听，实现双向联动
         const handleSubChartTimeScaleChange = () => {
           if (!chart || isTimeRangeUpdatingRef.current) return;
@@ -1085,22 +1298,15 @@ const VisualizationPage: React.FC = () => {
             isTimeRangeUpdatingRef.current = true;
             const timeRange = chart.timeScale().getVisibleRange();
             if (timeRange && timeRange.from && timeRange.to && mainChartRef.current) {
-              // 验证并限制时间范围
-              const { clampedRange, wasClamped } = validateAndClampTimeRangeSub(timeRange);
-              
-              // 如果被限制了，应用到当前子图
-              if (wasClamped) {
-                chart.timeScale().setVisibleRange(clampedRange);
-              }
-              
+              // 直接使用时间范围，不限制，让缩放更自由
               // 同步到主图
-              mainChartRef.current.timeScale().setVisibleRange(clampedRange);
+              mainChartRef.current.timeScale().setVisibleRange(timeRange);
               
               // 同步到其他子图
               Object.keys(subChartRefs.current).forEach(otherIndicatorId => {
                 if (otherIndicatorId !== indicatorId && subChartRefs.current[otherIndicatorId]) {
                   try {
-                    subChartRefs.current[otherIndicatorId]!.timeScale().setVisibleRange(clampedRange);
+                    subChartRefs.current[otherIndicatorId]!.timeScale().setVisibleRange(timeRange);
                   } catch (e) {
                     console.warn('Failed to sync to other subchart:', e);
                   }
@@ -1133,26 +1339,8 @@ const VisualizationPage: React.FC = () => {
           try {
             currentCrosshairTimeRef.current = param.time;
             
-            // 获取当前子图指标的值
-            let indicatorValue: number | undefined;
-            if (param.time && indicatorsDataRef.current[indicatorId]) {
-              const indicatorData = indicatorsDataRef.current[indicatorId].data.find((item: any) => {
-                // 不同指标使用不同的日期字段
-                const itemDate = item.date || item.time;
-                return itemDate === param.time;
-              });
-              
-              if (indicatorData) {
-                // 根据指标类型获取对应的值字段
-                if (indicatorId === 'banker_control') {
-                  indicatorValue = indicatorData.control_degree;
-                } else if (indicatorId === 'main_capital_absorption') {
-                  indicatorValue = indicatorData.main_capital_absorption;
-                } else if (indicatorId === 'main_cost') {
-                  indicatorValue = indicatorData.main_cost || indicatorData.cost;
-                }
-              }
-            }
+            // 获取所有指标在当前时间点的值
+            const indicatorValues = getAllIndicatorValuesAtTime(param.time);
             
             // 同步十字线位置到主图
             if (param.time && mainChartRef.current && candlestickSeriesRef.current && klineDataRef.current) {
@@ -1197,6 +1385,13 @@ const VisualizationPage: React.FC = () => {
                             otherPrice = otherDataPoint.main_capital_absorption;
                           } else if (otherIndicatorId === 'main_cost') {
                             otherPrice = otherDataPoint.main_cost || otherDataPoint.cost;
+                          } else if (otherIndicatorId === 'momentum_2') {
+                            otherPrice = otherDataPoint.strong_momentum || otherDataPoint.medium_momentum || 
+                                         otherDataPoint.no_momentum || otherDataPoint.recovery_momentum;
+                          } else if (otherIndicatorId === 'strong_detonation') {
+                            otherPrice = otherDataPoint.bull_line;
+                          } else if (otherIndicatorId === 'resonance_chase') {
+                            otherPrice = otherDataPoint.OUT1;
                           }
                         }
                       }
@@ -1263,14 +1458,22 @@ const VisualizationPage: React.FC = () => {
                     tradingLine: dataPoint.trading_line,
                     defenseLine: dataPoint.defense_line,
                     signal: signal,
-                    bankerControl: indicatorId === 'banker_control' ? indicatorValue : cursorValues.bankerControl,
-                    mainCapitalAbsorption: indicatorId === 'main_capital_absorption' ? indicatorValue : cursorValues.mainCapitalAbsorption,
+                    bankerControl: indicatorValues.bankerControl,
+                    mainCapitalAbsorption: indicatorValues.mainCapitalAbsorption,
+                    mainCost: indicatorValues.mainCost,
+                    momentum2: indicatorValues.momentum2,
+                    strongDetonation: indicatorValues.strongDetonation,
+                    resonanceChase: indicatorValues.resonanceChase,
                   });
                 } else {
-                  // 即使没有主图数据，也要保留子图指标的值
+                  // 即使没有主图数据，也要更新所有子图指标的值
                   setCursorValues({
-                    bankerControl: indicatorId === 'banker_control' ? indicatorValue : cursorValues.bankerControl,
-                    mainCapitalAbsorption: indicatorId === 'main_capital_absorption' ? indicatorValue : cursorValues.mainCapitalAbsorption,
+                    bankerControl: indicatorValues.bankerControl,
+                    mainCapitalAbsorption: indicatorValues.mainCapitalAbsorption,
+                    mainCost: indicatorValues.mainCost,
+                    momentum2: indicatorValues.momentum2,
+                    strongDetonation: indicatorValues.strongDetonation,
+                    resonanceChase: indicatorValues.resonanceChase,
                   });
                 }
               }
@@ -1693,6 +1896,84 @@ const VisualizationPage: React.FC = () => {
                       style={{ backgroundColor: indicatorOption.color }}
                     />
                     {indicatorOption.name}
+                    {/* 主力成本指标显示资金流向数据 */}
+                    {indicatorId === 'main_cost' && indicatorData && (
+                      <span className="text-xs text-muted/80 ml-2">
+                        {(() => {
+                          console.log('main_cost indicatorData:', indicatorData);
+                          console.log('main_cost metadata:', (indicatorData as any).metadata);
+                          const metadata = (indicatorData as any).metadata;
+                          if (!metadata) {
+                            return null;
+                          }
+                          const formatAmount = (amount: number) => {
+                            if (Math.abs(amount) >= 10000) {
+                              return `${(amount / 10000).toFixed(2)}万`;
+                            }
+                            return amount.toFixed(2);
+                          };
+                          const mainNetInflow = metadata.main_net_inflow || 0;
+                          const color = mainNetInflow > 0 ? '#FF4444' : mainNetInflow < 0 ? '#44AA44' : '#666666';
+                          return (
+                            <span style={{ color }}>
+                              主力: {formatAmount(mainNetInflow)}
+                            </span>
+                          );
+                        })()}
+                      </span>
+                    )}
+                    {/* 强势起爆指标显示连续紫色箱体数量 */}
+                    {indicatorId === 'strong_detonation' && indicatorData && (
+                      <span className="text-xs text-muted/80 ml-2">
+                        {(() => {
+                          const data = indicatorData.data;
+                          if (!data || data.length === 0) return null;
+                          
+                          let consecutivePurple = 0;
+                          for (let i = data.length - 1; i >= 0; i--) {
+                            const item = data[i];
+                            if (item.purple_box_open !== null && item.purple_box_open !== undefined && !isNaN(item.purple_box_open)) {
+                              consecutivePurple++;
+                            } else {
+                              break;
+                            }
+                          }
+                          if (consecutivePurple > 0) {
+                            return (
+                              <span style={{ color: '#AA44FF' }}>
+                                连紫: {consecutivePurple}
+                              </span>
+                            );
+                          }
+                          return null;
+                        })()}
+                      </span>
+                    )}
+                    {/* 共振追涨指标显示最新共振柱顶部高度 */}
+                    {indicatorId === 'resonance_chase' && indicatorData && (
+                      <span className="text-xs text-muted/80 ml-2">
+                        {(() => {
+                          const data = indicatorData.data;
+                          if (!data || data.length === 0) return null;
+                          
+                          const lastItem = data[data.length - 1];
+                          if (!lastItem) return null;
+                          
+                          if (lastItem.resonance) {
+                            const originalHeight = Math.abs(lastItem.OUT1 || 0);
+                            const topValue = originalHeight - 0.5;
+                            if (topValue > 0) {
+                              return (
+                                <span style={{ color: '#AA44FF' }}>
+                                  高度: {Math.floor(topValue)}
+                                </span>
+                              );
+                            }
+                          }
+                          return null;
+                        })()}
+                      </span>
+                    )}
                   </h3>
                   {/* 显示光标处的指标值 */}
                   {indicatorId === 'banker_control' && cursorValues.bankerControl !== undefined && cursorValues.bankerControl !== null && !isNaN(cursorValues.bankerControl) && (
@@ -1703,6 +1984,16 @@ const VisualizationPage: React.FC = () => {
                   {indicatorId === 'main_capital_absorption' && cursorValues.mainCapitalAbsorption !== undefined && cursorValues.mainCapitalAbsorption !== null && !isNaN(cursorValues.mainCapitalAbsorption) && (
                     <span className="text-xs font-mono text-cyan">
                       {cursorValues.mainCapitalAbsorption.toFixed(2)}
+                    </span>
+                  )}
+                  {indicatorId === 'main_cost' && cursorValues.mainCost !== undefined && cursorValues.mainCost !== null && !isNaN(cursorValues.mainCost) && (
+                    <span className="text-xs font-mono text-cyan">
+                      {cursorValues.mainCost.toFixed(2)}
+                    </span>
+                  )}
+                  {indicatorId === 'resonance_chase' && cursorValues.resonanceChase !== undefined && cursorValues.resonanceChase !== null && !isNaN(cursorValues.resonanceChase) && (
+                    <span className="text-xs font-mono text-cyan">
+                      {Math.floor(cursorValues.resonanceChase)}
                     </span>
                   )}
                 </div>

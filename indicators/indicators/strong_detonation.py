@@ -1,6 +1,9 @@
+import logging
 import pandas as pd
 import numpy as np
 from ..base import BaseIndicator
+
+logger = logging.getLogger(__name__)
 
 
 class StrongDetonation(BaseIndicator):
@@ -32,20 +35,22 @@ class StrongDetonation(BaseIndicator):
         """Lowest Low Value"""
         return data.rolling(window=period).min()
 
-    def calculate(self, data: pd.DataFrame) -> pd.DataFrame:
+    def calculate(self, data: pd.DataFrame, index_data: pd.DataFrame = None) -> pd.DataFrame:
         """
         Calculate the Strong Detonation indicator
 
         Args:
             data: Input DataFrame with columns: Open, High, Low, Close, Volume
+            index_data: 包含大盘指数历史数据的DataFrame（可选）
 
         Returns:
             DataFrame with indicator values
         """
         self.validate_input(data)
+        logger.info("[强势起爆指标] 数据验证通过，开始计算指标")
 
         df = data.copy()
-        result = pd.DataFrame(index=df.index)
+        result = df.copy()
 
         # AAA:=(3*C+H+L+O)/6
         aaa = (3 * df['Close'] + df['High'] + df['Low'] + df['Open']) / 6
@@ -71,14 +76,76 @@ class StrongDetonation(BaseIndicator):
         bear_line = (self._llv(var3, 5) + self._llv(var3, 15) + self._llv(var3, 30)) / 3
         result['bear_line'] = bear_line
 
-        # A1:= 平均股价CLOSE /EMA(平均股价CLOSE,120)
-        # 用个股价格作为代理
-        a1 = df['Close'] / self._ema(df['Close'], 120)
-        result['a1'] = a1
+        # 大盘中线计算
+        # 先计算个股的长期趋势（EMA120）
+        ema120_stock = self._ema(df['Close'], 120)
+        
+        if index_data is not None and not index_data.empty:
+            logger.info("[强势起爆指标] 使用真实大盘指数数据计算大盘中线")
+            
+            try:
+                # 确保日期格式一致
+                if 'date' in index_data.columns:
+                    index_data['date'] = pd.to_datetime(index_data['date']).dt.date
+                
+                if 'date' in df.columns:
+                    df['date'] = pd.to_datetime(df['date']).dt.date
+                
+                # 先重命名大盘数据的close列，避免与个股数据的Close列冲突
+                index_data_renamed = index_data[['date', 'close']].rename(columns={'close': 'close_index'})
+                
+                # 按日期合并数据
+                df = df.merge(
+                    index_data_renamed,
+                    on='date',
+                    how='left'
+                )
+                
+                # 检查是否成功合并
+                if 'close_index' in df.columns:
+                    # 填充缺失值，使用前向填充和后向填充
+                    df['close_index'] = df['close_index'].ffill().bfill()
+                    
+                    # 检查是否还有缺失值
+                    if df['close_index'].isna().any():
+                        logger.warning("[强势起爆指标] 部分大盘数据缺失，使用个股价格作为代理")
+                        # 使用个股价格作为代理
+                        a1 = df['Close'] / ema120_stock
+                        result['a1'] = a1
+                        market_midline = self._ema(ema120_stock * a1, 2)
+                    else:
+                        # 使用真实大盘数据计算
+                        # A1 = 大盘收盘价 / EMA(大盘收盘价, 120) （大盘强弱系数）
+                        index_close = df['close_index']
+                        ema120_index = self._ema(index_close, 120)
+                        a1 = index_close / ema120_index
+                        result['a1'] = a1
+                        # 大盘中线 = EMA(个股EMA120 × 大盘强弱系数, 2)
+                        market_midline = self._ema(ema120_stock * a1, 2)
+                else:
+                    logger.warning("[强势起爆指标] 合并大盘数据失败，使用个股价格作为代理")
+                    # 使用个股价格作为代理
+                    a1 = df['Close'] / ema120_stock
+                    result['a1'] = a1
+                    market_midline = self._ema(ema120_stock * a1, 2)
+                    
+            except Exception as e:
+                logger.warning(f"[强势起爆指标] 使用大盘数据计算失败: {e}，使用个股价格作为代理")
+                # 回退到代理模式
+                a1 = df['Close'] / ema120_stock
+                result['a1'] = a1
+                market_midline = self._ema(ema120_stock * a1, 2)
+            
+        else:
+            logger.warning("[强势起爆指标] 未获取到真实大盘指数数据，使用个股价格作为代理")
+            
+            # A1:= 个股收盘价 / EMA(个股收盘价, 120) （模拟大盘强弱系数）
+            a1 = df['Close'] / ema120_stock
+            result['a1'] = a1
 
-        # 大盘中线: EMA(EMA(C,120)*A1,2)
-        ema120 = self._ema(df['Close'], 120)
-        market_midline = self._ema(ema120 * a1, 2)
+            # 大盘中线: EMA(个股EMA120 × A1, 2)
+            market_midline = self._ema(ema120_stock * a1, 2)
+        
         result['market_midline'] = market_midline
 
         # 强势: AAA>=牛线 AND AAA>=大盘中线
@@ -94,5 +161,30 @@ class StrongDetonation(BaseIndicator):
             (aaa >= bull_line) & (aaa < market_midline) & (bull_line < market_midline)
         )
         result['weak'] = weak
+        
+        # 红色箱体：个股高于大盘中线低于牛线
+        # 箱体：底部为大盘中线，顶部为aaa
+        red_box_open = np.where((aaa > market_midline) & (aaa < bull_line), market_midline, np.nan)
+        red_box_high = np.where((aaa > market_midline) & (aaa < bull_line), aaa, np.nan)
+        red_box_low = np.where((aaa > market_midline) & (aaa < bull_line), market_midline, np.nan)
+        red_box_close = np.where((aaa > market_midline) & (aaa < bull_line), aaa, np.nan)
+        
+        result['red_box_open'] = red_box_open
+        result['red_box_high'] = red_box_high
+        result['red_box_low'] = red_box_low
+        result['red_box_close'] = red_box_close
+        
+        # 紫色箱体：个股同时高于牛线和大盘中线
+        # 箱体：底部为max(牛线, 大盘中线)，顶部为aaa
+        max_line = np.maximum(bull_line, market_midline)
+        purple_box_open = np.where((aaa > bull_line) & (aaa > market_midline), max_line, np.nan)
+        purple_box_high = np.where((aaa > bull_line) & (aaa > market_midline), aaa, np.nan)
+        purple_box_low = np.where((aaa > bull_line) & (aaa > market_midline), max_line, np.nan)
+        purple_box_close = np.where((aaa > bull_line) & (aaa > market_midline), aaa, np.nan)
+        
+        result['purple_box_open'] = purple_box_open
+        result['purple_box_high'] = purple_box_high
+        result['purple_box_low'] = purple_box_low
+        result['purple_box_close'] = purple_box_close
 
         return result
