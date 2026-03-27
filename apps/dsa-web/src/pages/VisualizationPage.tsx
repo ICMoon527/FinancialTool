@@ -120,6 +120,17 @@ const VisualizationPage: React.FC = () => {
     loadSearchHistory();
   }, [loadSearchHistory]);
 
+  // 通用函数：获取指定指标在指定时间的数据项
+  const getIndicatorDataItem = (indicatorId: string, time: any) => {
+    if (indicatorsDataRef.current[indicatorId]) {
+      return indicatorsDataRef.current[indicatorId].data.find((item: any) => {
+        const itemDate = item.date || item.time;
+        return itemDate === time;
+      });
+    }
+    return undefined;
+  };
+
   // 获取所有指标在指定时间点的值
   const getAllIndicatorValuesAtTime = (time: any) => {
     const values: {
@@ -131,67 +142,37 @@ const VisualizationPage: React.FC = () => {
       resonanceChase?: number;
     } = {};
 
-    if (indicatorsDataRef.current['banker_control']) {
-      const bankerData = indicatorsDataRef.current['banker_control'].data.find((item: any) => {
-        const itemDate = item.date || item.time;
-        return itemDate === time;
-      });
-      if (bankerData) {
-        values.bankerControl = bankerData.control_degree;
-      }
+    const bankerData = getIndicatorDataItem('banker_control', time);
+    if (bankerData) {
+      values.bankerControl = bankerData.control_degree;
     }
 
-    if (indicatorsDataRef.current['main_capital_absorption']) {
-      const absorptionData = indicatorsDataRef.current['main_capital_absorption'].data.find((item: any) => {
-        const itemDate = item.date || item.time;
-        return itemDate === time;
-      });
-      if (absorptionData) {
-        values.mainCapitalAbsorption = absorptionData.main_capital_absorption;
-      }
+    const absorptionData = getIndicatorDataItem('main_capital_absorption', time);
+    if (absorptionData) {
+      values.mainCapitalAbsorption = absorptionData.main_capital_absorption;
     }
 
-    if (indicatorsDataRef.current['main_cost']) {
-      const mainCostData = indicatorsDataRef.current['main_cost'].data.find((item: any) => {
-        const itemDate = item.date || item.time;
-        return itemDate === time;
-      });
-      if (mainCostData) {
-        values.mainCost = mainCostData.main_cost || mainCostData.cost;
-      }
+    const mainCostData = getIndicatorDataItem('main_cost', time);
+    if (mainCostData) {
+      values.mainCost = mainCostData.main_cost || mainCostData.cost;
     }
 
-    if (indicatorsDataRef.current['momentum_2']) {
-      const momentum2Data = indicatorsDataRef.current['momentum_2'].data.find((item: any) => {
-        const itemDate = item.date || item.time;
-        return itemDate === time;
-      });
-      if (momentum2Data) {
-        values.momentum2 = momentum2Data.strong_momentum || momentum2Data.medium_momentum || 
-                           momentum2Data.no_momentum || momentum2Data.recovery_momentum;
-      }
+    const momentum2Data = getIndicatorDataItem('momentum_2', time);
+    if (momentum2Data) {
+      values.momentum2 = momentum2Data.strong_momentum || momentum2Data.medium_momentum || 
+                         momentum2Data.no_momentum || momentum2Data.recovery_momentum;
     }
 
-    if (indicatorsDataRef.current['strong_detonation']) {
-      const strongDetonationData = indicatorsDataRef.current['strong_detonation'].data.find((item: any) => {
-        const itemDate = item.date || item.time;
-        return itemDate === time;
-      });
-      if (strongDetonationData) {
-        values.strongDetonation = strongDetonationData.bull_line;
-      }
+    const strongDetonationData = getIndicatorDataItem('strong_detonation', time);
+    if (strongDetonationData) {
+      values.strongDetonation = strongDetonationData.bull_line;
     }
 
-    if (indicatorsDataRef.current['resonance_chase']) {
-      const resonanceChaseData = indicatorsDataRef.current['resonance_chase'].data.find((item: any) => {
-        const itemDate = item.date || item.time;
-        return itemDate === time;
-      });
-      if (resonanceChaseData && resonanceChaseData.resonance) {
-        const originalHeight = Math.abs(resonanceChaseData.OUT1 || 0);
-        const topValue = originalHeight - 0.5;
-        values.resonanceChase = topValue > 0 ? topValue : undefined;
-      }
+    const resonanceChaseData = getIndicatorDataItem('resonance_chase', time);
+    if (resonanceChaseData && resonanceChaseData.resonance) {
+      const originalHeight = Math.abs(resonanceChaseData.OUT1 || 0);
+      const topValue = originalHeight - 0.5;
+      values.resonanceChase = topValue > 0 ? topValue : undefined;
     }
 
     return values;
@@ -384,31 +365,25 @@ const VisualizationPage: React.FC = () => {
                     }
                     console.log('Volume sync:', { paramTime: param.time, klinePoint, price });
                   } else {
-                    const indicatorData = indicatorsDataRef.current[indicatorId];
-                    if (indicatorData && indicatorData.data) {
-                      const dataPoint = indicatorData.data.find((item: any) => {
-                        const itemDate = item.date || item.time;
-                        return itemDate === param.time;
-                      });
-                      
-                      if (dataPoint) {
-                        if (indicatorId === 'banker_control') {
-                          price = dataPoint.control_degree;
-                        } else if (indicatorId === 'main_capital_absorption') {
-                          price = dataPoint.main_capital_absorption;
-                        } else if (indicatorId === 'main_cost') {
-                          price = dataPoint.main_cost || dataPoint.cost;
-                        } else if (indicatorId === 'momentum_2') {
-                          price = dataPoint.strong_momentum || dataPoint.medium_momentum || 
-                                  dataPoint.no_momentum || dataPoint.recovery_momentum;
-                        } else if (indicatorId === 'strong_detonation') {
-                          price = dataPoint.bull_line;
-                        } else if (indicatorId === 'resonance_chase') {
-                          if (dataPoint.resonance) {
-                            const originalHeight = Math.abs(dataPoint.OUT1 || 0);
-                            const topValue = originalHeight - 0.5;
-                            price = topValue > 0 ? topValue : undefined;
-                          }
+                    const dataPoint = getIndicatorDataItem(indicatorId, param.time);
+                    
+                    if (dataPoint) {
+                      if (indicatorId === 'banker_control') {
+                        price = dataPoint.control_degree;
+                      } else if (indicatorId === 'main_capital_absorption') {
+                        price = dataPoint.main_capital_absorption;
+                      } else if (indicatorId === 'main_cost') {
+                        price = dataPoint.main_cost || dataPoint.cost;
+                      } else if (indicatorId === 'momentum_2') {
+                        price = dataPoint.strong_momentum || dataPoint.medium_momentum || 
+                                dataPoint.no_momentum || dataPoint.recovery_momentum;
+                      } else if (indicatorId === 'strong_detonation') {
+                        price = dataPoint.bull_line;
+                      } else if (indicatorId === 'resonance_chase') {
+                        if (dataPoint.resonance) {
+                          const originalHeight = Math.abs(dataPoint.OUT1 || 0);
+                          const topValue = originalHeight - 0.5;
+                          price = topValue > 0 ? topValue : undefined;
                         }
                       }
                     }
