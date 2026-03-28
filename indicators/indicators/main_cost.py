@@ -100,36 +100,31 @@ class MainCost(BaseIndicator):
                 how='left'
             )
             
-            # 填充缺失值
-            df['main_net_inflow'] = df['main_net_inflow'].fillna(0)
-            df['big_net_inflow'] = df['big_net_inflow'].fillna(0)
-            df['super_net_inflow'] = df['super_net_inflow'].fillna(0)
-            df['small_net_inflow'] = df['small_net_inflow'].fillna(0)
-            df['medium_net_inflow'] = df['medium_net_inflow'].fillna(0)
-            
-            # 使用真实资金流向数据计算
-            df["main_buy"] = (df["super_net_inflow"] + df["big_net_inflow"]) / 10000
-            df["main_sell"] = (-df["super_net_inflow"] - df["big_net_inflow"]) / 10000
-            df["main_sell"] = df["main_sell"].clip(lower=0)
-            
-            df["net_buy"] = df["main_buy"] - df["main_sell"]
-            df["cum_net_buy"] = df["net_buy"].cumsum()
+            # 只在有真实资金流向数据的日期计算，其他日期保持NaN
+            mask = df['main_net_inflow'].notna()
+            if mask.any():
+                logger.info(f"[主力成本指标] 使用 {mask.sum()} 天真实资金流向数据")
+                df.loc[mask, "main_buy"] = (df.loc[mask, "super_net_inflow"] + df.loc[mask, "big_net_inflow"]) / 10000
+                df.loc[mask, "main_sell"] = (-df.loc[mask, "super_net_inflow"] - df.loc[mask, "big_net_inflow"]) / 10000
+                df.loc[mask, "main_sell"] = df.loc[mask, "main_sell"].clip(lower=0)
+                df.loc[mask, "net_buy"] = df.loc[mask, "main_buy"] - df.loc[mask, "main_sell"]
+                df.loc[mask, "cum_net_buy"] = df.loc[mask, "net_buy"].cumsum()
             
             # 按策略公式计算主力成本
             df = self._calculate_by_strategy(df)
             
         else:
-            # 使用模拟数据
-            logger.warning("[主力成本指标] 未获取到真实资金流向数据，使用模拟数据替代！")
-            df = self._simulate_capital_flow(data)
-
-            df["main_buy"] = (df["SYS_SUPERIN_TICK"] + df["SYS_BIGIN_TICK"]) / 10000
-            df["main_sell"] = (df["SYS_SUPEROUT_TICK"] + df["SYS_BIGOUT_TICK"]) / 10000
-            df["net_buy"] = df["main_buy"] - df["main_sell"]
-            df["cum_net_buy"] = df["net_buy"].cumsum()
-
-            # 按策略公式计算主力成本
-            df = self._calculate_by_strategy(df)
+            logger.warning("[主力成本指标] 未获取到真实资金流向数据，无法计算主力成本！")
+            result = data.copy()
+            result["main_buy"] = np.nan
+            result["main_sell"] = np.nan
+            result["net_buy"] = np.nan
+            result["cum_net_buy"] = np.nan
+            result["buy_avg_price"] = np.nan
+            result["sell_avg_price"] = np.nan
+            result["main_cost"] = np.nan
+            result["avg_price"] = np.nan
+            return result
 
         result = data.copy()
         result["main_buy"] = df["main_buy"]
@@ -145,7 +140,7 @@ class MainCost(BaseIndicator):
     
     def _calculate_by_strategy(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        按照策略公式计算主力成本。
+        按照策略公式计算主力成本。只在有真实资金流向数据的日期计算，其他日期保持NaN。
 
         Args:
             df: 包含数据的DataFrame
@@ -172,7 +167,8 @@ class MainCost(BaseIndicator):
             main_buy = main_buy_values[i]
             main_sell = main_sell_values[i]
             
-            if pd.isna(close):
+            # 只在有真实资金流向数据的日期计算
+            if pd.isna(main_buy) or pd.isna(main_sell) or pd.isna(close):
                 buy_avg_series.append(np.nan)
                 sell_avg_series.append(np.nan)
                 main_cost_series.append(np.nan)
@@ -207,6 +203,6 @@ class MainCost(BaseIndicator):
         df['main_cost'] = main_cost_series
         
         # 成交均价线：DYNAINFO(11) - 使用平均成交价（这里简化为Close，因为没有单独的成交价数据）
-        df['avg_price'] = df['Close']
+        df['avg_price'] = np.where(pd.notna(df['main_cost']), df['Close'], np.nan)
         
         return df

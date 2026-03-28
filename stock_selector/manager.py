@@ -16,6 +16,7 @@ from stock_selector.config import StockSelectorConfig
 from stock_selector.sector_manager import SectorManager
 from stock_selector.strategies.nl_strategy_loader import load_nl_strategies_from_dir
 from stock_selector.strategies.python_strategy_loader import load_python_strategies_from_dir
+from stock_selector.mocks import MockQuote, MockDataProvider
 
 logger = logging.getLogger(__name__)
 
@@ -268,46 +269,12 @@ class StrategyManager:
                     today = date.today()
                     context = self._db_manager.get_analysis_context(stock_code, today)
                     if context:
-                        # Create a mock quote object with cached data
-                        class MockQuote:
-                            def __init__(self, context):
-                                self.price = context.get('today', {}).get('close')
-                                self.change_pct = context.get('price_change_ratio')
-                                self.volume = context.get('today', {}).get('volume')
-                                self.volume_ratio = context.get('volume_change_ratio')
-                                self.turnover_rate = None
-                                self.name = stock_name
-                                
-                            def has_basic_data(self):
-                                return self.price is not None
-                        
-                        # Set the mock quote for the strategy
-                        original_data_provider = strategy._data_provider
-                        
-                        # Create a mock data provider that returns cached data
-                        class MockDataProvider:
-                            def __init__(self, db_manager, stock_code, mock_quote):
-                                self.db_manager = db_manager
-                                self.stock_code = stock_code
-                                self.mock_quote = mock_quote
-                                
-                            def get_realtime_quote(self, code):
-                                return self.mock_quote
-                                
-                            def get_daily_data(self, code, days=60):
-                                # Get historical data from database - use 120 days to ensure enough trading days
-                                from datetime import timedelta
-                                end_date = date.today()
-                                start_date = end_date - timedelta(days=120)
-                                data = self.db_manager.get_data_range(code, start_date, end_date)
-                                if data:
-                                    import pandas as pd
-                                    df = pd.DataFrame([item.to_dict() for item in data])
-                                    return df, "database"
-                                return None, "database"
-                        
-                        mock_quote = MockQuote(context)
+                        # 使用导入的 Mock 类，不再重复定义
+                        mock_quote = MockQuote(context, stock_name)
                         mock_data_provider = MockDataProvider(self._db_manager, stock_code, mock_quote)
+                        
+                        # Set mock data provider for the strategy
+                        original_data_provider = strategy._data_provider
                         strategy._data_provider = mock_data_provider
                         
                         # Execute strategy with cached data

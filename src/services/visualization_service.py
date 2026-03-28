@@ -240,7 +240,13 @@ class VisualizationService:
         if 'main_cost' in indicator_types or 'main_capital_absorption' in indicator_types:
             try:
                 logger.info(f"正在获取 {stock_code} 的资金流向数据...")
-                fund_flow_data = fetcher_manager.get_fund_flow_data(stock_code)
+                # 从 K线数据获取日期范围
+                start_date = None
+                end_date = None
+                if kline_data:
+                    start_date = kline_data[0].get('date')
+                    end_date = kline_data[-1].get('date')
+                fund_flow_data = fetcher_manager.get_fund_flow_data(stock_code, start_date=start_date, end_date=end_date)
                 if fund_flow_data is not None and not fund_flow_data.empty:
                     logger.info(f"成功获取 {stock_code} 资金流向数据: {len(fund_flow_data)} 条")
                 else:

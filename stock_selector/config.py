@@ -60,6 +60,15 @@ class StockSelectorConfig:
     # 多线程配置
     enable_multithreading: bool = True
     multithreading_workers: int = 15
+    
+    # 六维选股配置
+    six_dimension_main_trading_weight: float = 1.0
+    six_dimension_bank_control_weight: float = 1.0
+    six_dimension_momentum_v2_weight: float = 1.0
+    six_dimension_resonance_weight: float = 1.0
+    six_dimension_strong_blast_weight: float = 1.0
+    six_dimension_sector_weight: float = 1.0
+    six_dimension_min_matched_dimensions: int = 2
 
     @classmethod
     def _parse_strategy_multipliers(cls, env_str: str) -> Dict[str, float]:
@@ -213,6 +222,28 @@ class StockSelectorConfig:
         
         if os.getenv("STOCK_SELECTOR_MULTITHREADING_WORKERS"):
             config.multithreading_workers = int(os.getenv("STOCK_SELECTOR_MULTITHREADING_WORKERS"))
+        
+        # 六维选股配置
+        if os.getenv("SIX_DIMENSION_MAIN_TRADING_WEIGHT"):
+            config.six_dimension_main_trading_weight = float(os.getenv("SIX_DIMENSION_MAIN_TRADING_WEIGHT"))
+        
+        if os.getenv("SIX_DIMENSION_BANK_CONTROL_WEIGHT"):
+            config.six_dimension_bank_control_weight = float(os.getenv("SIX_DIMENSION_BANK_CONTROL_WEIGHT"))
+        
+        if os.getenv("SIX_DIMENSION_MOMENTUM_V2_WEIGHT"):
+            config.six_dimension_momentum_v2_weight = float(os.getenv("SIX_DIMENSION_MOMENTUM_V2_WEIGHT"))
+        
+        if os.getenv("SIX_DIMENSION_RESONANCE_WEIGHT"):
+            config.six_dimension_resonance_weight = float(os.getenv("SIX_DIMENSION_RESONANCE_WEIGHT"))
+        
+        if os.getenv("SIX_DIMENSION_STRONG_BLAST_WEIGHT"):
+            config.six_dimension_strong_blast_weight = float(os.getenv("SIX_DIMENSION_STRONG_BLAST_WEIGHT"))
+        
+        if os.getenv("SIX_DIMENSION_SECTOR_WEIGHT"):
+            config.six_dimension_sector_weight = float(os.getenv("SIX_DIMENSION_SECTOR_WEIGHT"))
+        
+        if os.getenv("SIX_DIMENSION_MIN_MATCHED_DIMENSIONS"):
+            config.six_dimension_min_matched_dimensions = int(os.getenv("SIX_DIMENSION_MIN_MATCHED_DIMENSIONS"))
         
         return config
 

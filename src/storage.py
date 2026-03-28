@@ -1698,11 +1698,18 @@ class DatabaseManager:
         Returns:
             SectorDaily 实例，如果没有则返回 None
         """
+        from sqlalchemy.orm import make_transient
+        
         with self.session_scope() as session:
             stmt = select(SectorDaily).where(
                 and_(SectorDaily.name == name, SectorDaily.date == date)
             )
-            return session.execute(stmt).scalar_one_or_none()
+            result = session.execute(stmt).scalar_one_or_none()
+            if result:
+                # 分离对象，使其在 session 关闭后仍可访问
+                session.expunge(result)
+                make_transient(result)
+            return result
 
     def get_sector_change_pct(self, name: str, date: date) -> Optional[float]:
         """
@@ -1719,6 +1726,87 @@ class DatabaseManager:
         if sector_data:
             return sector_data.change_pct
         return None
+
+    def get_sector_history(self, name: str, end_date: date, days: int = 15) -> List[SectorDaily]:
+        """
+        获取指定板块近N天的历史数据
+
+        Args:
+            name: 板块名称
+            end_date: 结束日期
+            days: 获取天数，默认15天
+
+        Returns:
+            板块历史数据列表，按日期降序排列
+        """
+        from datetime import timedelta
+        from sqlalchemy.orm import make_transient
+        
+        start_date = end_date - timedelta(days=days)
+        
+        with self.session_scope() as session:
+            stmt = select(SectorDaily).where(
+                and_(
+                    SectorDaily.name == name,
+                    SectorDaily.date >= start_date,
+                    SectorDaily.date <= end_date
+                )
+            ).order_by(SectorDaily.date.desc())
+            
+            results = session.execute(stmt).scalars().all()
+            if results:
+                # 分离对象，使其在 session 关闭后仍可访问
+                for obj in results:
+                    session.expunge(obj)
+                    make_transient(obj)
+            return list(results) if results else []
+
+    def get_sector_avg_change_pct(self, name: str, end_date: date, days: int = 15) -> Optional[float]:
+        """
+        计算指定板块近N天的平均涨跌幅
+
+        Args:
+            name: 板块名称
+            end_date: 结束日期
+            days: 统计天数，默认15天
+
+        Returns:
+            平均涨跌幅（%），如果没有数据则返回 None
+        """
+        from datetime import timedelta
+        
+        start_date = end_date - timedelta(days=days)
+        
+        with self.session_scope() as session:
+            stmt = select(SectorDaily).where(
+                and_(
+                    SectorDaily.name == name,
+                    SectorDaily.date >= start_date,
+                    SectorDaily.date <= end_date
+                )
+            ).order_by(SectorDaily.date.desc())
+            
+            results = session.execute(stmt).scalars().all()
+            if not results:
+                return None
+            
+            change_pcts = [data.change_pct for data in results if data.change_pct is not None]
+            if not change_pcts:
+                return None
+            
+            return sum(change_pcts) / len(change_pcts)
+
+    def get_all_sectors(self) -> List[str]:
+        """
+        获取所有有数据的板块名称列表
+
+        Returns:
+            板块名称列表
+        """
+        with self.session_scope() as session:
+            stmt = select(SectorDaily.name).distinct()
+            results = session.execute(stmt).scalars().all()
+            return list(results) if results else []
 
     def save_sector_daily(
         self,

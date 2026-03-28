@@ -296,6 +296,80 @@ def filter_beijing_stock_exchange(stock_codes: List[str]) -> List[str]:
     return filtered_codes
 
 
+def filter_special_stock_codes(stock_codes: List[str]) -> List[str]:
+    """
+    过滤特定开头的股票代码（科创板、创业板等）
+    
+    过滤规则：
+    - 688开头：科创板
+    - 300开头：创业板
+    - 301开头：创业板
+    - 43开头：北交所老股
+    - 83开头：北交所
+    - 87开头：北交所
+    - 92开头：北交所
+    
+    Args:
+        stock_codes: 股票代码列表
+        
+    Returns:
+        过滤后的股票代码列表
+    """
+    original_count = len(stock_codes)
+    filtered_prefixes = ['688', '300', '301', '43', '83', '87', '92']
+    
+    filtered_codes = [
+        code for code in stock_codes 
+        if not any(code.startswith(prefix) for prefix in filtered_prefixes)
+    ]
+    
+    filtered_count = original_count - len(filtered_codes)
+    if filtered_count > 0:
+        logger.info(f"过滤掉 {filtered_count} 只特定板块股票（{', '.join(filtered_prefixes)}开头）")
+    return filtered_codes
+
+
+def is_st_stock(stock_name: Optional[str]) -> bool:
+    """
+    判断股票是否为ST股票（特别处理股票）
+    
+    Args:
+        stock_name: 股票名称
+        
+    Returns:
+        如果是ST股票返回True，否则返回False
+    """
+    if not stock_name:
+        return False
+    
+    stock_name_upper = stock_name.upper()
+    
+    return any(keyword in stock_name_upper for keyword in ['ST', '*ST', 'SST', 'S*ST'])
+
+
+def filter_st_stocks(stock_code_name_pairs: List[tuple]) -> List[tuple]:
+    """
+    过滤ST股票
+    
+    Args:
+        stock_code_name_pairs: 股票代码和名称的元组列表 [(code, name), ...]
+        
+    Returns:
+        过滤后的股票代码和名称列表
+    """
+    original_count = len(stock_code_name_pairs)
+    filtered_pairs = [
+        (code, name) for code, name in stock_code_name_pairs 
+        if not is_st_stock(name)
+    ]
+    
+    filtered_count = original_count - len(filtered_pairs)
+    if filtered_count > 0:
+        logger.info(f"过滤掉 {filtered_count} 只ST股票")
+    
+    return filtered_pairs
+
+
 def get_all_stock_codes(force_refresh: bool = False) -> List[str]:
     """
     Get all stock codes from the stock pool.
@@ -308,3 +382,37 @@ def get_all_stock_codes(force_refresh: bool = False) -> List[str]:
     """
     manager = get_stock_pool_manager()
     return manager.get_stock_list(force_refresh=force_refresh)
+
+
+def get_all_stock_code_name_pairs(force_refresh: bool = False) -> List[tuple]:
+    """
+    获取所有股票代码和名称的配对列表
+    
+    Args:
+        force_refresh: 是否强制刷新
+        
+    Returns:
+        股票代码和名称的元组列表 [(code, name), ...]
+    """
+    manager = get_stock_pool_manager()
+    if not force_refresh and manager.is_cache_valid():
+        try:
+            with manager.db_manager.get_session() as session:
+                results = session.execute(
+                    select(StockPoolItem.code, StockPoolItem.name)
+                    .order_by(StockPoolItem.code)
+                ).all()
+                
+                return [(row.code, row.name) for row in results]
+        except Exception as e:
+            logger.error(f"Failed to get cached stock code name pairs: {e}")
+            return []
+    
+    logger.info("Fetching stock list from data sources...")
+    stock_list = manager._fetch_stock_list_from_sources()
+    
+    if stock_list:
+        manager._save_stock_list_to_cache(stock_list)
+        logger.info(f"Fetched and cached {len(stock_list)} stocks")
+    
+    return [(code, name) for code, name, _ in stock_list]

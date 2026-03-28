@@ -26,7 +26,7 @@ from src.storage import DatabaseManager, StockDaily
 from sqlalchemy import select, and_
 
 from .data_update_tracker import DataUpdateTracker, get_update_tracker
-from .stock_pool import get_all_stock_codes, filter_beijing_stock_exchange
+from .stock_pool import get_all_stock_codes, filter_special_stock_codes
 
 logger = logging.getLogger(__name__)
 
@@ -575,9 +575,9 @@ class TushareDataDownloader:
         if stock_codes is None:
             stock_codes = get_all_stock_codes()
         
-        # 1. 过滤北交所的股票代码（8开头和92开头）
+        # 1. 过滤特定板块的股票代码（科创板、创业板、北交所等）
         original_count = len(stock_codes)
-        stock_codes = filter_beijing_stock_exchange(stock_codes)
+        stock_codes = filter_special_stock_codes(stock_codes)
         filtered_count = original_count - len(stock_codes)
         
         # 使用交易日历计算准确的日期范围

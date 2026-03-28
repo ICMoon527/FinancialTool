@@ -15,7 +15,7 @@ const INDICATOR_OPTIONS = [
   { id: 'main_trading', name: '主力操盘', description: '主力操盘三线', color: '#FF4444' },
   { id: 'momentum_2', name: '动能二号', description: '动能二号指标，四种颜色表示不同动能状态', color: '#FF4444' },
   { id: 'strong_detonation', name: '强势起爆', description: '强势起爆指标，识别强势起爆阶段', color: '#AA44FF' },
-  { id: 'resonance_chase', name: '共振追涨', description: '共振追涨指标，识别共振追涨机会', color: '#FFAA00' },
+  { id: 'resonance_chase', name: '共振追涨', description: '共振追涨指标，识别共振追涨机会', color: '#AA44FF' },
 ];
 
 // 子图高度
@@ -63,6 +63,7 @@ const VisualizationPage: React.FC = () => {
     momentum2?: number;
     strongDetonation?: number;
     resonanceChase?: number;
+    closePrice?: number;
   }>({});
 
   useEffect(() => {
@@ -465,8 +466,10 @@ const VisualizationPage: React.FC = () => {
                   momentum2,
                   strongDetonation,
                   resonanceChase,
+                  closePrice: klinePoint.close,
                 });
               } else {
+                const klinePoint = klineDataRef.current.find((item: any) => item.time === param.time);
                 setCursorValues({
                   bankerControl,
                   mainCapitalAbsorption,
@@ -474,6 +477,7 @@ const VisualizationPage: React.FC = () => {
                   momentum2,
                   strongDetonation,
                   resonanceChase,
+                  closePrice: klinePoint?.close,
                 });
               }
             }
@@ -1150,9 +1154,19 @@ const VisualizationPage: React.FC = () => {
             value: Number((item.OUT2 || 0).toFixed(2)),
           })).filter((d: any) => d.value !== null && d.value !== undefined);
 
+          // 共振柱高度数据
+          const resonanceHeightData = filteredIndicatorData.map((item: any) => {
+            const originalHeight = Math.abs(item.OUT1 || 0);
+            const height = Math.max(0, originalHeight - 0.5);
+            return {
+              time: item.date,
+              value: Math.floor(height), // 取整
+            };
+          }).filter((d: any) => d.value !== null && d.value !== undefined);
+
           // 共振柱：K线箱体显示，底部固定为0.5，顶部为原高度-0.5
           const resonanceBoxData = filteredIndicatorData
-            .filter((item: any) => item.resonance)
+            .filter((item: any) => item.mid_bullish && item.resonance)
             .map((item: any) => {
               const baseValue = 0.5;
               const originalHeight = Math.abs(item.OUT1 || 0);
@@ -1168,7 +1182,25 @@ const VisualizationPage: React.FC = () => {
               };
             });
 
-          // 先画中线柱（在底部）
+          // 首先添加共振柱高度的 series（作为主 series，控制十字线价格格式和 Last Value）
+          if (resonanceHeightData.length > 0) {
+            const lastValueLineSeries = chart.addSeries(lightweightCharts.LineSeries, {
+              color: 'transparent',
+              priceLineVisible: false,
+              lastValueVisible: true,
+              crosshairMarkerVisible: false,
+              priceFormat: {
+                type: 'custom',
+                formatter: (price: number) => {
+                  return Math.round(price).toString();
+                },
+              },
+            });
+            lastValueLineSeries.setData(resonanceHeightData);
+            subChartSeriesRefs.current[indicatorId] = lastValueLineSeries;
+          }
+
+          // 然后画中线柱（在底部）
           if (midBarData.length > 0) {
             const midHistogramSeries = chart.addSeries(lightweightCharts.HistogramSeries, {
               color: '#FF4444',
@@ -1204,27 +1236,6 @@ const VisualizationPage: React.FC = () => {
             });
             resonanceBoxSeries.setData(resonanceBoxData);
           }
-          
-          // 添加一个仅用于显示 Last Value 的 LineSeries，显示 OUT1 的值（取整）
-          // 使用完整的 out1Data 确保有最新日期的数据
-          if (out1Data.length > 0) {
-            const lastValueLineData = out1Data.map((item: any) => ({
-              time: item.time,
-              value: Math.max(0, item.value - 0.5), // 和共振柱计算方式一致
-            }));
-            
-            const lastValueLineSeries = chart.addSeries(lightweightCharts.LineSeries, {
-              color: 'transparent',
-              priceLineVisible: false,
-              lastValueVisible: true,
-              priceFormat: {
-                type: 'price',
-                precision: 0,
-                minMove: 1,
-              },
-            });
-            lastValueLineSeries.setData(lastValueLineData);
-          }
 
           // 最后画OUT1线和OUT2线（在顶部）
           if (out1Data.length > 0) {
@@ -1233,9 +1244,10 @@ const VisualizationPage: React.FC = () => {
               lineWidth: 1,
               priceLineVisible: false,
               lastValueVisible: false,
+              crosshairMarkerVisible: false,
+              autoscaleInfoProvider: () => null,
             });
             out1LineSeries.setData(out1Data);
-            subChartSeriesRefs.current[indicatorId] = out1LineSeries;
           }
 
           if (out2Data.length > 0) {
@@ -1244,6 +1256,8 @@ const VisualizationPage: React.FC = () => {
               lineWidth: 1,
               priceLineVisible: false,
               lastValueVisible: false,
+              crosshairMarkerVisible: false,
+              autoscaleInfoProvider: () => null,
             });
             out2LineSeries.setData(out2Data);
           }
@@ -1366,7 +1380,11 @@ const VisualizationPage: React.FC = () => {
                           } else if (otherIndicatorId === 'strong_detonation') {
                             otherPrice = otherDataPoint.bull_line;
                           } else if (otherIndicatorId === 'resonance_chase') {
-                            otherPrice = otherDataPoint.OUT1;
+                            if (otherDataPoint.resonance) {
+                              const originalHeight = Math.abs(otherDataPoint.OUT1 || 0);
+                              const topValue = originalHeight - 0.5;
+                              otherPrice = topValue > 0 ? topValue : undefined;
+                            }
                           }
                         }
                       }
@@ -1439,9 +1457,11 @@ const VisualizationPage: React.FC = () => {
                     momentum2: indicatorValues.momentum2,
                     strongDetonation: indicatorValues.strongDetonation,
                     resonanceChase: indicatorValues.resonanceChase,
+                    closePrice: klinePoint.close,
                   });
                 } else {
                   // 即使没有主图数据，也要更新所有子图指标的值
+                  const klinePoint = klineDataRef.current.find((item: any) => item.time === param.time);
                   setCursorValues({
                     bankerControl: indicatorValues.bankerControl,
                     mainCapitalAbsorption: indicatorValues.mainCapitalAbsorption,
@@ -1449,6 +1469,7 @@ const VisualizationPage: React.FC = () => {
                     momentum2: indicatorValues.momentum2,
                     strongDetonation: indicatorValues.strongDetonation,
                     resonanceChase: indicatorValues.resonanceChase,
+                    closePrice: klinePoint?.close,
                   });
                 }
               }
@@ -1961,7 +1982,17 @@ const VisualizationPage: React.FC = () => {
                       {cursorValues.mainCapitalAbsorption.toFixed(2)}
                     </span>
                   )}
-                  {indicatorId === 'main_cost' && cursorValues.mainCost !== undefined && cursorValues.mainCost !== null && !isNaN(cursorValues.mainCost) && (
+                  {indicatorId === 'main_cost' && cursorValues.mainCost !== undefined && cursorValues.mainCost !== null && !isNaN(cursorValues.mainCost) && cursorValues.closePrice !== undefined && cursorValues.closePrice !== null && !isNaN(cursorValues.closePrice) && (
+                    <span className="flex items-center gap-2">
+                      <span className="text-xs font-mono text-cyan">
+                        {cursorValues.mainCost.toFixed(2)}
+                      </span>
+                      <span className={`text-xs font-mono ${((cursorValues.closePrice - cursorValues.mainCost) / cursorValues.mainCost * 100) >= 0 ? 'text-[#FF4444]' : 'text-[#44AA44]'}`}>
+                        {((cursorValues.closePrice - cursorValues.mainCost) / cursorValues.mainCost * 100).toFixed(2)}%
+                      </span>
+                    </span>
+                  )}
+                  {indicatorId === 'main_cost' && cursorValues.mainCost !== undefined && cursorValues.mainCost !== null && !isNaN(cursorValues.mainCost) && (cursorValues.closePrice === undefined || cursorValues.closePrice === null || isNaN(cursorValues.closePrice)) && (
                     <span className="text-xs font-mono text-cyan">
                       {cursorValues.mainCost.toFixed(2)}
                     </span>

@@ -12,7 +12,7 @@ from tqdm import tqdm
 from stock_selector.base import StockCandidate, StrategyMetadata
 from stock_selector.config import StockSelectorConfig, get_config
 from stock_selector.manager import StrategyManager
-from stock_selector.stock_pool import get_all_stock_codes, filter_beijing_stock_exchange
+from stock_selector.stock_pool import get_all_stock_code_name_pairs, filter_special_stock_codes, filter_st_stocks
 
 logger = logging.getLogger(__name__)
 
@@ -71,10 +71,27 @@ class StockSelectorService:
 
         # Use complete stock pool if none provided
         if stock_codes is None:
-            stock_codes = get_all_stock_codes()
-            # 过滤北交所的股票代码（8开头和92开头）
-            stock_codes = filter_beijing_stock_exchange(stock_codes)
+            stock_code_name_pairs = get_all_stock_code_name_pairs()
+            # 过滤ST股票
+            stock_code_name_pairs = filter_st_stocks(stock_code_name_pairs)
+            # 过滤特定板块的股票代码（科创板、创业板、北交所等）
+            stock_codes = [code for code, name in stock_code_name_pairs]
+            stock_codes = filter_special_stock_codes(stock_codes)
             logger.info("No stock codes provided, using complete stock pool: %d stocks", len(stock_codes))
+        else:
+            # 如果指定了股票代码，也需要过滤ST股票
+            try:
+                all_pairs = get_all_stock_code_name_pairs()
+                code_to_name = {code: name for code, name in all_pairs}
+                # 过滤ST股票
+                filtered_codes = []
+                for code in stock_codes:
+                    name = code_to_name.get(code, "")
+                    if not any(keyword in name.upper() for keyword in ['ST', '*ST', 'SST', 'S*ST']):
+                        filtered_codes.append(code)
+                stock_codes = filtered_codes
+            except Exception:
+                pass
 
         candidates: List[StockCandidate] = []
 

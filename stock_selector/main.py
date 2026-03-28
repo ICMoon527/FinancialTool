@@ -55,6 +55,80 @@ def deactivate_strategy(service: StockSelectorService, strategy_ids: List[str]):
     print(f"Deactivated strategies: {', '.join(strategy_ids)}")
 
 
+def update_sector_data(service: StockSelectorService):
+    """
+    更新板块历史数据
+    
+    Args:
+        service: StockSelectorService 实例
+    """
+    print("\nUpdating sector data...")
+    
+    try:
+        # 获取 sector manager
+        sector_manager = None
+        if service.strategy_manager:
+            sector_manager = service.strategy_manager.get_sector_manager()
+        
+        if not sector_manager:
+            print("  Sector manager not available, skipping sector data update")
+            return
+        
+        # 获取数据提供者
+        data_manager = None
+        if hasattr(service.strategy_manager, '_data_provider'):
+            data_manager = service.strategy_manager._data_provider
+        
+        if not data_manager:
+            print("  Data manager not available, skipping sector data update")
+            return
+        
+        # 获取所有板块数据
+        print("  Fetching all sector data...")
+        all_sectors, _ = data_manager.get_sector_rankings(n=50, return_all=True)
+        
+        if not all_sectors:
+            print("  No sector data retrieved")
+            return
+        
+        print(f"  Retrieved {len(all_sectors)} sectors in total")
+        
+        # 保存到数据库
+        from src.storage import DatabaseManager
+        db_manager = DatabaseManager.get_instance()
+        
+        from datetime import date
+        current_date = date.today()
+        
+        # 保存所有板块数据
+        saved_count = 0
+        for sector in all_sectors:
+            name = sector.get('name')
+            change_pct = sector.get('change_pct')
+            stock_count = sector.get('stock_count', 0)
+            limit_up_count = sector.get('limit_up_count', 0)
+            if name:
+                if db_manager.save_sector_daily(
+                    name=name,
+                    date=current_date,
+                    change_pct=change_pct,
+                    stock_count=stock_count,
+                    limit_up_count=limit_up_count,
+                    data_source="data_fetcher"
+                ):
+                    saved_count += 1
+        
+        if saved_count > 0:
+            print(f"  ✓ Successfully saved {saved_count} sectors for {current_date}")
+        else:
+            print("  ✗ Failed to save sector data")
+            
+    except Exception as e:
+        print(f"  ✗ Error updating sector data: {e}")
+        import traceback
+        traceback.print_exc()
+
+
 def screen_stocks(service: StockSelectorService, stock_codes: Optional[List[str]], top_n: Optional[int] = None, update_data: bool = False, update_days: int = 365, use_enhanced: bool = True, max_workers: int = 4, validate_data: bool = False, report_path: Optional[str] = None, use_tushare: bool = True, rate_limit: int = 50):
     print("Screening stocks...")
     if top_n is None:
@@ -65,18 +139,61 @@ def screen_stocks(service: StockSelectorService, stock_codes: Optional[List[str]
     else:
         print("Stock codes: All available")
     
+    # 如果没有指定更新数据，但也没有指定股票代码，则也需要获取股票列表并过滤ST股票
+    if not update_data and stock_codes is None:
+        from stock_selector.stock_pool import get_all_stock_code_name_pairs, filter_special_stock_codes, filter_st_stocks
+        
+        stock_code_name_pairs = get_all_stock_code_name_pairs()
+        # 过滤ST股票
+        stock_code_name_pairs = filter_st_stocks(stock_code_name_pairs)
+        # 过滤特定板块的股票代码（科创板、创业板、北交所等）
+        stock_codes = [code for code, name in stock_code_name_pairs]
+        stock_codes = filter_special_stock_codes(stock_codes)
+    elif not update_data and stock_codes is not None:
+        # 如果没有指定更新数据，但指定了股票代码，也需要过滤ST股票
+        try:
+            from stock_selector.stock_pool import get_all_stock_code_name_pairs
+            all_pairs = get_all_stock_code_name_pairs()
+            code_to_name = {code: name for code, name in all_pairs}
+            # 过滤ST股票
+            filtered_codes = []
+            for code in stock_codes:
+                name = code_to_name.get(code, "")
+                if not any(keyword in name.upper() for keyword in ['ST', '*ST', 'SST', 'S*ST']):
+                    filtered_codes.append(code)
+            stock_codes = filtered_codes
+        except Exception:
+            pass
+    
     # 如果需要先更新数据
     if update_data:
         from datetime import date, timedelta
-        from stock_selector.stock_pool import get_all_stock_codes, filter_beijing_stock_exchange
+        from stock_selector.stock_pool import get_all_stock_code_name_pairs, filter_special_stock_codes, filter_st_stocks
         
         print(f"\nUpdating stock data (last {update_days} days) using Tushare...")
         
         if stock_codes is None:
-            stock_codes = get_all_stock_codes()
-        
-        # 过滤北交所的股票代码（8开头和92开头），保持与下载器一致
-        stock_codes = filter_beijing_stock_exchange(stock_codes)
+            stock_code_name_pairs = get_all_stock_code_name_pairs()
+            # 过滤ST股票
+            stock_code_name_pairs = filter_st_stocks(stock_code_name_pairs)
+            # 过滤特定板块的股票代码（科创板、创业板、北交所等）
+            stock_codes = [code for code, name in stock_code_name_pairs]
+            stock_codes = filter_special_stock_codes(stock_codes)
+        else:
+            # 如果用户指定了股票代码，先获取它们的名称，然后过滤ST股票
+            try:
+                from stock_selector.stock_pool import get_all_stock_code_name_pairs
+                all_pairs = get_all_stock_code_name_pairs()
+                code_to_name = {code: name for code, name in all_pairs}
+                # 过滤ST股票
+                filtered_codes = []
+                for code in stock_codes:
+                    name = code_to_name.get(code, "")
+                    if not any(keyword in name.upper() for keyword in ['ST', '*ST', 'SST', 'S*ST']):
+                        filtered_codes.append(code)
+                stock_codes = filtered_codes
+            except Exception:
+                pass
         
         # 使用 Tushare 专用下载器强制更新数据
         if use_tushare:
@@ -122,6 +239,9 @@ def screen_stocks(service: StockSelectorService, stock_codes: Optional[List[str]
                 print(f"Data update complete: {stats['stocks_updated']} updated, {stats['stocks_failed']} failed\n")
             else:
                 print("Invalid date range!\n")
+        
+        # 更新板块数据
+        update_sector_data(service)
 
     candidates = service.screen_stocks(
         stock_codes=stock_codes,

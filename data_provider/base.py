@@ -184,12 +184,13 @@ class BaseFetcher(ABC):
         """
         return None
 
-    def get_sector_rankings(self, n: int = 5) -> Optional[Tuple[List[Dict], List[Dict]]]:
+    def get_sector_rankings(self, n: int = 5, return_all: bool = False) -> Optional[Tuple[List[Dict], List[Dict]]]:
         """
         获取板块涨跌榜
 
         Args:
-            n: 返回前n个
+            n: 返回前n个和后n个（当 return_all=False 时使用）
+            return_all: 是否返回所有板块数据
 
         Returns:
             Tuple: (领涨板块列表, 领跌板块列表)
@@ -942,7 +943,7 @@ class DataFetcherManager:
         logger.warning(f"[上市日期] 所有数据源都无法获取 {stock_code} 的上市日期")
         return None
     
-    def get_fund_flow_data(self, stock_code: str) -> Optional[pd.DataFrame]:
+    def get_fund_flow_data(self, stock_code: str, start_date: Optional[str] = None, end_date: Optional[str] = None) -> Optional[pd.DataFrame]:
         """
         获取资金流向数据（自动切换数据源）
 
@@ -951,6 +952,8 @@ class DataFetcherManager:
 
         Args:
             stock_code: 股票代码
+            start_date: 开始日期，格式 YYYY-MM-DD（可选）
+            end_date: 结束日期，格式 YYYY-MM-DD（可选）
 
         Returns:
             包含资金流向数据的DataFrame，所有数据源都失败则返回None
@@ -964,7 +967,7 @@ class DataFetcherManager:
                 if hasattr(fetcher, 'get_fund_flow_data'):
                     try:
                         logger.info(f"尝试使用 [{fetcher.name}] 获取 {stock_code} 资金流向数据...")
-                        df = fetcher.get_fund_flow_data(stock_code)
+                        df = fetcher.get_fund_flow_data(stock_code, start_date=start_date, end_date=end_date)
                         if df is not None and not df.empty:
                             logger.info(f"[{fetcher.name}] 成功获取 {stock_code} 资金流向数据")
                             return df
@@ -1094,11 +1097,11 @@ class DataFetcherManager:
                 continue
         return {}
 
-    def get_sector_rankings(self, n: int = 5) -> Tuple[List[Dict], List[Dict]]:
+    def get_sector_rankings(self, n: int = 5, return_all: bool = False) -> Tuple[List[Dict], List[Dict]]:
         """获取板块涨跌榜（自动切换数据源）"""
         for fetcher in self._fetchers:
             try:
-                data = fetcher.get_sector_rankings(n)
+                data = fetcher.get_sector_rankings(n, return_all=return_all)
                 if data:
                     logger.info(f"[{fetcher.name}] 获取板块排行成功")
                     return data
