@@ -47,7 +47,7 @@ class MockDataProvider:
     用于在策略执行时从数据库获取历史数据，避免重复调用外部 API。
     """
     
-    def __init__(self, db_manager, stock_code: str, mock_quote: MockQuote):
+    def __init__(self, db_manager, stock_code: str, mock_quote: MockQuote, original_data_provider=None):
         """
         初始化 MockDataProvider
         
@@ -55,10 +55,12 @@ class MockDataProvider:
             db_manager: 数据库管理器实例
             stock_code: 股票代码
             mock_quote: MockQuote 实例
+            original_data_provider: 原始数据提供者（用于获取大盘数据等）
         """
         self.db_manager = db_manager
         self.stock_code = stock_code
         self.mock_quote = mock_quote
+        self.original_data_provider = original_data_provider
         
     def get_realtime_quote(self, code: str) -> MockQuote:
         """
@@ -78,14 +80,14 @@ class MockDataProvider:
         
         Args:
             code: 股票代码
-            days: 获取天数（默认 60 天，实际会获取 120 天以确保有足够的交易日）
+            days: 获取天数
             
         Returns:
             Tuple[DataFrame, str]: (历史数据 DataFrame, 数据源标识 "database")
         """
-        # 获取 120 天数据以确保有足够的交易日
+        # 获取足够的数据，days*2 以确保有足够的交易日
         end_date = date.today()
-        start_date = end_date - timedelta(days=120)
+        start_date = end_date - timedelta(days=max(days * 2, 365))
         data = self.db_manager.get_data_range(code, start_date, end_date)
         
         if data:
@@ -93,3 +95,20 @@ class MockDataProvider:
             return df, "database"
         
         return None, "database"
+    
+    def get_index_daily_data(self, symbol: str, start_date: Optional[str] = None,
+                              end_date: Optional[str] = None) -> Optional[pd.DataFrame]:
+        """
+        获取大盘指数历史数据（代理到原始数据提供者）
+        
+        Args:
+            symbol: 指数代码
+            start_date: 开始日期
+            end_date: 结束日期
+            
+        Returns:
+            指数历史数据 DataFrame
+        """
+        if self.original_data_provider and hasattr(self.original_data_provider, 'get_index_daily_data'):
+            return self.original_data_provider.get_index_daily_data(symbol, start_date, end_date)
+        return None

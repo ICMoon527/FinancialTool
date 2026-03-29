@@ -5,10 +5,11 @@
 
 import logging
 import sys
-from datetime import date
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 import pandas as pd
+import pickle
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
@@ -24,6 +25,70 @@ from indicators.indicators.main_trading import MainTrading
 from indicators.indicators.momentum_2 import Momentum2
 
 logger = logging.getLogger(__name__)
+
+
+class MarketDataCache:
+    """大盘数据缓存管理器"""
+
+    _CACHE_DIR = None
+    _CACHE_VALID_HOURS = 24
+    _cache = {}
+
+    @classmethod
+    def _get_cache_dir(cls) -> Path:
+        """获取缓存目录路径"""
+        if cls._CACHE_DIR is None:
+            project_root = Path(__file__).parent.parent.parent.parent
+            cls._CACHE_DIR = project_root / "data" / "cache"
+            cls._CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        return cls._CACHE_DIR
+
+    @classmethod
+    def _get_cache_file_path(cls, symbol: str) -> Path:
+        """获取缓存文件路径"""
+        cache_dir = cls._get_cache_dir()
+        return cache_dir / f"market_{symbol}.pkl"
+
+    @classmethod
+    def _is_cache_valid(cls, cache_file: Path) -> bool:
+        """检查缓存是否有效"""
+        if not cache_file.exists():
+            return False
+        try:
+            file_mtime = datetime.fromtimestamp(cache_file.stat().st_mtime)
+            return datetime.now() - file_mtime < timedelta(hours=cls._CACHE_VALID_HOURS)
+        except Exception:
+            return False
+
+    @classmethod
+    def load(cls, symbol: str) -> Optional[pd.DataFrame]:
+        """从缓存加载大盘数据"""
+        if symbol in cls._cache:
+            return cls._cache[symbol]
+        cache_file = cls._get_cache_file_path(symbol)
+        if not cls._is_cache_valid(cache_file):
+            return None
+        try:
+            with open(cache_file, "rb") as f:
+                data = pickle.load(f)
+            logger.info(f"[大盘数据缓存] 从缓存加载 {symbol} 数据成功")
+            cls._cache[symbol] = data
+            return data
+        except Exception as e:
+            logger.warning(f"[大盘数据缓存] 加载缓存失败: {e}")
+            return None
+
+    @classmethod
+    def save(cls, symbol: str, data: pd.DataFrame) -> None:
+        """保存大盘数据到缓存"""
+        cls._cache[symbol] = data
+        cache_file = cls._get_cache_file_path(symbol)
+        try:
+            with open(cache_file, "wb") as f:
+                pickle.dump(data, f)
+            logger.info(f"[大盘数据缓存] 保存 {symbol} 数据到缓存成功")
+        except Exception as e:
+            logger.warning(f"[大盘数据缓存] 保存缓存失败: {e}")
 
 
 @register_strategy
@@ -221,7 +286,33 @@ class SixDimensionSelectorStrategy(StockSelectorStrategy):
         except Exception:
             return None
 
-    def _calculate_strong_detonation(self, df: pd.DataFrame) -> Optional[Dict[str, Any]]:
+    def _get_market_index_code(self, stock_code: str) -> str:
+        """根据股票代码获取对应的大盘指数代码"""
+        if stock_code.startswith(('60', '688')):
+            return 'sh000001'
+        elif stock_code.startswith(('00', '30')):
+            return 'sz399001'
+        else:
+            return 'sh000001'
+
+    def _get_market_data(self, index_symbol: str) -> Optional[pd.DataFrame]:
+        """获取大盘数据（带缓存）"""
+        cached_data = MarketDataCache.load(index_symbol)
+        if cached_data is not None:
+            return cached_data
+
+        if self._data_provider:
+            try:
+                market_data = self._data_provider.get_index_daily_data(index_symbol)
+                if market_data is not None and not market_data.empty:
+                    MarketDataCache.save(index_symbol, market_data)
+                    return market_data
+            except Exception as e:
+                logger.warning(f"获取大盘数据失败 {index_symbol}: {e}")
+
+        return None
+
+    def _calculate_strong_detonation(self, df: pd.DataFrame, stock_code: str) -> Optional[Dict[str, Any]]:
         if df is None or len(df) < 60:
             return None
         try:
@@ -236,8 +327,51 @@ class SixDimensionSelectorStrategy(StockSelectorStrategy):
             var3 = (self._llv(var1, 5) + self._llv(var1, 15) + self._llv(var1, 30)) / 3
             bull_line = (self._hhv(var2, 5) + self._hhv(var2, 15) + self._hhv(var2, 30)) / 3
             ema120_stock = self._ema(close, 120)
-            a1 = close / ema120_stock
-            market_midline = self._ema(ema120_stock * a1, 2)
+
+            index_symbol = self._get_market_index_code(stock_code)
+            market_data = self._get_market_data(index_symbol)
+
+            if market_data is not None and not market_data.empty:
+                market_df = market_data.copy()
+                if "date" in market_df.columns:
+                    market_df["date"] = pd.to_datetime(market_df["date"]).dt.date
+                if "date" in df.columns:
+                    df["date"] = pd.to_datetime(df["date"]).dt.date
+
+                market_df_renamed = market_df[["date", "close"]].rename(
+                    columns={"close": "close_index"}
+                )
+                merged_df = df.merge(market_df_renamed, on="date", how="left")
+
+                if "close_index" in merged_df.columns:
+                    merged_df["close_index"] = merged_df["close_index"].ffill().bfill()
+                    if not merged_df["close_index"].isna().any():
+                        index_close = merged_df["close_index"]
+                        ema120_index = self._ema(index_close, 120)
+                        a1 = index_close / ema120_index
+                        market_midline = self._ema(ema120_stock * a1, 2)
+                    else:
+                        return {
+                            'matched': False,
+                            'score': 0,
+                            'purple_box': False,
+                            'consecutive_count': 0,
+                        }
+                else:
+                    return {
+                        'matched': False,
+                        'score': 0,
+                        'purple_box': False,
+                        'consecutive_count': 0,
+                    }
+            else:
+                return {
+                    'matched': False,
+                    'score': 0,
+                    'purple_box': False,
+                    'consecutive_count': 0,
+                }
+
             purple_box = (aaa > bull_line) & (aaa > market_midline)
             latest_purple = bool(purple_box.iloc[-1]) if pd.notna(purple_box.iloc[-1]) else False
             
@@ -469,7 +603,7 @@ class SixDimensionSelectorStrategy(StockSelectorStrategy):
                             weighted_scores.append(weighted_score)
                             conditions_met.append(f"共振追涨(+{resonance_chase['score']}, 权重×{self._resonance_weight})")
 
-                    strong_detonation = self._calculate_strong_detonation(daily_data)
+                    strong_detonation = self._calculate_strong_detonation(daily_data, stock_code)
                     if strong_detonation:
                         match_details["sub_strategies"]["strong_detonation_selector"] = strong_detonation
                         if strong_detonation["matched"]:

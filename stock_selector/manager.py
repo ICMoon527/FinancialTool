@@ -271,10 +271,10 @@ class StrategyManager:
                     if context:
                         # 使用导入的 Mock 类，不再重复定义
                         mock_quote = MockQuote(context, stock_name)
-                        mock_data_provider = MockDataProvider(self._db_manager, stock_code, mock_quote)
+                        original_data_provider = strategy._data_provider
+                        mock_data_provider = MockDataProvider(self._db_manager, stock_code, mock_quote, original_data_provider)
                         
                         # Set mock data provider for the strategy
-                        original_data_provider = strategy._data_provider
                         strategy._data_provider = mock_data_provider
                         
                         # Execute strategy with cached data
