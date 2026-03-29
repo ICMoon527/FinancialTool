@@ -1638,11 +1638,11 @@ const VisualizationPage: React.FC = () => {
   };
 
   const sidebarContent = (
-    <div className="flex flex-col gap-3 overflow-hidden min-h-0 h-full">
-      <div className="p-3 border-b border-white/5">
+    <div className="flex flex-col overflow-hidden min-h-0 h-full">
+      <div className="p-3 border-b border-white/5 flex-shrink-0">
         <h3 className="text-sm font-medium text-white">搜索历史</h3>
       </div>
-      <div className="flex-1 overflow-y-auto px-3">
+      <div className="overflow-y-auto px-3 h-[1200px]">
         {isLoadingHistory ? (
         <div className="flex items-center justify-center py-8">
           <div className="w-5 h-5 border-2 border-cyan/20 border-t-cyan rounded-full animate-spin" />
@@ -1770,7 +1770,7 @@ const VisualizationPage: React.FC = () => {
       </header>
 
       {/* Desktop sidebar */}
-      <div className="hidden md:flex col-start-2 row-start-2 flex-col gap-3 overflow-hidden min-h-0">
+      <div className="hidden md:flex col-start-2 row-start-2 flex-col overflow-hidden min-h-0 h-full">
         {sidebarContent}
       </div>
 
