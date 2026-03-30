@@ -105,7 +105,7 @@ class PerformanceMetrics:
         if num_days <= 0:
             return 0.0
 
-        years = num_days / 365.0
+        years = num_days / days_per_year
         if years <= 0:
             return 0.0
 

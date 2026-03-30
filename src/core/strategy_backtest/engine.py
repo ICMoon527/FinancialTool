@@ -264,7 +264,12 @@ class StrategyBacktestEngine:
             价格
         """
         try:
-            data = self._original_data_provider.get_daily_data(stock_code, days=30)
+            current_date = self.get_current_date()
+            if current_date and trade_date > current_date:
+                logger.warning(f"尝试获取未来日期 {trade_date} 的股票价格，当前日期 {current_date}")
+                return None
+
+            data = self._data_provider.get_daily_data(stock_code, days=30)
             if isinstance(data, tuple):
                 df, _ = data
             else:
@@ -286,7 +291,7 @@ class StrategyBacktestEngine:
                 return float(df["close"].iloc[-1])
             elif "Close" in df.columns:
                 return float(df["Close"].iloc[-1])
-        except Exception as e:
+        except (KeyError, ValueError, IndexError) as e:
             logger.warning(f"获取股票价格失败 {stock_code}: {e}")
         return None
 
