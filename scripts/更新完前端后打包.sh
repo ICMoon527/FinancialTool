@@ -1,2 +1,2 @@
 cd apps/dsa-web
-npm run build
+conda run -n dsa-web-build npm run build
