@@ -38,6 +38,19 @@ export interface StockSelectorRequest {
   stock_codes?: string[];
   strategy_ids?: string[];
   top_n?: number;
+  update_data?: boolean;
+}
+
+export interface StockSelectorConfig {
+  success: boolean;
+  default_top_n: number;
+  error?: string;
+}
+
+export interface StockSelectorConfigResponse {
+  success: boolean;
+  default_top_n: number;
+  error?: string;
 }
 
 export interface StockSelectorResponse {

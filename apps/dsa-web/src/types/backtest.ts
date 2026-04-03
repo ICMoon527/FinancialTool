@@ -1,9 +1,9 @@
 /**
  * Backtest API type definitions
- * Mirrors api/v1/schemas/backtest.py
+ * Mirrors api/v1/schemas/backtest.py and api/v1/schemas/strategy_backtest.py
  */
 
-// ============ Request / Response ============
+// ============ 历史AI分析回测 (已废弃) ============
 
 export interface BacktestRunRequest {
   code?: string;
@@ -20,8 +20,6 @@ export interface BacktestRunResponse {
   insufficient: number;
   errors: number;
 }
-
-// ============ Result Item ============
 
 export interface BacktestResultItem {
   analysisHistoryId: number;
@@ -61,8 +59,6 @@ export interface BacktestResultsResponse {
   items: BacktestResultItem[];
 }
 
-// ============ Performance Metrics ============
-
 export interface PerformanceMetrics {
   scope: string;
   code?: string;
@@ -92,4 +88,64 @@ export interface PerformanceMetrics {
 
   adviceBreakdown: Record<string, unknown>;
   diagnostics: Record<string, unknown>;
+}
+
+// ============ 策略回测 ============
+
+export interface StrategyInfo {
+  id: string;
+  name: string;
+  description: string;
+  type: string;
+}
+
+export interface StrategyListResponse {
+  strategies: StrategyInfo[];
+}
+
+export interface StrategyBacktestRunRequest {
+  strategyId: string;
+  startDate?: string;
+  endDate?: string;
+  stockPool?: string[];
+  maxPositions?: number;
+}
+
+export interface StrategyBacktestRunResponse {
+  success: boolean;
+  message: string;
+  results?: Record<string, any>;
+  metrics?: Record<string, any>;
+  reports?: Record<string, any>;
+}
+
+export interface StrategyBacktestRunAsyncRequest {
+  strategyId: string;
+  startDate: string;
+  endDate: string;
+  maxPositions: number;
+}
+
+export interface StrategyBacktestRunAsyncResponse {
+  success: boolean;
+  message: string;
+  task_id: string;
+}
+
+export interface StrategyBacktestTaskStatusResponse {
+  success: boolean;
+  message: string;
+  task?: {
+    task_id: string;
+    status: 'pending' | 'running' | 'completed' | 'failed' | 'stopped';
+    created_at: string;
+    started_at?: string;
+    completed_at?: string;
+    result?: Record<string, any>;
+    error?: string;
+  };
+}
+
+export interface StrategyBacktestStopByTaskIdRequest {
+  task_id: string;
 }

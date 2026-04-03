@@ -301,6 +301,83 @@ class PerformanceMetrics:
 
         return (annualized_return - self.risk_free_rate) / downside_risk
 
+    def get_beta(self) -> float:
+        """
+        计算贝塔（Beta）。
+
+        贝塔是衡量投资组合相对于基准的系统性风险的指标。
+        - Beta = 1：投资组合的风险与基准相同
+        - Beta > 1：投资组合的风险高于基准
+        - Beta < 1：投资组合的风险低于基准
+
+        Returns:
+            贝塔值
+        """
+        if self._returns.empty or self.benchmark_returns is None or len(self.benchmark_returns) != len(self._returns):
+            return 0.0
+
+        portfolio_returns = self._returns.values
+        benchmark_returns = np.array(self.benchmark_returns)
+
+        # 计算协方差和方差
+        covariance = np.cov(portfolio_returns, benchmark_returns)[0][1]
+        benchmark_variance = np.var(benchmark_returns)
+
+        if benchmark_variance == 0:
+            return 0.0
+
+        return covariance / benchmark_variance
+
+    def get_alpha(self, days_per_year: int = 252) -> float:
+        """
+        计算阿尔法（Alpha）。
+
+        阿尔法是衡量投资组合超额收益的指标，即超过基准收益的部分。
+        Alpha > 0：投资组合表现优于基准
+        Alpha = 0：投资组合表现与基准相同
+        Alpha < 0：投资组合表现不如基准
+
+        计算公式：
+        Alpha = Rp - [Rf + Beta * (Rm - Rf)]
+        其中：
+        - Rp：投资组合年化收益率
+        - Rf：无风险利率
+        - Beta：贝塔值
+        - Rm：基准年化收益率
+
+        Args:
+            days_per_year: 一年的交易日数
+
+        Returns:
+            阿尔法值（年化）
+        """
+        if self._returns.empty or self.benchmark_returns is None or len(self.benchmark_returns) != len(self._returns):
+            return 0.0
+
+        # 计算投资组合年化收益率
+        portfolio_annual_return = self.get_annualized_return(days_per_year)
+
+        # 计算基准年化收益率
+        benchmark_returns = np.array(self.benchmark_returns)
+        total_benchmark_return = (1 + benchmark_returns).prod() - 1
+        num_days = len(benchmark_returns)
+        years = num_days / days_per_year
+        if years > 0:
+            benchmark_annual_return = (1 + total_benchmark_return) ** (1 / years) - 1
+        else:
+            benchmark_annual_return = 0.0
+
+        # 计算贝塔
+        beta = self.get_beta()
+
+        # 计算 CAPM 预期收益率
+        capm_expected_return = self.risk_free_rate + beta * (benchmark_annual_return - self.risk_free_rate)
+
+        # 计算阿尔法
+        alpha = portfolio_annual_return - capm_expected_return
+
+        return alpha
+
     def get_all_metrics(self) -> Dict[str, Any]:
         """
         获取所有绩效指标。
@@ -323,6 +400,8 @@ class PerformanceMetrics:
             "profit_loss_ratio": self.get_profit_loss_ratio(),
             "information_ratio": self.get_information_ratio(),
             "sortino_ratio": self.get_sortino_ratio(),
+            "beta": self.get_beta(),
+            "alpha": self.get_alpha(),
             "total_trades": len(self.portfolio.trades),
             "initial_capital": self.portfolio.initial_capital,
             "final_equity": self.portfolio.get_total_equity(),

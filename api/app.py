@@ -179,17 +179,27 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
         if assets_dir.exists():
             app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
         
-        # SPA 路由回退
-        @app.get("/{full_path:path}", include_in_schema=False)
-        async def serve_spa(request: Request, full_path: str):
-            """SPA 路由回退 - 非 API 路由返回 index.html"""
-            if full_path.startswith("api/"):
-                return None
+        # SPA 路由回退 - 使用自定义 404 处理器
+        from fastapi.responses import JSONResponse
+        
+        @app.exception_handler(404)
+        async def custom_404_handler(request: Request, exc):
+            """自定义 404 处理器 - SPA 路由回退"""
+            path = request.url.path
             
-            file_path = static_dir / full_path
+            # 如果是 API 路径，返回标准 404 JSON
+            if path.startswith("/api/"):
+                return JSONResponse(
+                    status_code=404,
+                    content={"detail": "Not Found"}
+                )
+            
+            # 检查是否是静态文件
+            file_path = static_dir / path.lstrip("/")
             if file_path.exists() and file_path.is_file():
                 return FileResponse(file_path)
             
+            # 否则返回 index.html 给 SPA
             return FileResponse(static_dir / "index.html")
     
     return app

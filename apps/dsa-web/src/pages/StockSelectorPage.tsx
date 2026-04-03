@@ -1,5 +1,5 @@
 import type React from 'react';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { stockSelectorApi } from '../api/stockSelector';
 import { Card, Badge } from '../components/common';
 import type {
@@ -101,23 +101,37 @@ const StockSelectorPage: React.FC = () => {
   const [isLoadingStrategies, setIsLoadingStrategies] = useState(false);
   const [isTogglingStrategy, setIsTogglingStrategy] = useState(false);
 
-  const [candidates, setCandidates] = useState<StockCandidateInfo[]>([]);
+  const [candidates, setCandidates] = useState<StockCandidateInfo[]>(() => {
+    const saved = localStorage.getItem('stockSelector_candidates');
+    return saved ? JSON.parse(saved) : [];
+  });
   const [isScreening, setIsScreening] = useState(false);
   const [screeningError, setScreeningError] = useState<string | null>(null);
+  const [screeningStage, setScreeningStage] = useState('');
 
-  const [topN, setTopN] = useState(5);
+  const [topN, setTopN] = useState<number | null>(null);
   const [stockCodes, setStockCodes] = useState('');
   const [strategyTypeFilter, setStrategyTypeFilter] = useState<'ALL' | 'NATURAL_LANGUAGE' | 'PYTHON'>('ALL');
+  
+  const [updateData, setUpdateData] = useState(false);
+  const [selectedStrategyIds, setSelectedStrategyIds] = useState<string[]>([]);
+  const [isStrategyDropdownOpen, setIsStrategyDropdownOpen] = useState(false);
+  
+  const strategyDropdownRef = useRef<HTMLDivElement>(null);
 
   const fetchStrategies = useCallback(async () => {
-    setIsLoadingStrategies(true);
     try {
       const response = await stockSelectorApi.getStrategies();
-      setStrategies(response.strategies);
+      console.log('Strategies response:', response);
+      if (response && response.strategies) {
+        return response.strategies;
+      } else {
+        console.error('Invalid strategies response:', response);
+        return [];
+      }
     } catch (err) {
       console.error('Failed to fetch strategies:', err);
-    } finally {
-      setIsLoadingStrategies(false);
+      return [];
     }
   }, []);
 
@@ -140,23 +154,81 @@ const StockSelectorPage: React.FC = () => {
   const handleScreen = useCallback(async () => {
     setIsScreening(true);
     setScreeningError(null);
+    setScreeningStage('正在选股，请稍候...');
+
     try {
       const codes = stockCodes.trim() ? stockCodes.trim().split(/[,\s]+/).filter(Boolean) : undefined;
+      const strategyIds = selectedStrategyIds.length > 0 ? selectedStrategyIds : undefined;
       const response = await stockSelectorApi.screenStocks({
-        top_n: topN,
+        top_n: topN ?? 10,
         stock_codes: codes,
+        update_data: updateData,
+        strategy_ids: strategyIds,
       });
+      
+      setScreeningStage('完成！');
+      
+      await new Promise(resolve => setTimeout(resolve, 300));
       setCandidates(response.candidates);
+      localStorage.setItem('stockSelector_candidates', JSON.stringify(response.candidates));
     } catch (err) {
       setScreeningError(err instanceof Error ? err.message : 'Screening failed');
     } finally {
       setIsScreening(false);
     }
-  }, [stockCodes, topN]);
+  }, [stockCodes, topN, updateData, selectedStrategyIds]);
 
   useEffect(() => {
-    fetchStrategies();
+    const initPage = async () => {
+      setIsLoadingStrategies(true);
+      try {
+        const [strategiesResult, configResult] = await Promise.allSettled([
+          fetchStrategies(),
+          stockSelectorApi.getConfig()
+        ]);
+        
+        if (strategiesResult.status === 'fulfilled') {
+          setStrategies(strategiesResult.value);
+        } else {
+          console.error('Failed to fetch strategies:', strategiesResult.reason);
+          setStrategies([]);
+        }
+        
+        if (configResult.status === 'fulfilled') {
+          console.log('Config response:', configResult.value);
+          if (configResult.value && configResult.value.success) {
+            setTopN(configResult.value.default_top_n);
+          } else {
+            console.error('Invalid config response:', configResult.value);
+            setTopN(10);
+          }
+        } else {
+          console.error('Failed to fetch config:', configResult.reason);
+          setTopN(10);
+        }
+      } catch (err) {
+        console.error('Failed to init page:', err);
+        setTopN(10);
+        setStrategies([]);
+      } finally {
+        setIsLoadingStrategies(false);
+      }
+    };
+    initPage();
   }, [fetchStrategies]);
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (strategyDropdownRef.current && !strategyDropdownRef.current.contains(event.target as Node)) {
+        setIsStrategyDropdownOpen(false);
+      }
+    };
+    
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, []);
 
   const filteredStrategies = strategies.filter(s => {
     if (strategyTypeFilter === 'ALL') return true;
@@ -166,7 +238,7 @@ const StockSelectorPage: React.FC = () => {
   return (
     <div className="min-h-screen flex flex-col">
       <header className="flex-shrink-0 px-4 py-3 border-b border-white/5">
-        <div className="flex items-center gap-2 max-w-4xl flex-wrap">
+        <div className="flex items-center gap-2 max-w-6xl flex-wrap">
           <div className="flex-1 relative min-w-[200px]">
             <input
               type="text"
@@ -177,18 +249,77 @@ const StockSelectorPage: React.FC = () => {
               className="input-terminal w-full"
             />
           </div>
+          
+          <div className="relative" ref={strategyDropdownRef}>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setIsStrategyDropdownOpen(!isStrategyDropdownOpen);
+              }}
+              disabled={isScreening}
+              className="input-terminal flex items-center gap-2 whitespace-nowrap"
+            >
+              <span className="text-xs">
+                {selectedStrategyIds.length === 0 
+                  ? 'All Strategies' 
+                  : `${selectedStrategyIds.length} Selected`}
+              </span>
+              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+            
+            {isStrategyDropdownOpen && (
+              <div className="absolute top-full left-0 mt-1 w-72 bg-elevated border border-white/15 rounded-xl shadow-2xl z-[9999] max-h-80 overflow-y-auto">
+                {strategies.length === 0 ? (
+                  <div className="px-3 py-4 text-center text-xs text-muted">
+                    Loading strategies...
+                  </div>
+                ) : (
+                  strategies.map((strategy) => (
+                    <label
+                      key={strategy.id}
+                      className="flex items-center gap-2 px-3 py-2.5 hover:bg-white/10 cursor-pointer transition-colors border-b border-white/5 last:border-0"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedStrategyIds.includes(strategy.id)}
+                        onChange={(e) => {
+                          e.stopPropagation();
+                          if (e.target.checked) {
+                            setSelectedStrategyIds([...selectedStrategyIds, strategy.id]);
+                          } else {
+                            setSelectedStrategyIds(selectedStrategyIds.filter(id => id !== strategy.id));
+                          }
+                        }}
+                        disabled={isScreening}
+                        className="rounded w-4 h-4"
+                      />
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm text-white truncate">{strategy.display_name}</div>
+                        <div className="text-xs text-muted truncate">{strategy.description}</div>
+                      </div>
+                    </label>
+                  ))
+                )}
+              </div>
+            )}
+          </div>
+          
           <div className="flex items-center gap-1 whitespace-nowrap">
             <span className="text-xs text-muted">Top</span>
             <input
               type="number"
               min={1}
               max={20}
-              value={topN}
-              onChange={(e) => setTopN(parseInt(e.target.value, 10) || 5)}
-              disabled={isScreening}
+              value={topN ?? ''}
+              onChange={(e) => setTopN(parseInt(e.target.value, 10) || 10)}
+              disabled={isScreening || topN === null}
               className="input-terminal w-14 text-center text-xs py-2"
             />
           </div>
+          
           <button
             type="button"
             onClick={handleScreen}
@@ -207,6 +338,17 @@ const StockSelectorPage: React.FC = () => {
               'Screen Stocks'
             )}
           </button>
+          
+          <label className="flex items-center gap-2 whitespace-nowrap cursor-pointer">
+            <input
+              type="checkbox"
+              checked={updateData}
+              onChange={(e) => setUpdateData(e.target.checked)}
+              disabled={isScreening}
+              className="rounded"
+            />
+            <span className="text-xs text-secondary">Update Data</span>
+          </label>
         </div>
         {screeningError && (
           <p className="mt-2 text-xs text-danger">{screeningError}</p>
@@ -280,8 +422,25 @@ const StockSelectorPage: React.FC = () => {
         <section className="flex-1 overflow-y-auto">
           {isScreening ? (
             <div className="flex flex-col items-center justify-center h-64">
-              <div className="w-10 h-10 border-3 border-cyan/20 border-t-cyan rounded-full animate-spin" />
-              <p className="mt-3 text-secondary text-sm">Screening stocks...</p>
+              <div className="w-full max-w-md">
+                <div className="flex items-center justify-center gap-3 mb-6">
+                  <div className="w-10 h-10 border-3 border-cyan/20 border-t-cyan rounded-full animate-spin" />
+                </div>
+                
+                <div className="mb-3 text-center">
+                  <p className="text-white text-sm font-medium">
+                    {screeningStage || '正在选股，请稍候...'}
+                  </p>
+                </div>
+                
+                <div className="w-full h-2 bg-white/10 rounded-full overflow-hidden">
+                  <div className="h-full bg-gradient-to-r from-cyan/30 via-cyan to-cyan/30 rounded-full animate-pulse" style={{ width: '100%' }} />
+                </div>
+                
+                <div className="mt-2 text-center">
+                  <span className="text-xs text-muted">数据处理中...</span>
+                </div>
+              </div>
             </div>
           ) : candidates.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-64 text-center">

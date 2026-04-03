@@ -48,6 +48,7 @@ class StockSelectorRequest(BaseModel):
     stock_codes: Optional[List[str]] = None
     strategy_ids: Optional[List[str]] = None
     top_n: int = 5
+    update_data: bool = False
 
 
 class StockSelectorResponse(BaseModel):
@@ -74,3 +75,10 @@ class ActivateStrategyRequest(BaseModel):
 class DeactivateStrategyRequest(BaseModel):
     """Request to deactivate a strategy."""
     strategy_id: str
+
+
+class StockSelectorConfigResponse(BaseModel):
+    """选股器配置响应."""
+    success: bool
+    default_top_n: int
+    error: Optional[str] = None

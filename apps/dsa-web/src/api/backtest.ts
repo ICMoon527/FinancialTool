@@ -1,4 +1,4 @@
-import apiClient from './index';
+import apiClient, { strategyBacktestApiClient } from './index';
 import { toCamelCase } from './utils';
 import type {
   BacktestRunRequest,
@@ -6,13 +6,92 @@ import type {
   BacktestResultsResponse,
   BacktestResultItem,
   PerformanceMetrics,
+  StrategyInfo,
+  StrategyListResponse,
+  StrategyBacktestRunRequest,
+  StrategyBacktestRunResponse,
+  StrategyBacktestRunAsyncRequest,
+  StrategyBacktestRunAsyncResponse,
+  StrategyBacktestTaskStatusResponse,
+  StrategyBacktestStopByTaskIdRequest,
 } from '../types/backtest';
 
 // ============ API ============
 
 export const backtestApi = {
   /**
-   * Trigger backtest evaluation
+   * 获取策略列表
+   */
+  getStrategies: async (): Promise<StrategyInfo[]> => {
+    const response = await apiClient.get<Record<string, unknown>>(
+      '/api/v1/backtest/strategies',
+    );
+    const data = toCamelCase<StrategyListResponse>(response.data);
+    return data.strategies || [];
+  },
+
+  /**
+   * 运行策略回测（同步，废弃）
+   */
+  runStrategyBacktest: async (params: StrategyBacktestRunRequest): Promise<StrategyBacktestRunResponse> => {
+    const requestData: Record<string, unknown> = {
+      strategy_id: params.strategyId,
+    };
+    if (params.startDate) requestData.start_date = params.startDate;
+    if (params.endDate) requestData.end_date = params.endDate;
+    if (params.stockPool) requestData.stock_pool = params.stockPool;
+    if (params.maxPositions != null) requestData.max_positions = params.maxPositions;
+
+    const response = await strategyBacktestApiClient.post<Record<string, unknown>>(
+      '/api/v1/backtest/strategy/run',
+      requestData,
+    );
+    return toCamelCase<StrategyBacktestRunResponse>(response.data);
+  },
+
+  /**
+   * 异步运行策略回测
+   */
+  runStrategyBacktestAsync: async (params: StrategyBacktestRunAsyncRequest): Promise<StrategyBacktestRunAsyncResponse> => {
+    const requestData: Record<string, unknown> = {
+      strategy_id: params.strategyId,
+      start_date: params.startDate,
+      end_date: params.endDate,
+      max_positions: params.maxPositions,
+    };
+
+    const response = await strategyBacktestApiClient.post<Record<string, unknown>>(
+      '/api/v1/backtest/strategy/run-async',
+      requestData,
+    );
+    return toCamelCase<StrategyBacktestRunAsyncResponse>(response.data);
+  },
+
+  /**
+   * 获取回测任务状态
+   */
+  getBacktestTaskStatus: async (taskId: string): Promise<StrategyBacktestTaskStatusResponse> => {
+    const response = await strategyBacktestApiClient.get<Record<string, unknown>>(
+      `/api/v1/backtest/strategy/task/${encodeURIComponent(taskId)}`,
+    );
+    return toCamelCase<StrategyBacktestTaskStatusResponse>(response.data);
+  },
+
+  /**
+   * 通过任务ID停止策略回测
+   */
+  stopStrategyBacktestByTaskId: async (taskId: string): Promise<void> => {
+    const requestData: StrategyBacktestStopByTaskIdRequest = {
+      task_id: taskId,
+    };
+    await strategyBacktestApiClient.post(
+      '/api/v1/backtest/strategy/stop-by-task-id',
+      requestData,
+    );
+  },
+
+  /**
+   * Trigger backtest evaluation (已废弃)
    */
   run: async (params: BacktestRunRequest = {}): Promise<BacktestRunResponse> => {
     const requestData: Record<string, unknown> = {};
@@ -30,7 +109,7 @@ export const backtestApi = {
   },
 
   /**
-   * Get paginated backtest results
+   * Get paginated backtest results (已废弃)
    */
   getResults: async (params: {
     code?: string;
@@ -59,7 +138,7 @@ export const backtestApi = {
   },
 
   /**
-   * Get overall performance metrics
+   * Get overall performance metrics (已废弃)
    */
   getOverallPerformance: async (evalWindowDays?: number): Promise<PerformanceMetrics | null> => {
     try {
@@ -80,7 +159,7 @@ export const backtestApi = {
   },
 
   /**
-   * Get per-stock performance metrics
+   * Get per-stock performance metrics (已废弃)
    */
   getStockPerformance: async (code: string, evalWindowDays?: number): Promise<PerformanceMetrics | null> => {
     try {

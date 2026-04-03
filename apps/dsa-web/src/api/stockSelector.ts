@@ -3,11 +3,17 @@ import type {
   StockSelectorRequest,
   StockSelectorResponse,
   StrategiesResponse,
+  StockSelectorConfigResponse,
 } from '../types/stockSelector';
 
 export const stockSelectorApi = {
   async getStrategies(): Promise<StrategiesResponse> {
     const response = await apiClient.get<StrategiesResponse>('/api/v1/stock-selector/strategies');
+    return response.data;
+  },
+
+  async getConfig(): Promise<StockSelectorConfigResponse> {
+    const response = await apiClient.get<StockSelectorConfigResponse>('/api/v1/stock-selector/config');
     return response.data;
   },
 
@@ -27,7 +33,7 @@ export const stockSelectorApi = {
 
   async screenStocks(request: StockSelectorRequest): Promise<StockSelectorResponse> {
     const response = await apiClient.post<StockSelectorResponse>('/api/v1/stock-selector/screen', request, {
-      timeout: 120000,
+      timeout: 1200000,
     });
     return response.data;
   },

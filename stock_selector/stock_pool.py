@@ -302,6 +302,7 @@ def filter_special_stock_codes(stock_codes: List[str]) -> List[str]:
     
     过滤规则：
     - 688开头：科创板
+    - 689开头：科创板
     - 300开头：创业板
     - 301开头：创业板
     - 43开头：北交所老股
@@ -316,7 +317,7 @@ def filter_special_stock_codes(stock_codes: List[str]) -> List[str]:
         过滤后的股票代码列表
     """
     original_count = len(stock_codes)
-    filtered_prefixes = ['688', '300', '301', '43', '83', '87', '92']
+    filtered_prefixes = ['688', '689', '300', '301', '43', '83', '87', '92']
     
     filtered_codes = [
         code for code in stock_codes 

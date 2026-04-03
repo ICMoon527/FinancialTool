@@ -1550,6 +1550,53 @@ class DatabaseManager:
 
         return saved_count
 
+    def check_data_coverage(
+        self,
+        stock_codes: List[str],
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None
+    ) -> Dict[str, Tuple[Optional[date], Optional[date]]]:
+        """
+        批量检查多只股票的数据覆盖范围
+        
+        Args:
+            stock_codes: 股票代码列表
+            start_date: 可选，目标开始日期
+            end_date: 可选，目标结束日期
+            
+        Returns:
+            {stock_code: (min_date, max_date)}
+            - min_date: 数据库中该股票的最早数据日期
+            - max_date: 数据库中该股票的最晚数据日期
+            - 没有数据时返回 (None, None)
+        """
+        from sqlalchemy import func
+        
+        result = {code: (None, None) for code in stock_codes}
+        
+        if not stock_codes:
+            return result
+        
+        with self.get_session() as session:
+            # 使用 GROUP BY 和聚合函数批量查询
+            query = (
+                select(
+                    StockDaily.code,
+                    func.min(StockDaily.date).label('min_date'),
+                    func.max(StockDaily.date).label('max_date')
+                )
+                .where(StockDaily.code.in_(stock_codes))
+                .group_by(StockDaily.code)
+            )
+            
+            rows = session.execute(query).all()
+            
+            for row in rows:
+                code, min_date, max_date = row
+                result[code] = (min_date, max_date)
+        
+        return result
+
     def get_analysis_context(self, code: str, target_date: Optional[date] = None) -> Optional[Dict[str, Any]]:
         """
         获取分析所需的上下文数据

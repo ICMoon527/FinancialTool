@@ -1,291 +1,371 @@
 import type React from 'react';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { backtestApi } from '../api/backtest';
-import { Card, Badge, Pagination } from '../components/common';
+import { Card } from '../components/common';
 import type {
-  BacktestResultItem,
-  BacktestRunResponse,
-  PerformanceMetrics,
+  StrategyInfo,
+  StrategyBacktestTaskStatusResponse,
 } from '../types/backtest';
 
-// ============ Helpers ============
+// ============ 格式化函数 ============
 
-function pct(value?: number | null): string {
+function formatNumber(value?: number | null): string {
   if (value == null) return '--';
-  return `${value.toFixed(1)}%`;
+  return value.toFixed(4);
 }
 
-function outcomeBadge(outcome?: string) {
-  if (!outcome) return <Badge variant="default">--</Badge>;
-  switch (outcome) {
-    case 'win':
-      return <Badge variant="success" glow>WIN</Badge>;
-    case 'loss':
-      return <Badge variant="danger" glow>LOSS</Badge>;
-    case 'neutral':
-      return <Badge variant="warning">NEUTRAL</Badge>;
-    default:
-      return <Badge variant="default">{outcome}</Badge>;
-  }
+function formatPercent(value?: number | null): string {
+  if (value == null) return '--';
+  return `${(value * 100).toFixed(2)}%`;
 }
 
-function statusBadge(status: string) {
-  switch (status) {
-    case 'completed':
-      return <Badge variant="success">completed</Badge>;
-    case 'insufficient':
-      return <Badge variant="warning">insufficient</Badge>;
-    case 'error':
-      return <Badge variant="danger">error</Badge>;
-    default:
-      return <Badge variant="default">{status}</Badge>;
-  }
-}
+// ============ 绩效指标卡片 ============
 
-function boolIcon(value?: boolean | null) {
-  if (value === true) return <span className="text-emerald-400">&#10003;</span>;
-  if (value === false) return <span className="text-red-400">&#10007;</span>;
-  return <span className="text-muted">--</span>;
-}
+const MetricsCard: React.FC<{ metrics: Record<string, unknown>; title: string }> = ({ metrics, title }) => {
+  return (
+    <Card variant="gradient" padding="md" className="animate-fade-in">
+      <div className="mb-3">
+        <span className="label-uppercase">{title}</span>
+      </div>
+      {Object.entries(metrics).map(([key, value]) => (
+        <div key={key} className="flex items-center justify-between py-1.5 border-b border-white/5 last:border-0">
+          <span className="text-xs text-secondary">{key}</span>
+          <span className="text-sm font-mono font-semibold text-white">
+            {typeof value === 'number' 
+              ? (key.toLowerCase().includes('pct') || key.toLowerCase().includes('rate') || key.toLowerCase().includes('ratio'))
+                ? formatPercent(value)
+                : formatNumber(value)
+              : String(value)
+            }
+          </span>
+        </div>
+      ))}
+    </Card>
+  );
+};
 
-// ============ Metric Row ============
+// ============ 终端日志显示框 ============
 
-const MetricRow: React.FC<{ label: string; value: string; accent?: boolean }> = ({ label, value, accent }) => (
-  <div className="flex items-center justify-between py-1.5 border-b border-white/5 last:border-0">
-    <span className="text-xs text-secondary">{label}</span>
-    <span className={`text-sm font-mono font-semibold ${accent ? 'text-cyan' : 'text-white'}`}>{value}</span>
-  </div>
-);
+const TerminalLog: React.FC<{ logs: string[] }> = ({ logs }) => {
+  const logRef = useRef<HTMLDivElement>(null);
 
-// ============ Performance Card ============
+  useEffect(() => {
+    if (logRef.current) {
+      logRef.current.scrollTop = logRef.current.scrollHeight;
+    }
+  }, [logs]);
 
-const PerformanceCard: React.FC<{ metrics: PerformanceMetrics; title: string }> = ({ metrics, title }) => (
-  <Card variant="gradient" padding="md" className="animate-fade-in">
-    <div className="mb-3">
-      <span className="label-uppercase">{title}</span>
-    </div>
-    <MetricRow label="Direction Accuracy" value={pct(metrics.directionAccuracyPct)} accent />
-    <MetricRow label="Win Rate" value={pct(metrics.winRatePct)} accent />
-    <MetricRow label="Avg Sim. Return" value={pct(metrics.avgSimulatedReturnPct)} />
-    <MetricRow label="Avg Stock Return" value={pct(metrics.avgStockReturnPct)} />
-    <MetricRow label="SL Trigger Rate" value={pct(metrics.stopLossTriggerRate)} />
-    <MetricRow label="TP Trigger Rate" value={pct(metrics.takeProfitTriggerRate)} />
-    <MetricRow label="Avg Days to Hit" value={metrics.avgDaysToFirstHit != null ? metrics.avgDaysToFirstHit.toFixed(1) : '--'} />
-    <div className="mt-3 pt-2 border-t border-white/5 flex items-center justify-between">
-      <span className="text-xs text-muted">Evaluations</span>
-      <span className="text-xs text-secondary font-mono">
-        {Number(metrics.completedCount)} / {Number(metrics.totalEvaluations)}
-      </span>
-    </div>
-    <div className="flex items-center justify-between">
-      <span className="text-xs text-muted">W / L / N</span>
-      <span className="text-xs font-mono">
-        <span className="text-emerald-400">{metrics.winCount}</span>
-        {' / '}
-        <span className="text-red-400">{metrics.lossCount}</span>
-        {' / '}
-        <span className="text-amber-400">{metrics.neutralCount}</span>
-      </span>
-    </div>
-  </Card>
-);
+  return (
+    <Card padding="md" className="mt-3">
+      <div className="mb-2">
+        <span className="label-uppercase">终端日志</span>
+      </div>
+      <div 
+        ref={logRef}
+        className="bg-black/50 rounded-lg p-3 h-48 overflow-y-auto font-mono text-xs"
+      >
+        {logs.length === 0 ? (
+          <p className="text-muted">等待回测开始...</p>
+        ) : (
+          logs.map((log, index) => (
+            <div key={index} className="py-0.5">
+              <span className="text-cyan">{log}</span>
+            </div>
+          ))
+        )}
+      </div>
+    </Card>
+  );
+};
 
-// ============ Run Summary ============
-
-const RunSummary: React.FC<{ data: BacktestRunResponse }> = ({ data }) => (
-  <div className="flex items-center gap-4 px-3 py-2 rounded-lg bg-elevated border border-white/5 text-xs font-mono animate-fade-in">
-    <span className="text-secondary">Processed: <span className="text-white">{data.processed}</span></span>
-    <span className="text-secondary">Saved: <span className="text-cyan">{data.saved}</span></span>
-    <span className="text-secondary">Completed: <span className="text-emerald-400">{data.completed}</span></span>
-    <span className="text-secondary">Insufficient: <span className="text-amber-400">{data.insufficient}</span></span>
-    {data.errors > 0 && (
-      <span className="text-secondary">Errors: <span className="text-red-400">{data.errors}</span></span>
-    )}
-  </div>
-);
-
-// ============ Main Page ============
+// ============ 主页面 ============
 
 const BacktestPage: React.FC = () => {
-  // Input state
-  const [codeFilter, setCodeFilter] = useState('');
-  const [evalDays, setEvalDays] = useState('');
-  const [forceRerun, setForceRerun] = useState(false);
+  // 策略状态
+  const [strategies, setStrategies] = useState<StrategyInfo[]>([]);
+  const [selectedStrategy, setSelectedStrategy] = useState('');
+  const [isLoadingStrategies, setIsLoadingStrategies] = useState(false);
+
+  // 日期状态
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
+
+  // 最高持仓数状态
+  const [maxPositions, setMaxPositions] = useState<number | ''>(3);
+
+  // 运行状态
   const [isRunning, setIsRunning] = useState(false);
-  const [runResult, setRunResult] = useState<BacktestRunResponse | null>(null);
+  const [isStopping, setIsStopping] = useState(false);
+  const [taskId, setTaskId] = useState<string | null>(null);
+  const [taskStatus, setTaskStatus] = useState<StrategyBacktestTaskStatusResponse['task'] | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
 
-  // Results state
-  const [results, setResults] = useState<BacktestResultItem[]>([]);
-  const [totalResults, setTotalResults] = useState(0);
-  const [currentPage, setCurrentPage] = useState(1);
-  const [isLoadingResults, setIsLoadingResults] = useState(false);
-  const pageSize = 20;
+  // 终端日志
+  const [logs, setLogs] = useState<string[]>([]);
 
-  // Performance state
-  const [overallPerf, setOverallPerf] = useState<PerformanceMetrics | null>(null);
-  const [stockPerf, setStockPerf] = useState<PerformanceMetrics | null>(null);
-  const [isLoadingPerf, setIsLoadingPerf] = useState(false);
+  // 轮询定时器引用
+  const pollTimerRef = useRef<number | null>(null);
+  const eventSourceRef = useRef<EventSource | null>(null);
 
-  // Fetch results
-  const fetchResults = useCallback(async (page = 1, code?: string, windowDays?: number) => {
-    setIsLoadingResults(true);
-    try {
-      const response = await backtestApi.getResults({ code: code || undefined, evalWindowDays: windowDays, page, limit: pageSize });
-      setResults(response.items);
-      setTotalResults(response.total);
-      setCurrentPage(response.page);
-    } catch (err) {
-      console.error('Failed to fetch backtest results:', err);
-    } finally {
-      setIsLoadingResults(false);
-    }
+  // 添加日志
+  const addLog = useCallback((message: string) => {
+    const timestamp = new Date().toLocaleTimeString();
+    setLogs(prev => [...prev, `[${timestamp}] ${message}`]);
   }, []);
 
-  // Fetch performance
-  const fetchPerformance = useCallback(async (code?: string, windowDays?: number) => {
-    setIsLoadingPerf(true);
+  // 获取策略列表
+  const fetchStrategies = useCallback(async () => {
+    setIsLoadingStrategies(true);
     try {
-      const overall = await backtestApi.getOverallPerformance(windowDays);
-      setOverallPerf(overall);
-
-      if (code) {
-        const stock = await backtestApi.getStockPerformance(code, windowDays);
-        setStockPerf(stock);
-      } else {
-        setStockPerf(null);
+      const data = await backtestApi.getStrategies();
+      setStrategies(data);
+      if (data.length > 0 && !selectedStrategy) {
+        setSelectedStrategy(data[0].id);
       }
     } catch (err) {
-      console.error('Failed to fetch performance:', err);
+      console.error('获取策略列表失败:', err);
+      addLog('获取策略列表失败');
     } finally {
-      setIsLoadingPerf(false);
+      setIsLoadingStrategies(false);
     }
-  }, []);
+  }, [selectedStrategy, addLog]);
 
-  // Initial load — fetch performance first, then filter results by its window
+  // 初始化日期
   useEffect(() => {
-    const init = async () => {
-      // Get latest performance (unfiltered returns most recent summary)
-      const overall = await backtestApi.getOverallPerformance();
-      setOverallPerf(overall);
-      // Use the summary's eval_window_days to filter results consistently
-      const windowDays = overall?.evalWindowDays;
-      if (windowDays && !evalDays) {
-        setEvalDays(String(windowDays));
+    const today = new Date();
+    const oneYearAgo = new Date();
+    oneYearAgo.setFullYear(today.getFullYear() - 1);
+
+    setEndDate(today.toISOString().split('T')[0]);
+    setStartDate(oneYearAgo.toISOString().split('T')[0]);
+  }, []);
+
+  // 加载策略列表
+  useEffect(() => {
+    fetchStrategies();
+  }, [fetchStrategies]);
+
+  // 清理函数
+  useEffect(() => {
+    return () => {
+      if (pollTimerRef.current) {
+        clearInterval(pollTimerRef.current);
       }
-      fetchResults(1, undefined, windowDays);
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+      }
     };
-    init();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
-  // Run backtest
-  const handleRun = async () => {
-    setIsRunning(true);
-    setRunResult(null);
-    setRunError(null);
+  // 轮询任务状态
+  const pollTaskStatus = useCallback(async (currentTaskId: string) => {
     try {
-      const code = codeFilter.trim() || undefined;
-      const evalWindowDays = evalDays ? parseInt(evalDays, 10) : undefined;
-      const response = await backtestApi.run({
-        code,
-        force: forceRerun || undefined,
-        minAgeDays: forceRerun ? 0 : undefined,
-        evalWindowDays,
-      });
-      setRunResult(response);
-      // Refresh data with same eval_window_days
-      fetchResults(1, codeFilter.trim() || undefined, evalWindowDays);
-      fetchPerformance(codeFilter.trim() || undefined, evalWindowDays);
+      const response = await backtestApi.getBacktestTaskStatus(currentTaskId);
+      setTaskStatus(response.task);
+
+      if (response.task) {
+        const status = response.task.status;
+        
+        // 任务结束
+        if (status === 'completed' || status === 'failed' || status === 'stopped') {
+          setIsRunning(false);
+          setIsStopping(false);
+          
+          if (pollTimerRef.current) {
+            clearInterval(pollTimerRef.current);
+            pollTimerRef.current = null;
+          }
+          
+          if (eventSourceRef.current) {
+            eventSourceRef.current.close();
+            eventSourceRef.current = null;
+          }
+
+          if (status === 'completed') {
+            addLog('回测完成');
+          } else if (status === 'failed') {
+            const errorMsg = response.task.error || '回测失败';
+            setRunError(errorMsg);
+            addLog(`错误: ${errorMsg}`);
+          } else if (status === 'stopped') {
+            addLog('回测已终止');
+          }
+        }
+      }
     } catch (err) {
-      setRunError(err instanceof Error ? err.message : 'Backtest failed');
-    } finally {
+      console.error('获取任务状态失败:', err);
+    }
+  }, [addLog]);
+
+  // 运行策略回测
+  const handleRun = async () => {
+    if (!selectedStrategy) {
+      setRunError('请选择策略');
+      addLog('错误: 请选择策略');
+      return;
+    }
+
+    const strategyInfo = strategies.find(s => s.id === selectedStrategy);
+    if (!strategyInfo) {
+      setRunError('策略不存在');
+      addLog('错误: 策略不存在');
+      return;
+    }
+
+    setIsRunning(true);
+    setIsStopping(false);
+    setTaskId(null);
+    setTaskStatus(null);
+    setRunError(null);
+    setLogs([]);
+
+    // 清理之前的轮询
+    if (pollTimerRef.current) {
+      clearInterval(pollTimerRef.current);
+    }
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+    }
+
+    // 连接SSE获取实时日志
+    const eventSource = new EventSource('/api/v1/backtest/strategy/logs');
+    eventSourceRef.current = eventSource;
+    
+    eventSource.onmessage = (event) => {
+      if (event.data === '[DONE]') {
+        return;
+      }
+      // 直接添加后端传来的日志（已经包含时间戳）
+      setLogs(prev => [...prev, event.data]);
+    };
+
+    eventSource.onerror = (error) => {
+      console.error('SSE连接错误:', error);
+    };
+
+    try {
+      const response = await backtestApi.runStrategyBacktestAsync({
+        strategyId: strategyInfo.id,
+        startDate: startDate,
+        endDate: endDate,
+        maxPositions: typeof maxPositions === 'number' ? maxPositions : 3,
+      });
+      
+      setTaskId(response.task_id);
+      addLog(`回测任务已提交: ${response.task_id}`);
+      
+      // 开始轮询任务状态
+      pollTimerRef.current = setInterval(() => {
+        pollTaskStatus(response.task_id);
+      }, 3000);
+      
+      // 立即查询一次
+      pollTaskStatus(response.task_id);
+      
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : '回测任务提交失败';
+      setRunError(errorMessage);
+      addLog(`错误: ${errorMessage}`);
       setIsRunning(false);
+      
+      if (eventSource.readyState !== EventSource.CLOSED) {
+        eventSource.close();
+      }
     }
   };
 
-  // Filter by code
-  const handleFilter = () => {
-    const code = codeFilter.trim() || undefined;
-    const windowDays = evalDays ? parseInt(evalDays, 10) : undefined;
-    setCurrentPage(1);
-    fetchResults(1, code, windowDays);
-    fetchPerformance(code, windowDays);
-  };
+  // 终止回测
+  const handleStop = async () => {
+    if (!taskId) {
+      return;
+    }
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') {
-      handleFilter();
+    setIsStopping(true);
+    addLog('正在终止回测...');
+    
+    try {
+      await backtestApi.stopStrategyBacktestByTaskId(taskId);
+      addLog('已发送停止信号');
+    } catch (err) {
+      console.error('停止回测失败:', err);
+      addLog('停止回测失败');
+      setIsStopping(false);
     }
   };
 
-  // Pagination
-  const totalPages = Math.ceil(totalResults / pageSize);
-  const handlePageChange = (page: number) => {
-    const windowDays = evalDays ? parseInt(evalDays, 10) : undefined;
-    fetchResults(page, codeFilter.trim() || undefined, windowDays);
-  };
+  // 获取结果数据
+  const resultData = taskStatus?.result;
+  const metrics = resultData?.metrics as Record<string, unknown> | undefined;
 
   return (
     <div className="min-h-screen flex flex-col">
-      {/* Header */}
+      {/* 页面头部 */}
       <header className="flex-shrink-0 px-4 py-3 border-b border-white/5">
-        <div className="flex items-center gap-2 max-w-4xl">
-          <div className="flex-1 relative">
+        <div className="flex items-center gap-2 max-w-6xl flex-wrap">
+          {/* 策略选择 */}
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-muted">策略</span>
+            <select
+              value={selectedStrategy}
+              onChange={(e) => setSelectedStrategy(e.target.value)}
+              disabled={isRunning || isLoadingStrategies}
+              className="input-terminal text-xs py-2 min-w-48"
+            >
+              <option value="">-- 选择策略 --</option>
+              {strategies.map((strategy) => (
+                <option key={strategy.id} value={strategy.id}>
+                  {strategy.name} ({strategy.type})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* 开始日期 */}
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-muted">开始</span>
             <input
-              type="text"
-              value={codeFilter}
-              onChange={(e) => setCodeFilter(e.target.value.toUpperCase())}
-              onKeyDown={handleKeyDown}
-              placeholder="Filter by stock code (leave empty for all)"
+              type="date"
+              value={startDate}
+              onChange={(e) => setStartDate(e.target.value)}
               disabled={isRunning}
-              className="input-terminal w-full"
+              className="input-terminal text-xs py-2"
             />
           </div>
-          <button
-            type="button"
-            onClick={handleFilter}
-            disabled={isLoadingResults}
-            className="btn-secondary flex items-center gap-1.5 whitespace-nowrap"
-          >
-            Filter
-          </button>
-          <div className="flex items-center gap-1 whitespace-nowrap">
-            <span className="text-xs text-muted">Window</span>
+
+          {/* 结束日期 */}
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-muted">结束</span>
+            <input
+              type="date"
+              value={endDate}
+              onChange={(e) => setEndDate(e.target.value)}
+              disabled={isRunning}
+              className="input-terminal text-xs py-2"
+            />
+          </div>
+
+          {/* 最高持仓数 */}
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-muted">最高持仓</span>
             <input
               type="number"
-              min={1}
-              max={120}
-              value={evalDays}
-              onChange={(e) => setEvalDays(e.target.value)}
-              placeholder="10"
+              min="1"
+              value={maxPositions}
+              onChange={(e) => {
+                const val = e.target.value;
+                setMaxPositions(val ? parseInt(val, 10) : '');
+              }}
               disabled={isRunning}
-              className="input-terminal w-14 text-center text-xs py-2"
+              placeholder="不限制"
+              className="input-terminal text-xs py-2 w-24"
             />
           </div>
-          <button
-            type="button"
-            onClick={() => setForceRerun(!forceRerun)}
-            disabled={isRunning}
-            className={`
-              flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium
-              transition-all duration-200 whitespace-nowrap border cursor-pointer
-              ${forceRerun
-                ? 'border-cyan/40 bg-cyan/10 text-cyan shadow-[0_0_8px_rgba(0,212,255,0.15)]'
-                : 'border-white/10 bg-transparent text-muted hover:border-white/20 hover:text-secondary'
-              }
-              disabled:opacity-50 disabled:cursor-not-allowed
-            `}
-          >
-            <span className={`
-              inline-block w-1.5 h-1.5 rounded-full transition-colors duration-200
-              ${forceRerun ? 'bg-cyan shadow-[0_0_4px_rgba(0,212,255,0.6)]' : 'bg-white/20'}
-            `} />
-            Force
-          </button>
+
+          {/* 运行按钮 */}
           <button
             type="button"
             onClick={handleRun}
-            disabled={isRunning}
+            disabled={isRunning || !selectedStrategy}
             className="btn-primary flex items-center gap-1.5 whitespace-nowrap"
           >
             {isRunning ? (
@@ -294,133 +374,107 @@ const BacktestPage: React.FC = () => {
                   <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                   <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
                 </svg>
-                Running...
+                {taskStatus ? `运行中 (${taskStatus.status})` : '提交中...'}
               </>
             ) : (
-              'Run Backtest'
+              '运行回测'
+            )}
+          </button>
+
+          {/* 终止按钮 */}
+          <button
+            type="button"
+            onClick={handleStop}
+            disabled={!isRunning || isStopping || !taskId}
+            className="btn-secondary flex items-center gap-1.5 whitespace-nowrap border-red-500/30 hover:border-red-500/50 text-red-400 hover:text-red-300"
+          >
+            {isStopping ? (
+              <>
+                <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                </svg>
+                停止中...
+              </>
+            ) : (
+              '终止'
             )}
           </button>
         </div>
-        {runResult && (
-          <div className="mt-2 max-w-4xl">
-            <RunSummary data={runResult} />
+
+        {/* 任务状态显示 */}
+        {taskStatus && (
+          <div className="mt-2 flex items-center gap-2 text-xs">
+            <span className="text-muted">任务ID:</span>
+            <span className="font-mono text-white">{taskId}</span>
+            <span className="text-muted mx-2">|</span>
+            <span className="text-muted">状态:</span>
+            <span className={`font-mono ${
+              taskStatus.status === 'completed' ? 'text-green-400' :
+              taskStatus.status === 'failed' || taskStatus.status === 'stopped' ? 'text-red-400' :
+              'text-yellow-400'
+            }`}>
+              {taskStatus.status}
+            </span>
           </div>
-        )}
-        {runError && (
-          <p className="mt-2 text-xs text-danger">{runError}</p>
         )}
       </header>
 
-      {/* Main content */}
-      <main className="flex-1 flex overflow-hidden p-3 gap-3">
-        {/* Left sidebar - Performance */}
-        <div className="flex flex-col gap-3 w-64 flex-shrink-0 overflow-y-auto">
-          {isLoadingPerf ? (
-            <div className="flex items-center justify-center py-8">
-              <div className="w-8 h-8 border-2 border-cyan/20 border-t-cyan rounded-full animate-spin" />
-            </div>
-          ) : overallPerf ? (
-            <PerformanceCard metrics={overallPerf} title="Overall Performance" />
-          ) : (
-            <Card padding="md">
-              <p className="text-xs text-muted text-center py-4">
-                No backtest data yet. Run a backtest to see performance metrics.
-              </p>
+      {/* 页面主体 */}
+      <main className="flex-1 p-4 overflow-y-auto">
+        <div className="max-w-6xl">
+          {/* 错误提示 */}
+          {runError && (
+            <Card padding="md" className="mb-4 border-red-500/30 bg-red-500/10">
+              <div className="text-red-400 text-sm">
+                <strong>错误:</strong> {runError}
+              </div>
             </Card>
           )}
 
-          {stockPerf && (
-            <PerformanceCard metrics={stockPerf} title={`${stockPerf.code || codeFilter}`} />
+          {/* 终端日志 */}
+          <TerminalLog logs={logs} />
+
+          {/* 回测结果 */}
+          {resultData && (
+            <div className="mt-6 space-y-6">
+              <h2 className="text-lg font-semibold text-white">回测结果</h2>
+              
+              {/* 绩效指标 */}
+              {metrics && (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {Object.entries(metrics).map(([category, categoryMetrics]) => (
+                    <MetricsCard
+                      key={category}
+                      metrics={categoryMetrics as Record<string, unknown>}
+                      title={category}
+                    />
+                  ))}
+                </div>
+              )}
+
+              {/* 图表 */}
+              {resultData.reports && typeof resultData.reports === 'object' && (
+                <div className="mt-6 space-y-4">
+                  <h3 className="text-md font-semibold text-white">图表</h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {Object.entries(resultData.reports as Record<string, string>).map(([name, path]) => (
+                      <Card key={name} padding="md">
+                        <div className="mb-2">
+                          <span className="label-uppercase">{name}</span>
+                        </div>
+                        <img 
+                          src={`/${path}`} 
+                          alt={name}
+                          className="w-full rounded"
+                        />
+                      </Card>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
           )}
         </div>
-
-        {/* Right content - Results table */}
-        <section className="flex-1 overflow-y-auto">
-          {isLoadingResults ? (
-            <div className="flex flex-col items-center justify-center h-64">
-              <div className="w-10 h-10 border-3 border-cyan/20 border-t-cyan rounded-full animate-spin" />
-              <p className="mt-3 text-secondary text-sm">Loading results...</p>
-            </div>
-          ) : results.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-64 text-center">
-              <div className="w-12 h-12 mb-3 rounded-xl bg-elevated flex items-center justify-center">
-                <svg className="w-6 h-6 text-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-                </svg>
-              </div>
-              <h3 className="text-base font-medium text-white mb-1.5">No Results</h3>
-              <p className="text-xs text-muted max-w-xs">
-                Run a backtest to evaluate historical analysis accuracy
-              </p>
-            </div>
-          ) : (
-            <div className="animate-fade-in">
-              <div className="overflow-x-auto rounded-xl border border-white/5">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="bg-elevated text-left">
-                      <th className="px-3 py-2.5 text-xs font-medium text-secondary uppercase tracking-wider">Code</th>
-                      <th className="px-3 py-2.5 text-xs font-medium text-secondary uppercase tracking-wider">Date</th>
-                      <th className="px-3 py-2.5 text-xs font-medium text-secondary uppercase tracking-wider">Advice</th>
-                      <th className="px-3 py-2.5 text-xs font-medium text-secondary uppercase tracking-wider">Dir.</th>
-                      <th className="px-3 py-2.5 text-xs font-medium text-secondary uppercase tracking-wider">Outcome</th>
-                      <th className="px-3 py-2.5 text-xs font-medium text-secondary uppercase tracking-wider text-right">Return%</th>
-                      <th className="px-3 py-2.5 text-xs font-medium text-secondary uppercase tracking-wider text-center">SL</th>
-                      <th className="px-3 py-2.5 text-xs font-medium text-secondary uppercase tracking-wider text-center">TP</th>
-                      <th className="px-3 py-2.5 text-xs font-medium text-secondary uppercase tracking-wider">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {results.map((row) => (
-                      <tr
-                        key={row.analysisHistoryId}
-                        className="border-t border-white/5 hover:bg-hover transition-colors"
-                      >
-                        <td className="px-3 py-2 font-mono text-cyan text-xs">{row.code}</td>
-                        <td className="px-3 py-2 text-xs text-secondary">{row.analysisDate || '--'}</td>
-                        <td className="px-3 py-2 text-xs text-white truncate max-w-[140px]" title={row.operationAdvice || ''}>
-                          {row.operationAdvice || '--'}
-                        </td>
-                        <td className="px-3 py-2 text-xs">
-                          <span className="flex items-center gap-1">
-                            {boolIcon(row.directionCorrect)}
-                            <span className="text-muted">{row.directionExpected || ''}</span>
-                          </span>
-                        </td>
-                        <td className="px-3 py-2">{outcomeBadge(row.outcome)}</td>
-                        <td className="px-3 py-2 text-xs font-mono text-right">
-                          <span className={
-                            row.simulatedReturnPct != null
-                              ? row.simulatedReturnPct > 0 ? 'text-emerald-400' : row.simulatedReturnPct < 0 ? 'text-red-400' : 'text-secondary'
-                              : 'text-muted'
-                          }>
-                            {pct(row.simulatedReturnPct)}
-                          </span>
-                        </td>
-                        <td className="px-3 py-2 text-center">{boolIcon(row.hitStopLoss)}</td>
-                        <td className="px-3 py-2 text-center">{boolIcon(row.hitTakeProfit)}</td>
-                        <td className="px-3 py-2">{statusBadge(row.evalStatus)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-
-              {/* Pagination */}
-              <div className="mt-4">
-                <Pagination
-                  currentPage={currentPage}
-                  totalPages={totalPages}
-                  onPageChange={handlePageChange}
-                />
-              </div>
-
-              <p className="text-xs text-muted text-center mt-2">
-                {totalResults} result{totalResults !== 1 ? 's' : ''} total
-              </p>
-            </div>
-          )}
-        </section>
       </main>
     </div>
   );

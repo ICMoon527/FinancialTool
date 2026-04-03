@@ -110,11 +110,14 @@ class BacktestReportGenerator:
         report_content.append(f"- **卡尔马比率**: {all_metrics.get('calmar_ratio', 0):.4f}\n")
         report_content.append(f"- **索提诺比率**: {all_metrics.get('sortino_ratio', 0):.4f}\n")
         report_content.append(f"- **信息比率**: {all_metrics.get('information_ratio', 0):.4f}\n")
-        report_content.append("\n### 5.4 交易指标\n")
+        report_content.append("\n### 5.4 阿尔法与贝塔\n")
+        report_content.append(f"- **贝塔 (Beta)**: {all_metrics.get('beta', 0):.4f}\n")
+        report_content.append(f"- **阿尔法 (Alpha)**: {all_metrics.get('alpha', 0)*100:.4f}%\n")
+        report_content.append("\n### 5.5 交易指标\n")
         report_content.append(f"- **总交易次数**: {all_metrics.get('total_trades', 0)}\n")
         report_content.append(f"- **胜率**: {all_metrics.get('win_rate', 0)*100:.2f}%\n")
         report_content.append(f"- **盈亏比**: {all_metrics.get('profit_loss_ratio', 0):.4f}\n")
-        report_content.append("\n### 5.5 最终结果\n")
+        report_content.append("\n### 5.6 最终结果\n")
         report_content.append(f"- **初始资金**: {all_metrics.get('initial_capital', 0):,.2f} 元\n")
         report_content.append(f"- **最终权益**: {all_metrics.get('final_equity', 0):,.2f} 元\n")
         report_content.append("\n")
@@ -132,6 +135,16 @@ class BacktestReportGenerator:
         report_content.append("```\n胜率 = 盈利交易次数 / 总交易次数\n```\n")
         report_content.append("\n### 6.6 盈亏比\n")
         report_content.append("```\n盈亏比 = 平均盈利 / 平均亏损\n```\n")
+        report_content.append("\n### 6.7 贝塔 (Beta)\n")
+        report_content.append("```\nBeta = Cov(投资组合收益率, 基准收益率) / Var(基准收益率)\n```\n")
+        report_content.append("- Beta = 1：投资组合的风险与基准相同\n")
+        report_content.append("- Beta > 1：投资组合的风险高于基准（激进型）\n")
+        report_content.append("- Beta < 1：投资组合的风险低于基准（保守型）\n")
+        report_content.append("\n### 6.8 阿尔法 (Alpha)\n")
+        report_content.append("```\nAlpha = 投资组合年化收益率 - [无风险利率 + Beta * (基准年化收益率 - 无风险利率)]\n```\n")
+        report_content.append("- Alpha > 0：投资组合表现优于基准\n")
+        report_content.append("- Alpha = 0：投资组合表现与基准相同\n")
+        report_content.append("- Alpha < 0：投资组合表现不如基准\n")
         report_content.append("\n")
 
         if chart_paths:
@@ -170,6 +183,21 @@ class BacktestReportGenerator:
             report_content.append(f"- 胜率 {win_rate*100:.2f}%，盈亏比 {profit_loss_ratio:.4f}，交易表现优秀\n")
         else:
             report_content.append(f"- 胜率 {win_rate*100:.2f}%，盈亏比 {profit_loss_ratio:.4f}\n")
+        report_content.append("\n### 8.5 阿尔法与贝塔分析\n")
+        beta = all_metrics.get('beta', 0)
+        alpha = all_metrics.get('alpha', 0)
+        if beta > 1.2:
+            report_content.append(f"- 贝塔值为 {beta:.4f}，策略表现相对激进，波动大于市场\n")
+        elif beta > 0.8:
+            report_content.append(f"- 贝塔值为 {beta:.4f}，策略风险与市场接近\n")
+        else:
+            report_content.append(f"- 贝塔值为 {beta:.4f}，策略表现相对保守，波动小于市场\n")
+        if alpha > 0:
+            report_content.append(f"- 阿尔法值为 {alpha*100:.4f}%，策略表现优于基准\n")
+        elif alpha == 0:
+            report_content.append(f"- 阿尔法值为 {alpha*100:.4f}%，策略表现与基准持平\n")
+        else:
+            report_content.append(f"- 阿尔法值为 {alpha*100:.4f}%，策略表现不如基准\n")
         report_content.append("\n")
 
         report_content.append("## 9. 免责声明\n")
