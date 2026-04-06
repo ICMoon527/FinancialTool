@@ -1,3 +1,4 @@
+
 # -*- coding: utf-8 -*-
 """
 回测流程编排器。
@@ -51,8 +52,10 @@ class BacktestOrchestrator:
         self.chart_paths: Dict[str, str] = {}
         self._should_stop = False
         self._preloader: Optional[SmartDataPreloader] = None
+        self._actual_start_date: Optional[date] = None
+        self._warmup_days = 365
 
-    def stop(self) -> None:
+    def stop(self):
         """
         停止回测。
         """
@@ -63,7 +66,7 @@ class BacktestOrchestrator:
         if self._preloader:
             self._preloader.stop()
 
-    def _load_config(self, config_path: Optional[str]) -> Dict[str, Any]:
+    def _load_config(self, config_path: Optional[str]):
         """
         加载配置文件。
 
@@ -91,9 +94,9 @@ class BacktestOrchestrator:
                 with open(config_path, "r", encoding="utf-8") as f:
                     file_config = yaml.safe_load(f)
                 default_config.update(file_config)
-                logger.info(f"配置已加载: {config_path}")
+                logger.info("配置已加载: %s", config_path)
             except Exception as e:
-                logger.warning(f"加载配置文件失败: {e}")
+                logger.warning("加载配置文件失败: %s", e)
 
         return default_config
 
@@ -103,7 +106,7 @@ class BacktestOrchestrator:
         stock_pool: List[str],
         start_date: date,
         end_date: date,
-    ) -> None:
+    ):
         """
         使用智能数据预加载器预加载数据。
         检查数据库中已有数据，只下载缺失的部分。
@@ -114,7 +117,6 @@ class BacktestOrchestrator:
             start_date: 开始日期
             end_date: 结束日期
         """
-        # 检查终止标志
         if self._should_stop:
             logger.info("回测已被终止，跳过数据预加载")
             return
@@ -122,26 +124,21 @@ class BacktestOrchestrator:
         try:
             logger.info("使用智能数据预加载器...")
             
-            # 导入必要的模块
             from src.storage import DatabaseManager
             from stock_selector.tushare_data_downloader import get_tushare_downloader
             
-            # 获取数据库管理器和Tushare下载器
             db_manager = DatabaseManager.get_instance()
             tushare_downloader = get_tushare_downloader()
             
-            # 创建智能数据预加载器并保存引用
             self._preloader = SmartDataPreloader(
                 db_manager=db_manager,
                 tushare_downloader=tushare_downloader
             )
             
-            # 再次检查终止标志
             if self._should_stop:
                 logger.info("回测已被终止，跳过数据预加载")
                 return
             
-            # 确保数据可用
             try:
                 self._preloader.ensure_data_available(
                     stock_codes=stock_pool,
@@ -153,9 +150,8 @@ class BacktestOrchestrator:
                 self._should_stop = True
             
         except Exception as e:
-            logger.warning(f"智能数据预加载失败: {e}, 将使用默认数据获取方式", exc_info=True)
+            logger.warning("智能数据预加载失败: %s, 将使用默认数据获取方式", e, exc_info=True)
         finally:
-            # 清除 preloader 引用
             self._preloader = None
 
     def prepare_data(
@@ -164,7 +160,7 @@ class BacktestOrchestrator:
         stock_pool: Optional[List[str]] = None,
         start_date: Optional[date] = None,
         end_date: Optional[date] = None,
-    ) -> List[date]:
+    ):
         """
         阶段1: 数据准备。
 
@@ -192,19 +188,29 @@ class BacktestOrchestrator:
             if isinstance(end_date, str):
                 end_date = datetime.strptime(end_date, "%Y-%m-%d").date()
 
+        self._actual_start_date = start_date
+        
+        warmup_start_date = None
+        if start_date:
+            warmup_start_date = start_date - timedelta(days=self._warmup_days)
+            logger.info("配置回测起始日期: %s", start_date)
+            logger.info("预热期起始日期: %s", warmup_start_date)
+        
+        effective_start_date = warmup_start_date if warmup_start_date else start_date
+        
         self.config["stock_pool"] = stock_pool
         self.config["start_date"] = start_date
         self.config["end_date"] = end_date
 
-        logger.info(f"股票池: {stock_pool}")
-        logger.info(f"回测期间: {start_date} 至 {end_date}")
+        logger.info("股票池: %s", stock_pool)
+        logger.info("回测期间: %s 至 %s", start_date, end_date)
+        logger.info("数据预加载范围: %s 至 %s", warmup_start_date, end_date)
 
-        # 使用批量数据获取策略预加载数据
         if stock_pool and start_date and end_date:
             self._preload_data_with_batch(data_provider, stock_pool, start_date, end_date)
 
         trading_dates = self._generate_trading_dates(start_date, end_date)
-        logger.info(f"交易日数: {len(trading_dates)}")
+        logger.info("交易日数: %d", len(trading_dates))
 
         return trading_dates
 
@@ -212,7 +218,7 @@ class BacktestOrchestrator:
         self,
         start_date: Optional[date],
         end_date: Optional[date],
-    ) -> List[date]:
+    ):
         """
         生成交易日列表。
 
@@ -228,13 +234,31 @@ class BacktestOrchestrator:
         if end_date is None:
             end_date = date.today()
 
+        # 先尝试使用交易日历
+        try:
+            from stock_selector.trading_calendar import get_trading_days
+            
+            dates = get_trading_days(start_date, end_date)
+            
+            total_days = (end_date - start_date).days + 1
+            skipped_days = total_days - len(dates)
+            
+            if skipped_days > 0:
+                logger.info("跳过 %d 个非交易日", skipped_days)
+            
+            return dates
+            
+        except Exception as e:
+            logger.warning("使用交易日历失败，回退到周末判断: %s", e)
+        
+        # 降级方案：使用周末判断
         dates = []
         current_date = start_date
         while current_date <= end_date:
             if current_date.weekday() < 5:
                 dates.append(current_date)
-            current_date += timedelta(days=1)
-
+            current_date = current_date + timedelta(days=1)
+        
         return dates
 
     def execute_strategy(
@@ -244,7 +268,7 @@ class BacktestOrchestrator:
         trading_dates: List[date],
         stock_pool: Optional[List[str]] = None,
         max_positions: Optional[int] = None,
-    ) -> Portfolio:
+    ):
         """
         阶段2: 策略执行。
 
@@ -262,12 +286,10 @@ class BacktestOrchestrator:
         if stock_pool is None:
             stock_pool = self.config.get("stock_pool", [])
 
-        # 使用传入的max_positions参数，如果没有则使用配置文件中的
         final_max_positions = max_positions
         if final_max_positions is None:
             final_max_positions = self.config.get("max_positions")
         
-        # 使用数据库优先的数据提供器
         from .data_access import DatabaseFirstDataProvider
         from src.storage import DatabaseManager
         db_manager = DatabaseManager.get_instance()
@@ -293,7 +315,7 @@ class BacktestOrchestrator:
 
         return self.portfolio
 
-    def record_results(self) -> Dict[str, Any]:
+    def record_results(self):
         """
         阶段3: 结果记录。
 
@@ -305,10 +327,24 @@ class BacktestOrchestrator:
         if self.portfolio is None:
             raise ValueError("投资组合未初始化，请先执行策略")
 
+        actual_start_date = self._actual_start_date
+        if actual_start_date:
+            logger.info("只记录 %s 之后的交易和权益（预热期数据被过滤）", actual_start_date)
+
+        filtered_trades = []
+        for t in self.portfolio.trades:
+            if actual_start_date is None or (t.date and t.date >= actual_start_date):
+                filtered_trades.append(t)
+
+        filtered_equity_history = []
+        for d, e in self.portfolio.equity_history:
+            if actual_start_date is None or d >= actual_start_date:
+                filtered_equity_history.append((d, e))
+
         results = {
             "initial_capital": self.portfolio.initial_capital,
             "final_equity": self.portfolio.get_total_equity(),
-            "total_trades": len(self.portfolio.trades),
+            "total_trades": len(filtered_trades),
             "trades": [
                 {
                     "trade_id": t.trade_id,
@@ -320,11 +356,11 @@ class BacktestOrchestrator:
                     "commission": t.commission,
                     "slippage": t.slippage,
                 }
-                for t in self.portfolio.trades
+                for t in filtered_trades
             ],
             "equity_history": [
                 {"date": d.isoformat(), "equity": e}
-                for d, e in self.portfolio.equity_history
+                for d, e in filtered_equity_history
             ],
         }
 
@@ -333,11 +369,11 @@ class BacktestOrchestrator:
         with open(results_file, "w", encoding="utf-8") as f:
             json.dump(results, f, ensure_ascii=False, indent=2)
 
-        logger.info(f"结果已保存至: {results_file}")
+        logger.info("结果已保存至: %s", results_file)
 
         return results
 
-    def _get_benchmark_returns(self, data_provider: Any) -> Optional[List[float]]:
+    def _get_benchmark_returns(self, data_provider: Any):
         """
         获取上证指数收益率作为基准。
 
@@ -351,59 +387,57 @@ class BacktestOrchestrator:
             return None
 
         try:
-            # 获取投资组合的日期序列
-            dates = [date for date, _ in self.portfolio.equity_history]
+            actual_start_date = self._actual_start_date
+            filtered_equity_history = []
+            for d, e in self.portfolio.equity_history:
+                if actual_start_date is None or d >= actual_start_date:
+                    filtered_equity_history.append((d, e))
+            
+            dates = [date for date, _ in filtered_equity_history]
             if len(dates) < 2:
                 return None
 
-            start_date = dates[0].strftime("%Y-%m-%d")
-            end_date = dates[-1].strftime("%Y-%m-%d")
+            start_date_str = dates[0].strftime("%Y-%m-%d")
+            end_date_str = dates[-1].strftime("%Y-%m-%d")
 
-            logger.info(f"获取上证指数数据: {start_date} 至 {end_date}")
+            logger.info("获取上证指数数据: %s 至 %s", start_date_str, end_date_str)
 
-            # 获取上证指数数据 (sh000001)
             index_df = data_provider.get_index_daily_data(
                 symbol="sh000001",
-                start_date=start_date,
-                end_date=end_date,
+                start_date=start_date_str,
+                end_date=end_date_str,
             )
 
             if index_df is None or index_df.empty:
                 logger.warning("无法获取上证指数数据，基准收益率将不可用")
                 return None
 
-            # 确保日期列格式正确
             if "date" in index_df.columns:
                 index_df["date"] = pd.to_datetime(index_df["date"]).dt.date
 
-            # 计算指数日收益率
             if "close" in index_df.columns:
                 index_df["return"] = index_df["close"].pct_change()
 
-                # 创建日期到收益率的映射
                 date_to_return = dict(zip(index_df["date"], index_df["return"]))
 
-                # 按照投资组合的日期序列提取收益率
                 benchmark_returns = []
-                for i, date in enumerate(dates):
+                for i, current_date in enumerate(dates):
                     if i == 0:
-                        # 第一天没有收益率
                         continue
-                    if date in date_to_return and pd.notna(date_to_return[date]):
-                        benchmark_returns.append(float(date_to_return[date]))
+                    if current_date in date_to_return and pd.notna(date_to_return[current_date]):
+                        benchmark_returns.append(float(date_to_return[current_date]))
                     else:
-                        # 如果该日期没有指数数据，使用0
                         benchmark_returns.append(0.0)
 
-                logger.info(f"成功获取基准收益率，共 {len(benchmark_returns)} 个数据点")
+                logger.info("成功获取基准收益率，共 %d 个数据点", len(benchmark_returns))
                 return benchmark_returns
 
         except Exception as e:
-            logger.warning(f"获取基准收益率失败: {e}", exc_info=True)
+            logger.warning("获取基准收益率失败: %s", e, exc_info=True)
 
         return None
 
-    def calculate_metrics(self, data_provider: Optional[Any] = None) -> Dict[str, Any]:
+    def calculate_metrics(self, data_provider: Optional[Any] = None):
         """
         阶段4: 指标计算。
 
@@ -418,7 +452,6 @@ class BacktestOrchestrator:
         if self.portfolio is None:
             raise ValueError("投资组合未初始化，请先执行策略")
 
-        # 获取基准收益率（上证指数）
         benchmark_returns = None
         if data_provider is not None:
             benchmark_returns = self._get_benchmark_returns(data_provider)
@@ -434,13 +467,13 @@ class BacktestOrchestrator:
         logger.info("绩效指标计算完成:")
         for key, value in all_metrics.items():
             if isinstance(value, float):
-                logger.info(f"  {key}: {value:.4f}")
+                logger.info("  %s: %.4f", key, value)
             else:
-                logger.info(f"  {key}: {value}")
+                logger.info("  %s: %s", key, value)
 
         return all_metrics
 
-    def generate_reports(self, strategy_name: str = "六维选股策略") -> Dict[str, str]:
+    def generate_reports(self, strategy_name: str = "六维选股策略"):
         """
         阶段5: 报告生成。
 
@@ -470,13 +503,13 @@ class BacktestOrchestrator:
         )
 
         backtest_config_for_report = {
-            "初始资金": f"{self.config.get('initial_capital', 0):,.2f} 元",
-            "手续费率": f"{self.config.get('commission_rate', 0)*100:.4f}%",
-            "滑点率": f"{self.config.get('slippage_rate', 0)*100:.4f}%",
-            "无风险利率": f"{self.config.get('risk_free_rate', 0)*100:.2f}%",
-            "回测开始日期": str(self.config.get('start_date')),
-            "回测结束日期": str(self.config.get('end_date')),
-            "股票池数量": len(self.config.get('stock_pool', [])),
+            "初始资金": "%.2f 元" % self.config.get("initial_capital", 0),
+            "手续费率": "%.4f%%" % (self.config.get("commission_rate", 0) * 100),
+            "滑点率": "%.4f%%" % (self.config.get("slippage_rate", 0) * 100),
+            "无风险利率": "%.2f%%" % (self.config.get("risk_free_rate", 0) * 100),
+            "回测开始日期": str(self.config.get("start_date")),
+            "回测结束日期": str(self.config.get("end_date")),
+            "股票池数量": len(self.config.get("stock_pool", [])),
         }
 
         report_path = report_generator.generate_markdown_report(
@@ -484,7 +517,7 @@ class BacktestOrchestrator:
             chart_paths=self.chart_paths,
         )
 
-        logger.info(f"报告已生成: {report_path}")
+        logger.info("报告已生成: %s", report_path)
 
         return {
             "report": report_path,
@@ -500,7 +533,7 @@ class BacktestOrchestrator:
         end_date: Optional[date] = None,
         max_positions: Optional[int] = None,
         strategy_name: str = "六维选股策略",
-    ) -> Dict[str, Any]:
+    ):
         """
         运行完整回测流程。
 
@@ -546,3 +579,4 @@ class BacktestOrchestrator:
             "metrics": metrics,
             "reports": reports,
         }
+

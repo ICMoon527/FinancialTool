@@ -915,7 +915,7 @@ class TushareFetcher(BaseFetcher):
 
         return None
 
-    def get_sector_rankings(self, n: int = 5) -> Optional[Tuple[list, list]]:
+    def get_sector_rankings(self, n: int = 5, return_all: bool = False) -> Optional[Tuple[list, list]]:
         """
         获取板块涨跌榜 (Tushare Pro)
         """

@@ -75,13 +75,18 @@ class SmartDataPreloader:
             }
         """
         logger.info("=== 检查数据覆盖情况 ===")
+        
+        # 从 target_start_date 往前推 365 天，确保有足够的历史数据计算指标
+        actual_start_date = target_start_date - timedelta(days=365)
+        
         logger.info(f"目标日期范围: {target_start_date} 至 {target_end_date}")
+        logger.info(f"实际数据检查范围: {actual_start_date} 至 {target_end_date} (含365天预热期)")
         logger.info(f"股票数量: {len(stock_codes)}")
         
         # 批量检查数据覆盖
         coverage = self.db_manager.check_data_coverage(
             stock_codes,
-            target_start_date,
+            actual_start_date,
             target_end_date
         )
         
@@ -101,10 +106,10 @@ class SmartDataPreloader:
             if db_min_date is None or db_max_date is None:
                 # 完全没有数据
                 stock_info['status'] = 'missing'
-                stock_info['need_start_date'] = target_start_date
+                stock_info['need_start_date'] = actual_start_date
                 stock_info['need_end_date'] = target_end_date
                 missing_count += 1
-            elif db_min_date <= target_start_date and db_max_date >= target_end_date:
+            elif db_min_date <= actual_start_date and db_max_date >= target_end_date:
                 # 完全覆盖
                 stock_info['status'] = 'complete'
                 complete_count += 1
@@ -113,8 +118,8 @@ class SmartDataPreloader:
                 stock_info['status'] = 'partial'
                 
                 # 计算需要的起始日期
-                if db_min_date > target_start_date:
-                    stock_info['need_start_date'] = target_start_date
+                if db_min_date > actual_start_date:
+                    stock_info['need_start_date'] = actual_start_date
                 else:
                     stock_info['need_start_date'] = db_max_date + timedelta(days=1)
                 
@@ -248,9 +253,7 @@ class SmartDataPreloader:
             stats = self.tushare_downloader.download_data_for_date_range(
                 stock_codes=stocks_need_data,
                 start_date=download_start_date,
-                end_date=download_end_date,
-                efinance_batch_size=50,
-                tushare_batch_size=13
+                end_date=download_end_date
             )
             
             logger.info(f"批量下载完成:")

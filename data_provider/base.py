@@ -390,7 +390,7 @@ class DataFetcherManager:
         from .efinance_fetcher import EfinanceFetcher
         from .akshare_fetcher import AkshareFetcher
         from .tushare_fetcher import TushareFetcher
-        from .pytdx_fetcher import PytdxFetcher
+        # from .pytdx_fetcher import PytdxFetcher  # 已禁用，不用
         from .baostock_fetcher import BaostockFetcher
         from .yfinance_fetcher import YfinanceFetcher
         from src.config import get_config
@@ -401,7 +401,7 @@ class DataFetcherManager:
         efinance = EfinanceFetcher()
         akshare = AkshareFetcher()
         tushare = TushareFetcher()  # 会根据 Token 配置自动调整优先级
-        pytdx = PytdxFetcher()      # 通达信数据源（可配 PYTDX_HOST/PYTDX_PORT）
+        # pytdx = PytdxFetcher()      # 已禁用，不用
         baostock = BaostockFetcher()
         yfinance = YfinanceFetcher()
 
@@ -410,7 +410,7 @@ class DataFetcherManager:
             efinance,
             akshare,
             tushare,
-            pytdx,
+            # pytdx,  # 已禁用，不用
             baostock,
             yfinance,
         ]
@@ -849,17 +849,18 @@ class DataFetcherManager:
         logger.warning(f"[筹码分布] {stock_code} 所有数据源均失败")
         return None
 
-    def get_stock_name(self, stock_code: str) -> Optional[str]:
+    def get_stock_name(self, stock_code: str, skip_realtime: bool = False) -> Optional[str]:
         """
         获取股票中文名称（自动切换数据源）
         
         尝试从多个数据源获取股票名称：
-        1. 先从实时行情缓存中获取（如果有）
+        1. 先从实时行情缓存中获取（如果有，且 skip_realtime=False）
         2. 依次尝试各个数据源的 get_stock_name 方法
         3. 最后尝试让大模型通过搜索获取（需要外部调用）
         
         Args:
             stock_code: 股票代码
+            skip_realtime: 是否跳过从实时行情获取（避免不必要的API调用）
             
         Returns:
             股票中文名称，所有数据源都失败则返回 None
@@ -877,13 +878,14 @@ class DataFetcherManager:
         if not hasattr(self, '_stock_name_cache'):
             self._stock_name_cache = {}
         
-        # 2. 尝试从实时行情中获取（最快）
-        quote = self.get_realtime_quote(stock_code)
-        if quote and hasattr(quote, 'name') and quote.name:
-            name = quote.name
-            self._stock_name_cache[stock_code] = name
-            logger.info(f"[股票名称] 从实时行情获取: {stock_code} -> {name}")
-            return name
+        # 2. 尝试从实时行情中获取（最快）- 仅在 skip_realtime=False 时
+        if not skip_realtime:
+            quote = self.get_realtime_quote(stock_code)
+            if quote and hasattr(quote, 'name') and quote.name:
+                name = quote.name
+                self._stock_name_cache[stock_code] = name
+                logger.info(f"[股票名称] 从实时行情获取: {stock_code} -> {name}")
+                return name
         
         # 3. 依次尝试各个数据源
         for fetcher in self._fetchers:
@@ -1004,6 +1006,8 @@ class DataFetcherManager:
                         return df
                     else:
                         logger.warning(f"[{fetcher_name}] 未获取到 {symbol} 指数历史数据")
+                else:
+                    logger.warning(f"[{fetcher_name}] 不支持获取指数历史数据")
             except Exception as e:
                 logger.warning(f"[{fetcher_name}] 获取 {symbol} 指数历史数据失败: {e}")
         

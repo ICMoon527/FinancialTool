@@ -787,7 +787,7 @@ class EfinanceFetcher(BaseFetcher):
             logger.error(f"[efinance] 获取市场统计失败: {e}")
             return None
 
-    def get_sector_rankings(self, n: int = 5) -> Optional[Tuple[List[Dict], List[Dict]]]:
+    def get_sector_rankings(self, n: int = 5, return_all: bool = False) -> Optional[Tuple[List[Dict], List[Dict]]]:
         """
         获取板块涨跌榜 (efinance)
         """
@@ -810,17 +810,28 @@ class EfinanceFetcher(BaseFetcher):
 
             df[change_col] = pd.to_numeric(df[change_col], errors='coerce')
             df = df.dropna(subset=[change_col])
-            top = df.nlargest(n, change_col)
-            bottom = df.nsmallest(n, change_col)
+            
+            if return_all:
+                # 返回所有板块，按涨跌排序
+                df_sorted = df.sort_values(change_col, ascending=False)
+                top_sectors = [
+                    {'name': str(row[name_col]), 'change_pct': float(row[change_col])}
+                    for _, row in df_sorted.iterrows()
+                ]
+                bottom_sectors = []
+            else:
+                # 返回前n个和后n个
+                top = df.nlargest(n, change_col)
+                bottom = df.nsmallest(n, change_col)
 
-            top_sectors = [
-                {'name': str(row[name_col]), 'change_pct': float(row[change_col])}
-                for _, row in top.iterrows()
-            ]
-            bottom_sectors = [
-                {'name': str(row[name_col]), 'change_pct': float(row[change_col])}
-                for _, row in bottom.iterrows()
-            ]
+                top_sectors = [
+                    {'name': str(row[name_col]), 'change_pct': float(row[change_col])}
+                    for _, row in top.iterrows()
+                ]
+                bottom_sectors = [
+                    {'name': str(row[name_col]), 'change_pct': float(row[change_col])}
+                    for _, row in bottom.iterrows()
+                ]
             return top_sectors, bottom_sectors
         except Exception as e:
             logger.error(f"[efinance] 获取板块排行失败: {e}")

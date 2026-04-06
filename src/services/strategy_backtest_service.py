@@ -242,21 +242,10 @@ class StrategyBacktestService:
             project_root = Path(__file__).parent.parent.parent
             config_path = str(project_root / "stock_selector" / "backtest_config.yaml")
             
-            # 直接加载yaml配置文件（返回字典）
-            import yaml
-            backtest_config = {}
-            if Path(config_path).exists():
-                try:
-                    with open(config_path, "r", encoding="utf-8") as f:
-                        backtest_config = yaml.safe_load(f) or {}
-                    logger.info(f"配置已加载: {config_path}")
-                except Exception as e:
-                    logger.warning(f"加载配置文件失败: {e}")
-            
-            output_dir = backtest_config.get("output_dir", "strategy_backtest_results")
-            
+            # 创建编排器 - 使用配置文件
             orchestrator = BacktestOrchestrator(
-                output_dir=output_dir
+                config_path=config_path,
+                output_dir="strategy_backtest_results"
             )
             
             # 更新任务状态，保存orchestrator引用用于终止

@@ -71,6 +71,9 @@ export const backtestApi = {
    * 获取回测任务状态
    */
   getBacktestTaskStatus: async (taskId: string): Promise<StrategyBacktestTaskStatusResponse> => {
+    if (!taskId || taskId === 'undefined' || taskId === 'null') {
+      throw new Error('无效的任务ID');
+    }
     const response = await strategyBacktestApiClient.get<Record<string, unknown>>(
       `/api/v1/backtest/strategy/task/${encodeURIComponent(taskId)}`,
     );

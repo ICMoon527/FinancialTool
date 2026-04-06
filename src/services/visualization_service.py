@@ -215,22 +215,29 @@ class VisualizationService:
         
         # 整合实时行情数据
         try:
-            logger.info(f"正在获取 {stock_code} 实时行情数据...")
-            quote = fetcher_manager.get_realtime_quote(stock_code)
+            # 首先判断是否需要整合实时行情
+            should_add = _should_add_realtime_quote(kline_data)
             
-            # 判断是否需要添加实时行情
-            if _should_add_realtime_quote(kline_data) and quote is not None:
-                logger.info(f"将 {stock_code} 实时行情整合到 K线数据中...")
-                realtime_kline = _convert_realtime_quote_to_kline(quote)
-                kline_data.append(realtime_kline)
-                logger.info(f"成功整合 {stock_code} 实时行情数据")
+            if not should_add:
+                logger.info(f"{stock_code} 不需要整合实时行情（非交易时间或已有今日数据），使用历史数据")
             else:
-                logger.info(f"{stock_code} 不需要整合实时行情或获取失败，使用历史数据")
+                logger.info(f"正在获取 {stock_code} 实时行情数据...")
+                quote = fetcher_manager.get_realtime_quote(stock_code)
+                
+                if quote is not None:
+                    logger.info(f"将 {stock_code} 实时行情整合到 K线数据中...")
+                    realtime_kline = _convert_realtime_quote_to_kline(quote)
+                    kline_data.append(realtime_kline)
+                    logger.info(f"成功整合 {stock_code} 实时行情数据")
+                else:
+                    logger.warning(f"{stock_code} 获取实时行情失败，尝试其他方法...")
+                    # 这里可以添加其他获取实时行情的方法
         except Exception as e:
             logger.warning(f"获取或整合 {stock_code} 实时行情失败: {e}，继续使用历史数据")
         
-        # 获取股票名称
-        stock_name = fetcher_manager.get_stock_name(stock_code)
+        # 获取股票名称 - 如果不需要整合实时行情，则跳过实时行情获取
+        should_add = _should_add_realtime_quote(kline_data)
+        stock_name = fetcher_manager.get_stock_name(stock_code, skip_realtime=not should_add)
         
         # 计算指标（不保存到数据库，直接计算）
         indicators_data = []

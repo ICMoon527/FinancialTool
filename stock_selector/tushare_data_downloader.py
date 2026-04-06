@@ -27,6 +27,7 @@ from sqlalchemy import select, and_
 
 from .data_update_tracker import DataUpdateTracker, get_update_tracker
 from .stock_pool import get_all_stock_codes, filter_special_stock_codes
+from .config import get_config
 
 logger = logging.getLogger(__name__)
 
@@ -64,12 +65,56 @@ class TushareDataDownloader:
         
         logger.info(f"TushareDataDownloader 初始化成功，速率限制：{rate_limit_per_minute} 次/分钟")
     
-    def stop(self) -> None:
+    def stop(self):
         """
         停止下载
         """
         logger.info("TushareDataDownloader 收到停止信号")
         self._should_stop = True
+    
+    def _estimate_trading_days(self, start_date, end_date):
+        """
+        估算日期范围内的交易日数量
+        
+        Args:
+            start_date: 开始日期
+            end_date: 结束日期
+            
+        Returns:
+            估算的交易日数量
+        """
+        total_days = (end_date - start_date).days + 1
+        trading_days = int(total_days * 250 / 365)
+        return max(1, trading_days)
+    
+    def _calculate_tushare_batch_size(self, start_date, end_date):
+        """
+        根据日期范围动态计算 Tushare 批量大小
+        
+        公式：batch_size = floor(5000 / 交易日数量)
+        边界：最小 1 只，最大 100 只
+        
+        Args:
+            start_date: 开始日期
+            end_date: 结束日期
+            
+        Returns:
+            计算得到的批量大小
+        """
+        trading_days = self._estimate_trading_days(start_date, end_date)
+        
+        batch_size = 5000 // trading_days
+        
+        min_batch = 1
+        max_batch = 100
+        
+        batch_size = max(min_batch, min(batch_size, max_batch))
+        
+        logger.info(f"动态计算 Tushare 批量大小: {batch_size} 只/批 "
+                   f"(交易日估算: {trading_days} 天, "
+                   f"5000/{trading_days} = {5000/trading_days:.2f})")
+        
+        return batch_size
     
     def _save_stock_data(self, df: pd.DataFrame, stock_code: str):
         """
@@ -232,7 +277,7 @@ class TushareDataDownloader:
         
         注意：根据要求，efinance 不用作单一股票获取 API 途径
         
-        尝试顺序：AKshare → Pytdx → Baostock → Yahoo Finance
+        尝试顺序：AKshare → Baostock → Yahoo Finance
         
         Args:
             stock_code: 股票代码
@@ -267,29 +312,29 @@ class TushareDataDownloader:
         except Exception as e:
             logger.debug(f"akshare failed for {stock_code}: {e}")
         
-        # 2. 尝试 Pytdx
-        try:
-            from data_provider.pytdx_fetcher import PytdxFetcher
-            pytdx_fetcher = PytdxFetcher()
-            df = pytdx_fetcher.get_daily_data(
-                stock_code,
-                start_date=start_str,
-                end_date=end_str
-            )
-            
-            if df is not None and not df.empty:
-                self._save_stock_data(df, stock_code)
-                self.update_tracker.update_record(
-                    stock_code,
-                    data_start_date=start_date,
-                    data_end_date=end_date
-                )
-                logger.debug(f"Successfully downloaded {stock_code} from pytdx")
-                return True, len(df), ""
-        except Exception as e:
-            logger.debug(f"pytdx failed for {stock_code}: {e}")
+        # 2. Pytdx 已禁用，不用
+        # try:
+        #     from data_provider.pytdx_fetcher import PytdxFetcher
+        #     pytdx_fetcher = PytdxFetcher()
+        #     df = pytdx_fetcher.get_daily_data(
+        #         stock_code,
+        #         start_date=start_str,
+        #         end_date=end_str
+        #     )
+        #     
+        #     if df is not None and not df.empty:
+        #         self._save_stock_data(df, stock_code)
+        #         self.update_tracker.update_record(
+        #             stock_code,
+        #             data_start_date=start_date,
+        #             data_end_date=end_date
+        #         )
+        #         logger.debug(f"Successfully downloaded {stock_code} from pytdx")
+        #         return True, len(df), ""
+        # except Exception as e:
+        #     logger.debug(f"pytdx failed for {stock_code}: {e}")
         
-        # 3. 尝试 Baostock
+        # 2. 尝试 Baostock
         try:
             from data_provider.baostock_fetcher import BaostockFetcher
             baostock_fetcher = BaostockFetcher()
@@ -311,11 +356,11 @@ class TushareDataDownloader:
         except Exception as e:
             logger.debug(f"baostock failed for {stock_code}: {e}")
         
-        # 4. 尝试 Yahoo Finance
+        # 3. 尝试 Yahoo Finance
         try:
-            from data_provider.yahoo_fetcher import YahooFetcher
-            yahoo_fetcher = YahooFetcher()
-            df = yahoo_fetcher.get_daily_data(
+            from data_provider.yfinance_fetcher import YfinanceFetcher
+            yfinance_fetcher = YfinanceFetcher()
+            df = yfinance_fetcher.get_daily_data(
                 stock_code,
                 start_date=start_str,
                 end_date=end_str
@@ -328,7 +373,7 @@ class TushareDataDownloader:
                     data_start_date=start_date,
                     data_end_date=end_date
                 )
-                logger.debug(f"Successfully downloaded {stock_code} from yahoo")
+                logger.debug(f"Successfully downloaded {stock_code} from yfinance")
                 return True, len(df), ""
         except Exception as e:
             logger.debug(f"yahoo failed for {stock_code}: {e}")
@@ -559,8 +604,8 @@ class TushareDataDownloader:
         self,
         stock_codes: Optional[List[str]] = None,
         days: int = 365,
-        efinance_batch_size: int = 50,
-        tushare_batch_size: int = 13
+        efinance_batch_size: Optional[int] = None,
+        tushare_batch_size: Optional[int] = None
     ) -> Dict[str, any]:
         """
         下载股票数据
@@ -581,6 +626,11 @@ class TushareDataDownloader:
         Returns:
             下载统计信息
         """
+        # 从配置读取默认值
+        config = get_config()
+        if efinance_batch_size is None:
+            efinance_batch_size = config.efinance_batch_size
+        
         if stock_codes is None:
             stock_codes = get_all_stock_codes()
         
@@ -593,6 +643,10 @@ class TushareDataDownloader:
         start_date, end_date = self._calculate_date_range(days)
         start_str = start_date.strftime('%Y-%m-%d')
         end_str = end_date.strftime('%Y-%m-%d')
+        
+        # 动态计算 Tushare 批量大小（仅在用户未指定时）
+        if tushare_batch_size is None:
+            tushare_batch_size = self._calculate_tushare_batch_size(start_date, end_date)
         
         logger.info(f"开始下载数据：{len(stock_codes)} 只股票，{days} 个交易日数据（{start_date} 至 {end_date}）")
         
@@ -730,8 +784,8 @@ class TushareDataDownloader:
         stock_codes: Optional[List[str]] = None,
         start_date: Optional[date] = None,
         end_date: Optional[date] = None,
-        efinance_batch_size: int = 50,
-        tushare_batch_size: int = 13
+        efinance_batch_size: Optional[int] = None,
+        tushare_batch_size: Optional[int] = None
     ) -> Dict[str, any]:
         """
         下载指定日期范围的股票数据（与download_data逻辑完全相同，但直接接受日期范围
@@ -748,11 +802,16 @@ class TushareDataDownloader:
             start_date: 开始日期
             end_date: 结束日期
             efinance_batch_size: efinance 每批处理多少只股票（默认 50）
-            tushare_batch_size: Tushare 每批处理多少只股票（默认 13）
+            tushare_batch_size: Tushare 每批处理多少只股票（默认 20）
             
         Returns:
             下载统计信息
         """
+        # 从配置读取默认值
+        config = get_config()
+        if efinance_batch_size is None:
+            efinance_batch_size = config.efinance_batch_size
+        
         if stock_codes is None:
             stock_codes = get_all_stock_codes()
         
@@ -770,6 +829,10 @@ class TushareDataDownloader:
         
         start_str = start_date.strftime('%Y-%m-%d')
         end_str = end_date.strftime('%Y-%m-%d')
+        
+        # 动态计算 Tushare 批量大小（仅在用户未指定时）
+        if tushare_batch_size is None:
+            tushare_batch_size = self._calculate_tushare_batch_size(start_date, end_date)
         
         # 估算交易日数量（每周约5个交易日）
         total_calendar_days = (end_date - start_date).days + 1

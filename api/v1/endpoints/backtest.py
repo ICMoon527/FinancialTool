@@ -213,6 +213,13 @@ def get_strategy_backtest_task_status(
 ) -> StrategyBacktestTaskStatusResponse:
     """获取回测任务状态"""
     try:
+        # 防护：检查 task_id 是否有效
+        if not task_id or task_id == 'undefined' or task_id == 'null':
+            raise HTTPException(
+                status_code=400,
+                detail={"error": "invalid_task_id", "message": "无效的任务ID"},
+            )
+        
         service = get_strategy_backtest_service()
         task = service.get_task_status(task_id)
         

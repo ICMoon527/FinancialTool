@@ -61,6 +61,10 @@ class StockSelectorConfig:
     enable_multithreading: bool = True
     multithreading_workers: int = 15
     
+    # 数据下载批次配置
+    efinance_batch_size: int = 10
+    tushare_batch_size: int = 20
+    
     # 六维选股配置
     six_dimension_main_trading_weight: float = 1.0
     six_dimension_bank_control_weight: float = 1.0
@@ -244,6 +248,13 @@ class StockSelectorConfig:
         
         if os.getenv("SIX_DIMENSION_MIN_MATCHED_DIMENSIONS"):
             config.six_dimension_min_matched_dimensions = int(os.getenv("SIX_DIMENSION_MIN_MATCHED_DIMENSIONS"))
+        
+        # 数据下载批次配置
+        if os.getenv("STOCK_SELECTOR_EFINANCE_BATCH_SIZE"):
+            config.efinance_batch_size = int(os.getenv("STOCK_SELECTOR_EFINANCE_BATCH_SIZE"))
+        
+        if os.getenv("STOCK_SELECTOR_TUSHARE_BATCH_SIZE"):
+            config.tushare_batch_size = int(os.getenv("STOCK_SELECTOR_TUSHARE_BATCH_SIZE"))
         
         return config
 

@@ -106,6 +106,7 @@ const BacktestPage: React.FC = () => {
   // 轮询定时器引用
   const pollTimerRef = useRef<number | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
+  const isMountedRef = useRef<boolean>(true);
 
   // 添加日志
   const addLog = useCallback((message: string) => {
@@ -145,22 +146,44 @@ const BacktestPage: React.FC = () => {
     fetchStrategies();
   }, [fetchStrategies]);
 
-  // 清理函数
+  // 组件挂载
   useEffect(() => {
+    isMountedRef.current = true;
     return () => {
+      isMountedRef.current = false;
+      // 彻底清理所有资源
       if (pollTimerRef.current) {
         clearInterval(pollTimerRef.current);
+        pollTimerRef.current = null;
       }
       if (eventSourceRef.current) {
         eventSourceRef.current.close();
+        eventSourceRef.current = null;
       }
     };
   }, []);
 
   // 轮询任务状态
   const pollTaskStatus = useCallback(async (currentTaskId: string) => {
+    // 防护1：检查组件是否已卸载
+    if (!isMountedRef.current) {
+      return;
+    }
+    
+    // 防护2：检查 taskId 是否有效
+    if (!currentTaskId || currentTaskId === 'undefined' || currentTaskId === 'null') {
+      console.warn('pollTaskStatus 被调用了无效的 taskId:', currentTaskId);
+      return;
+    }
+    
     try {
       const response = await backtestApi.getBacktestTaskStatus(currentTaskId);
+      
+      // 再次检查组件是否已卸载，避免在组件卸载后设置状态
+      if (!isMountedRef.current) {
+        return;
+      }
+      
       setTaskStatus(response.task);
 
       if (response.task) {
@@ -254,9 +277,24 @@ const BacktestPage: React.FC = () => {
       setTaskId(response.task_id);
       addLog(`回测任务已提交: ${response.task_id}`);
       
+      // 清理之前的轮询（双重保险）
+      if (pollTimerRef.current) {
+        clearInterval(pollTimerRef.current);
+        pollTimerRef.current = null;
+      }
+      
       // 开始轮询任务状态
       pollTimerRef.current = setInterval(() => {
-        pollTaskStatus(response.task_id);
+        // 再次检查 taskId 是否有效
+        if (response.task_id && response.task_id !== 'undefined' && response.task_id !== 'null') {
+          pollTaskStatus(response.task_id);
+        } else {
+          // 如果 taskId 无效，清除定时器
+          if (pollTimerRef.current) {
+            clearInterval(pollTimerRef.current);
+            pollTimerRef.current = null;
+          }
+        }
       }, 3000);
       
       // 立即查询一次

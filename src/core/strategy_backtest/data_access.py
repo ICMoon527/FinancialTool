@@ -51,72 +51,8 @@ class DatabaseFirstDataProvider:
             from data_provider.base import normalize_stock_code
             code = normalize_stock_code(stock_code)
             
-            # 解析日期范围
-            from datetime import date as date_type, timedelta
-            end_date_obj = None
-            start_date_obj = None
-            
-            if end_date:
-                if isinstance(end_date, str):
-                    end_date_obj = datetime.strptime(end_date, "%Y-%m-%d").date()
-                elif isinstance(end_date, datetime):
-                    end_date_obj = end_date.date()
-                elif isinstance(end_date, date_type):
-                    end_date_obj = end_date
-            else:
-                end_date_obj = date.today()
-            
-            if start_date:
-                if isinstance(start_date, str):
-                    start_date_obj = datetime.strptime(start_date, "%Y-%m-%d").date()
-                elif isinstance(start_date, datetime):
-                    start_date_obj = start_date.date()
-                elif isinstance(start_date, date_type):
-                    start_date_obj = start_date
-            elif days:
-                start_date_obj = end_date_obj - timedelta(days=int(days * 1.5))  # 多留一些缓冲
-            
-            if start_date_obj is None:
-                start_date_obj = end_date_obj - timedelta(days=365)
-            
-            # 首先尝试从数据库读取指定日期范围的数据
-            logger.info(f"数据库优先: 尝试从数据库读取 {code} 的数据: {start_date_obj} ~ {end_date_obj}")
-            stock_dailies = self._db_manager.get_data_range_optimized(
-                code=code,
-                start_date=start_date_obj,
-                end_date=end_date_obj
-            )
-            
-            if stock_dailies:
-                # 转换为DataFrame
-                df = pd.DataFrame([
-                    {
-                        'date': s.date,
-                        'open': s.open,
-                        'high': s.high,
-                        'low': s.low,
-                        'close': s.close,
-                        'volume': s.volume,
-                        'amount': s.amount,
-                        'pct_chg': s.pct_chg,
-                        'ma5': s.ma5,
-                        'ma10': s.ma10,
-                        'ma20': s.ma20,
-                        'volume_ratio': s.volume_ratio
-                    }
-                    for s in stock_dailies
-                ])
-                
-                if not df.empty:
-                    logger.info(f"数据库优先: 成功从数据库读取 {code} 的 {len(df)} 条数据")
-                    return df, "database"
-                else:
-                    logger.warning(f"数据库优先: 数据库返回了 {len(stock_dailies)} 条记录，但转换后的DataFrame为空")
-            
-            # 如果指定日期范围没有数据，尝试读取该股票的所有可用数据
-            logger.warning(f"数据库优先: 数据库中没有 {code} 在 {start_date_obj} ~ {end_date_obj} 的数据，尝试读取该股票的所有数据...")
-            
-            # 读取该股票的所有数据（不限制日期范围）
+            # 直接读取该股票的所有可用数据（不限制日期范围）
+            # 让 TimeIsolatedDataProvider 去处理日期过滤，确保有足够的历史数据计算指标
             from src.storage import StockDaily
             from sqlalchemy import select
             
@@ -150,7 +86,7 @@ class DatabaseFirstDataProvider:
                 if not df.empty:
                     min_date = df['date'].min()
                     max_date = df['date'].max()
-                    logger.info(f"数据库优先: 成功从数据库读取 {code} 的 {len(df)} 条数据（可用范围: {min_date} ~ {max_date}）")
+                    # logger.info(f"数据库优先: 成功从数据库读取 {code} 的 {len(df)} 条数据（可用范围: {min_date} ~ {max_date}）")
                     return df, "database"
                 else:
                     logger.warning(f"数据库优先: 数据库返回了 {len(all_stock_dailies)} 条记录，但转换后的DataFrame为空")
@@ -225,14 +161,17 @@ class TimeIsolatedDataProvider:
 
     def _filter_data_by_date(self, df: pd.DataFrame, date_col: str = "date") -> pd.DataFrame:
         """
-        过滤数据，只保留当前日期之前的数据。
+        过滤数据，但保留足够的历史数据用于计算指标。
+
+        为了计算指标（如MA、MACD等），需要保留当前日期之前至少365天的历史数据。
+        同时，对于交易执行，只能使用当前日期或之前的数据。
 
         Args:
             df: 原始数据
             date_col: 日期列名
 
         Returns:
-            过滤后的数据
+            过滤后的数据（包含足够的历史数据用于计算指标）
         """
         if self._current_date is None:
             return df
@@ -250,6 +189,8 @@ class TimeIsolatedDataProvider:
             except Exception:
                 return df
 
+        # 保留当前日期及之前的所有数据（不限制天数，确保有足够的历史数据计算指标）
+        # 策略会自己处理数据，不会使用未来的数据
         return df_copy[df_copy[date_col] <= self._current_date]
 
     def get_daily_data(
@@ -275,9 +216,10 @@ class TimeIsolatedDataProvider:
         """
         cache_key = f"daily_{stock_code}"
         if cache_key not in self._data_cache:
+            # 直接请求足够多的数据（至少 365 天），确保有完整的历史数据
             result = self._data_provider.get_daily_data(
                 stock_code,
-                days=days,
+                days=365,  # 总是请求一年的数据
                 start_date=start_date,
                 end_date=end_date,
                 **kwargs,
@@ -285,14 +227,19 @@ class TimeIsolatedDataProvider:
 
             if isinstance(result, tuple) and len(result) == 2:
                 df, source = result
+                # logger.debug(f"缓存数据: {stock_code}, 原始数据行数={len(df)}, 当前日期={self._current_date}")
+                # 缓存完整的原始数据（不经过时间过滤）
                 self._data_cache[cache_key] = (df, source)
             else:
+                # logger.debug(f"缓存数据: {stock_code}, 原始数据行数={len(result)}, 当前日期={self._current_date}")
+                # 缓存完整的原始数据（不经过时间过滤）
                 self._data_cache[cache_key] = (result, "unknown")
 
         cached_data = self._data_cache[cache_key]
         df, source = cached_data
 
         filtered_df = self._filter_data_by_date(df)
+        # logger.debug(f"返回数据: {stock_code}, 缓存行数={len(df)}, 过滤后行数={len(filtered_df)}, 当前日期={self._current_date}")
 
         if isinstance(cached_data[0], tuple):
             return filtered_df, source

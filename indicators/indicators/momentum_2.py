@@ -33,7 +33,7 @@ class Momentum2(BaseIndicator):
             DataFrame with indicator values
         """
         self.validate_input(data)
-        logger.info("[动能二号指标] 数据验证通过，开始计算指标")
+        # logger.info("[动能二号指标] 数据验证通过，开始计算指标")
 
         df = data.copy()
         result = df.copy()
