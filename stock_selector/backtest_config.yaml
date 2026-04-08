@@ -1,9 +1,88 @@
 # 六维选股策略回测配置
 
+# 选股策略配置
+# 说明：
+# - enabled: 是否启用该策略 (true/false)
+# - multiplier: 策略评分乘数 (1.0 为默认值)
+# - 默认使用六维选股策略，如需使用其他策略可在此配置
+strategies:
+  # 六维选股策略（综合策略，包含以下5个子策略）
+  six_dimension_selector:
+    enabled: true
+    multiplier: 1.0
+  # 主力操盘买入信号
+  main_trading_buy_signal:
+    enabled: false
+    multiplier: 1.0
+  # 庄家控盘选股
+  banker_control_selector:
+    enabled: false
+    multiplier: 1.0
+  # 动能二号红色柱
+  momentum_2_red_pillar_python:
+    enabled: false
+    multiplier: 1.0
+  # 共振追涨
+  resonance_chase:
+    enabled: false
+    multiplier: 1.0
+  # 强势起爆选股
+  strong_detonation_selector:
+    enabled: false
+    multiplier: 1.0
+  
+  # 均线金叉(Python)
+  ma_golden_cross_python:
+    enabled: false
+    multiplier: 1.0
+  
+  # 短期策略(Python)
+  short_term_strategy_python:
+    enabled: false
+    multiplier: 1.0
+  
+  # 成交量突破(Python)
+  volume_breakout_python:
+    enabled: false
+    multiplier: 1.0
+  
+  # 龙头策略组合（包含龙头启动、龙头主升、龙头二波）
+  dragon_leader:
+    enabled: true
+    multiplier: 1.0
+  # 龙头启动策略
+  dragon_leader_start:
+    enabled: false
+    multiplier: 1.0
+  # 龙头主升策略
+  dragon_leader_main_rise:
+    enabled: false
+    multiplier: 1.0
+  # 龙头二波策略
+  dragon_leader_second_wave:
+    enabled: false
+    multiplier: 1.0
+  
+  # 领涨选股(Python)
+  top_rise_stock_selector:
+    enabled: false
+    multiplier: 1.0
+
+# 选股配置
+selection:
+  # 最小匹配分数（0-100）
+  min_match_score: 50.0
+  # 默认返回Top N股票
+  default_top_n: 10
+  # 是否启用多线程选股
+  enable_multithreading: true
+  # 多线程工作线程数
+  multithreading_workers: 15
+
 # 初始资金（元）
 initial_capital: 100000.0
 
-# 手续费率（万分之三）
+# 手续费率
 commission_rate: 0.001
 
 # 滑点率（千分之一）
@@ -16,10 +95,10 @@ slippage_rate: 0.001
 risk_free_rate: 0.025
 
 # 回测开始日期（YYYY-MM-DD格式）
-start_date: "2026-01-23"
+start_date: "2025-01-01"
 
 # 回测结束日期（YYYY-MM-DD格式）
-end_date: "2026-03-23"
+end_date: "2026-04-03"
 
 # 股票池范围：沪A主板 + 深A主板
 # 过滤规则（与stock_selector一致）：
@@ -38,3 +117,4 @@ stop_loss_pct: 0.05
 take_profit_pct: 0.15
 # 最高持仓数
 max_positions: 1
+max_holding_days: 10

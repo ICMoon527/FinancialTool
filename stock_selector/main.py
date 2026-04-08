@@ -129,7 +129,9 @@ def update_sector_data(service: StockSelectorService):
         traceback.print_exc()
 
 
-def screen_stocks(service: StockSelectorService, stock_codes: Optional[List[str]], top_n: Optional[int] = None, update_data: bool = False, update_days: int = 365, use_enhanced: bool = True, max_workers: int = 4, validate_data: bool = False, report_path: Optional[str] = None, use_tushare: bool = True, rate_limit: int = 50):
+def screen_stocks(service: StockSelectorService, stock_codes: Optional[List[str]], top_n: Optional[int] = None, update_data: bool = False, update_days: Optional[int] = None, use_enhanced: bool = True, max_workers: int = 4, validate_data: bool = False, report_path: Optional[str] = None, use_tushare: bool = True, rate_limit: int = 50):
+    if update_days is None:
+        update_days = service.config.update_data_default_days
     print("Screening stocks...")
     if top_n is None:
         top_n = service.config.default_top_n
@@ -367,8 +369,8 @@ Examples:
     screen_parser.add_argument(
         '--update-days',
         type=int,
-        default=365,
-        help='Number of days to check and update data for (default: 365, smart incremental update)'
+        default=None,
+        help='Number of days to check and update data for (default: from config, smart incremental update)'
     )
     screen_parser.add_argument(
         '--use-enhanced',

@@ -74,18 +74,27 @@ class TushareDataDownloader:
     
     def _estimate_trading_days(self, start_date, end_date):
         """
-        估算日期范围内的交易日数量
+        计算日期范围内的交易日数量（使用精确的交易日历）
         
         Args:
             start_date: 开始日期
             end_date: 结束日期
             
         Returns:
-            估算的交易日数量
+            交易日数量
         """
-        total_days = (end_date - start_date).days + 1
-        trading_days = int(total_days * 250 / 365)
-        return max(1, trading_days)
+        try:
+            from .trading_calendar import get_trading_calendar
+            trading_calendar = get_trading_calendar()
+            trading_days_list = trading_calendar.get_trading_days(start_date, end_date)
+            trading_days = len(trading_days_list)
+            logger.debug(f"精确计算交易日数量: {trading_days} 天 ({start_date} 至 {end_date})")
+            return max(1, trading_days)
+        except Exception as e:
+            logger.warning(f"使用精确交易日历失败: {e}，回退到估算方法")
+            total_days = (end_date - start_date).days + 1
+            trading_days = int(total_days * 250 / 365)
+            return max(1, trading_days)
     
     def _calculate_tushare_batch_size(self, start_date, end_date):
         """

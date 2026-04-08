@@ -111,7 +111,7 @@ class SixDimensionSelectorStrategy(StockSelectorStrategy):
             source="builtin",
             version="2.1.0",
             score_multiplier=1.0,
-            max_raw_score=1000.0,
+            max_raw_score=500.0,
         )
         super().__init__(metadata)
         self._main_trading_indicator = MainTrading()
@@ -172,7 +172,8 @@ class SixDimensionSelectorStrategy(StockSelectorStrategy):
             latest_control = float(control_degree.iloc[-1]) if pd.notna(control_degree.iloc[-1]) else None
             matched = latest_control >= 50 if latest_control is not None else False
             if latest_control is not None and latest_control >= 50:
-                score = 200 - (2 * latest_control)
+                # score = 200 - (2 * latest_control)
+                score = 100 - abs(53 - latest_control) * 5
             else:
                 score = 0
             return {
@@ -384,13 +385,13 @@ class SixDimensionSelectorStrategy(StockSelectorStrategy):
                     else:
                         break
             
-            if 1 <= consecutive_count <= 2:
+            if 1 <= consecutive_count < 5:
                 score = 100
-            elif 3 <= consecutive_count <= 5:
+            elif 5 <= consecutive_count < 10:
                 score = 95
-            elif 6 <= consecutive_count <= 10:
-                score = 90
-            elif 11 <= consecutive_count <= 20:
+            elif 10 <= consecutive_count < 20:
+                score = 85
+            elif 20 <= consecutive_count <= 50:
                 score = 70
             elif consecutive_count > 20:
                 score = 50
@@ -563,8 +564,8 @@ class SixDimensionSelectorStrategy(StockSelectorStrategy):
                     price = getattr(realtime_quote, "price", None)
                     match_details["realtime_quote"] = {"price": price}
 
-                if daily_data is None or not isinstance(daily_data, pd.DataFrame) or daily_data.empty:
-                    logger.debug(f"{stock_code}: 数据为空或无效 - daily_data={daily_data is not None}, 类型={type(daily_data) if daily_data is not None else 'None'}, 行数={len(daily_data) if (daily_data is not None and isinstance(daily_data, pd.DataFrame)) else 'N/A'}")
+                # if daily_data is None or not isinstance(daily_data, pd.DataFrame) or daily_data.empty:
+                #     logger.debug(f"{stock_code}: 数据为空或无效 - daily_data={daily_data is not None}, 类型={type(daily_data) if daily_data is not None else 'None'}, 行数={len(daily_data) if (daily_data is not None and isinstance(daily_data, pd.DataFrame)) else 'N/A'}")
                 
                 if daily_data is not None and isinstance(daily_data, pd.DataFrame) and not daily_data.empty:
                     # logger.debug(f"{stock_code}: 数据行数={len(daily_data)}, 日期范围={daily_data['date'].min() if 'date' in daily_data.columns else 'N/A'} ~ {daily_data['date'].max() if 'date' in daily_data.columns else 'N/A'}")

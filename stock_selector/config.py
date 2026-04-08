@@ -72,7 +72,7 @@ class StockSelectorConfig:
     six_dimension_resonance_weight: float = 1.0
     six_dimension_strong_blast_weight: float = 1.0
     six_dimension_sector_weight: float = 1.0
-    six_dimension_min_matched_dimensions: int = 2
+    six_dimension_min_matched_dimensions: int = 4
 
     @classmethod
     def _parse_strategy_multipliers(cls, env_str: str) -> Dict[str, float]:
@@ -255,6 +255,9 @@ class StockSelectorConfig:
         
         if os.getenv("STOCK_SELECTOR_TUSHARE_BATCH_SIZE"):
             config.tushare_batch_size = int(os.getenv("STOCK_SELECTOR_TUSHARE_BATCH_SIZE"))
+        
+        if os.getenv("STOCK_SELECTOR_UPDATE_DATA_DEFAULT_DAYS"):
+            config.update_data_default_days = int(os.getenv("STOCK_SELECTOR_UPDATE_DATA_DEFAULT_DAYS"))
         
         return config
 

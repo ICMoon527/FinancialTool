@@ -87,6 +87,7 @@ class BacktestOrchestrator:
             "stop_loss_pct": None,
             "take_profit_pct": None,
             "max_positions": None,
+            "max_holding_days": 5,
         }
 
         if config_path and Path(config_path).exists():
@@ -95,6 +96,14 @@ class BacktestOrchestrator:
                     file_config = yaml.safe_load(f)
                 default_config.update(file_config)
                 logger.info("配置已加载: %s", config_path)
+                logger.info("手续费率: %.4f (%.2f%%)", 
+                          default_config.get("commission_rate"), 
+                          default_config.get("commission_rate", 0) * 100)
+                logger.info("滑点率: %.4f (%.2f%%)", 
+                          default_config.get("slippage_rate"), 
+                          default_config.get("slippage_rate", 0) * 100)
+                logger.info("最长持股时间: %d 个交易日", 
+                          default_config.get("max_holding_days", 5))
             except Exception as e:
                 logger.warning("加载配置文件失败: %s", e)
 
@@ -305,6 +314,7 @@ class BacktestOrchestrator:
             stop_loss_pct=self.config.get("stop_loss_pct"),
             take_profit_pct=self.config.get("take_profit_pct"),
             max_positions=final_max_positions,
+            max_holding_days=self.config.get("max_holding_days", 5),
         )
 
         self.engine.set_strategy(strategy)

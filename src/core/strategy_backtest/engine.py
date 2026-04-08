@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import logging
+import random
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from enum import Enum
@@ -187,6 +188,7 @@ class StrategyBacktestEngine:
         stop_loss_pct: Optional[float] = None,
         take_profit_pct: Optional[float] = None,
         max_positions: Optional[int] = None,
+        max_holding_days: int = 5,
     ):
         """
         初始化回测引擎。
@@ -201,6 +203,7 @@ class StrategyBacktestEngine:
             stop_loss_pct: 止损百分比（例如：0.05 表示 5%）
             take_profit_pct: 止盈百分比（例如：0.10 表示 10%）
             max_positions: 最大持仓数量（例如：3 表示最多同时持有3只股票）
+            max_holding_days: 最长持股时间（交易日，例如：5 表示最多持有5个交易日）
         """
         self._original_data_provider = data_provider
         self._data_provider = TimeIsolatedDataProvider(data_provider)
@@ -216,12 +219,17 @@ class StrategyBacktestEngine:
         self.stop_loss_pct = stop_loss_pct
         self.take_profit_pct = take_profit_pct
         self.max_positions = max_positions
+        self.max_holding_days = max_holding_days
         self._entry_prices: Dict[str, float] = {}  # 记录每个股票的入场价
         self._stop_loss_prices: Dict[str, float] = {}  # 记录每个股票的止损价
         self._take_profit_prices: Dict[str, float] = {}  # 记录每个股票的止盈价
+        self._entry_dates: Dict[str, date] = {}  # 记录每个股票的买入日期
         self._pending_orders: List[Dict[str, Any]] = []  # 挂单列表，第二天以开盘价买入
         # 终止标志
         self._should_stop = False
+        
+        # 初始化随机种子，确保随机性
+        random.seed()
 
     def set_strategy(self, strategy: Any) -> None:
         """
@@ -286,7 +294,7 @@ class StrategyBacktestEngine:
         Args:
             stock_code: 股票代码
             trade_date: 交易日期
-            price_type: 价格类型 ("close" 收盘价, "open" 开盘价)
+            price_type: 价格类型 ("close" 收盘价, "open" 开盘价, "high" 最高价, "low" 最低价)
 
         Returns:
             价格
@@ -314,43 +322,39 @@ class StrategyBacktestEngine:
                 df["date"] = pd.to_datetime(df["date"]).dt.date
                 target_df = df[df["date"] == trade_date]
                 if not target_df.empty:
+                    # 尝试读取价格列（支持大小写）
+                    def get_price(col_name):
+                        if col_name in target_df.columns:
+                            return float(target_df[col_name].iloc[-1])
+                        elif col_name.capitalize() in target_df.columns:
+                            return float(target_df[col_name.capitalize()].iloc[-1])
+                        return None
+                    
                     if price_type == "open":
-                        if "open" in target_df.columns:
-                            price = float(target_df["open"].iloc[-1])
-                            # logger.debug(f"股票 {stock_code} 在 {trade_date} 的开盘价: {price}")
-                            return price
-                        elif "Open" in target_df.columns:
-                            price = float(target_df["Open"].iloc[-1])
-                            # logger.debug(f"股票 {stock_code} 在 {trade_date} 的开盘价: {price}")
-                            return price
-                    else:
-                        if "close" in target_df.columns:
-                            price = float(target_df["close"].iloc[-1])
-                            # logger.debug(f"股票 {stock_code} 在 {trade_date} 的收盘价: {price}")
-                            return price
-                        elif "Close" in target_df.columns:
-                            price = float(target_df["Close"].iloc[-1])
-                            # logger.debug(f"股票 {stock_code} 在 {trade_date} 的收盘价: {price}")
-                            return price
+                        return get_price("open")
+                    elif price_type == "close":
+                        return get_price("close")
+                    elif price_type == "high":
+                        return get_price("high")
+                    elif price_type == "low":
+                        return get_price("low")
 
+            # 如果没有找到目标日期的数据，使用最新数据
+            def get_latest_price(col_name):
+                if col_name in df.columns:
+                    return float(df[col_name].iloc[-1])
+                elif col_name.capitalize() in df.columns:
+                    return float(df[col_name.capitalize()].iloc[-1])
+                return None
+            
             if price_type == "open":
-                if "open" in df.columns:
-                    price = float(df["open"].iloc[-1])
-                    logger.debug(f"股票 {stock_code} 最新开盘价: {price}")
-                    return price
-                elif "Open" in df.columns:
-                    price = float(df["Open"].iloc[-1])
-                    logger.debug(f"股票 {stock_code} 最新开盘价: {price}")
-                    return price
-            else:
-                if "close" in df.columns:
-                    price = float(df["close"].iloc[-1])
-                    logger.debug(f"股票 {stock_code} 最新收盘价: {price}")
-                    return price
-                elif "Close" in df.columns:
-                    price = float(df["Close"].iloc[-1])
-                    logger.debug(f"股票 {stock_code} 最新收盘价: {price}")
-                    return price
+                return get_latest_price("open")
+            elif price_type == "close":
+                return get_latest_price("close")
+            elif price_type == "high":
+                return get_latest_price("high")
+            elif price_type == "low":
+                return get_latest_price("low")
             
             logger.warning(f"股票 {stock_code} 没有找到{price_type}列")
         except (KeyError, ValueError, IndexError) as e:
@@ -427,6 +431,9 @@ class StrategyBacktestEngine:
             
             # 记录入场价并计算止盈止损价
             self._entry_prices[stock_code] = adjusted_price
+            # 记录买入日期
+            self._entry_dates[stock_code] = current_date
+            logger.info(f"记录买入日期: {stock_code} @ {current_date}")
             # 计算止损价
             if self.stop_loss_pct is not None:
                 self._stop_loss_prices[stock_code] = adjusted_price * (1 - self.stop_loss_pct)
@@ -496,13 +503,42 @@ class StrategyBacktestEngine:
             logger.info("未设置最高持仓数限制，可以买入所有目标股票")
             available_slots = len(target_stocks)
 
-        # 从目标股票中选择还没有持仓也没有挂单的股票，按优先级排序
-        stocks_to_buy = []
-        for stock_code in target_stocks:
-            if stock_code not in current_holdings and stock_code not in pending_stocks:
-                stocks_to_buy.append(stock_code)
-                if self.max_positions is not None and len(stocks_to_buy) >= available_slots:
+        # 动态选择：缺几只股票，就选几只股票挂单
+        # 每次从剩下的股票中选出分数前三的，随机选择一个
+        eligible_stocks = [
+            stock_code for stock_code in target_stocks 
+            if stock_code not in current_holdings and stock_code not in pending_stocks
+        ]
+        
+        if not eligible_stocks:
+            stocks_to_buy = []
+        else:
+            stocks_to_buy = []
+            remaining_candidates = eligible_stocks.copy()
+            
+            # 需要选择的股票数量
+            num_to_select = min(available_slots, len(remaining_candidates))
+            
+            for i in range(num_to_select):
+                if not remaining_candidates:
                     break
+                
+                # 从剩下的候选中选出前三
+                current_top = remaining_candidates[:3]
+                
+                # 从前三中随机选择一个
+                selected_idx = random.randint(0, len(current_top) - 1)
+                selected_stock = current_top[selected_idx]
+                
+                stocks_to_buy.append(selected_stock)
+                
+                # 从剩余候选中移除已选的股票
+                remaining_candidates.remove(selected_stock)
+                
+                # 记录日志
+                logger.info(f"第 {i+1} 次选择:")
+                logger.info(f"  当前候选股票（前3名）: {current_top}")
+                logger.info(f"  随机选择第 {selected_idx + 1} 只股票: {selected_stock}")
 
         if not stocks_to_buy:
             logger.info("没有符合条件的新股可买入")
@@ -510,17 +546,22 @@ class StrategyBacktestEngine:
 
         logger.info(f"准备挂单买入 {len(stocks_to_buy)} 只新股: {stocks_to_buy}")
 
-        # 计算每只股票可分配的资金
+        # 计算每只股票可分配的资金（预留手续费和滑点）
         if stocks_to_buy:
-            # 使用可用现金来计算每只股票的分配资金
+            # 使用可用现金来计算每只股票的分配资金，预留交易成本
             available_cash = self.portfolio.cash
             logger.info(f"可用现金: {available_cash:.2f}")
             if available_cash <= 0:
                 logger.warning("可用现金不足，无法挂单买入新股")
                 return
 
-            equity_per_stock = available_cash / len(stocks_to_buy)
-            logger.info(f"每只股票分配资金: {equity_per_stock:.2f}")
+            # 预留约 0.5% 的交易成本（手续费 + 滑点）
+            # 手续费：约 0.03%，最低 5 元
+            # 滑点：约 0.1%
+            # 总共预留 0.5% 比较安全
+            reserved_cost_pct = 0.005
+            equity_per_stock = (available_cash * (1 - reserved_cost_pct)) / len(stocks_to_buy)
+            logger.info(f"每只股票分配资金（已预留交易成本）: {equity_per_stock:.2f}")
 
             # 先获取今天的收盘价，计算大概需要买入多少股（明天会用开盘价重新计算精确数量）
             for stock_code in stocks_to_buy:
@@ -543,7 +584,7 @@ class StrategyBacktestEngine:
         price_type: str = "close"
     ) -> List[Dict[str, Any]]:
         """
-        检查持仓股票是否触发止盈或止损。
+        检查持仓股票是否触发止盈或止损（不包含持股超时）。
 
         Args:
             price_type: 价格类型 ("close" 收盘价, "open" 开盘价)
@@ -559,6 +600,10 @@ class StrategyBacktestEngine:
         current_date = self.get_current_date()
         
         for stock_code in list(self.portfolio.positions.keys()):
+            # T+1规则：买入当天不能卖出
+            if stock_code in self._entry_dates and self._entry_dates[stock_code] == current_date:
+                continue
+            
             price = self._get_stock_price(stock_code, current_date, price_type)
             if price is None:
                 continue
@@ -591,6 +636,101 @@ class StrategyBacktestEngine:
                         "sell_price": sell_price,
                         "price_type": price_type
                     })
+                continue
+        
+        return stocks_to_sell
+
+    def _check_intraday_stop_loss_take_profit(self) -> List[Dict[str, Any]]:
+        """
+        检查盘中最高价和最低价是否触发止盈或止损。
+
+        Returns:
+            需要卖出的股票列表
+        """
+        stocks_to_sell = []
+        current_date = self.get_current_date()
+        
+        for stock_code in list(self.portfolio.positions.keys()):
+            # T+1规则：买入当天不能卖出
+            if stock_code in self._entry_dates and self._entry_dates[stock_code] == current_date:
+                continue
+            
+            high_price = self._get_stock_price(stock_code, current_date, "high")
+            low_price = self._get_stock_price(stock_code, current_date, "low")
+            
+            if high_price is None or low_price is None:
+                continue
+            
+            # 优先级1：检查止损（最低价触发）
+            if stock_code in self._stop_loss_prices and low_price <= self._stop_loss_prices[stock_code]:
+                pos = self.portfolio.get_position(stock_code)
+                if pos:
+                    logger.info(f"触发盘中止损: {stock_code} 最低价 {low_price:.2f} <= 止损价 {self._stop_loss_prices[stock_code]:.2f}")
+                    stocks_to_sell.append({
+                        "stock_code": stock_code,
+                        "reason": "stop_loss_intraday",
+                        "trigger_price": low_price,
+                        "sell_price": self._stop_loss_prices[stock_code],
+                        "price_type": "intraday"
+                    })
+                continue
+            
+            # 优先级2：检查止盈（最高价触发）
+            if stock_code in self._take_profit_prices and high_price >= self._take_profit_prices[stock_code]:
+                pos = self.portfolio.get_position(stock_code)
+                if pos:
+                    logger.info(f"触发盘中止盈: {stock_code} 最高价 {high_price:.2f} >= 止盈价 {self._take_profit_prices[stock_code]:.2f}")
+                    stocks_to_sell.append({
+                        "stock_code": stock_code,
+                        "reason": "take_profit_intraday",
+                        "trigger_price": high_price,
+                        "sell_price": self._take_profit_prices[stock_code],
+                        "price_type": "intraday"
+                    })
+                continue
+        
+        return stocks_to_sell
+
+    def _check_hold_timeout_only(self) -> List[Dict[str, Any]]:
+        """
+        仅检查持股超时（配置的最长持股时间）。
+
+        Returns:
+            需要卖出的股票列表
+        """
+        stocks_to_sell = []
+        current_date = self.get_current_date()
+        
+        for stock_code in list(self.portfolio.positions.keys()):
+            # T+1规则：买入当天不能卖出
+            if stock_code in self._entry_dates and self._entry_dates[stock_code] == current_date:
+                continue
+            
+            # 检查持股时间（配置的最长持股时间）
+            if stock_code in self._entry_dates:
+                entry_date = self._entry_dates[stock_code]
+                try:
+                    entry_index = self.trading_dates.index(entry_date)
+                    current_index = self.current_date_index
+                    holding_days = current_index - entry_index
+                    
+                    if holding_days >= self.max_holding_days:
+                        pos = self.portfolio.get_position(stock_code)
+                        if pos:
+                            # 按收盘价卖出
+                            close_price = self._get_stock_price(stock_code, current_date, "close")
+                            if close_price is None:
+                                continue
+                            logger.info(f"触发持股超时: {stock_code} 已持股 {holding_days} 个交易日 (买入日期: {entry_date}, 最长持股: {self.max_holding_days} 天)")
+                            stocks_to_sell.append({
+                                "stock_code": stock_code,
+                                "reason": "hold_timeout",
+                                "trigger_price": close_price,
+                                "sell_price": close_price,
+                                "price_type": "close"
+                            })
+                except ValueError:
+                    logger.warning(f"股票 {stock_code} 的买入日期 {entry_date} 不在交易日列表中")
         
         return stocks_to_sell
 
@@ -601,9 +741,10 @@ class StrategyBacktestEngine:
         新的执行流程：
         1. 执行昨天挂的买单（以今天开盘价成交）
         2. 检查今天开盘价是否触发止盈止损（如果触发，按开盘价卖出）
-        3. 更新持仓价格到今天收盘价
-        4. 检查今天收盘价是否触发止盈止损（如果触发，按止盈止损价卖出）
-        5. 执行策略选股，挂买单（明天成交）
+        3. 检查今天最高价和最低价，如果触发止盈/止损则按照止盈/止损价卖出
+        4. 更新持仓价格到今天收盘价
+        5. 如果这是第五个交易日，在收盘时卖出
+        6. 执行策略选股，挂买单（明天成交）
 
         Returns:
             是否还有下一个时间步
@@ -657,8 +798,12 @@ class StrategyBacktestEngine:
                     logger.warning(f"股票 {stock_code} 今天开盘价无效，跳过买入")
                     continue
                 
-                # 计算买入数量
-                target_qty = int(equity_per_stock / open_price / 100) * 100
+                # 计算买入数量（考虑交易成本）
+                # 预留 0.5% 的交易成本
+                estimated_price_with_slippage = open_price * (1 + self.slippage_rate)
+                # 可用资金要预留手续费和滑点
+                effective_equity = equity_per_stock * 0.99
+                target_qty = int(effective_equity / estimated_price_with_slippage / 100) * 100
                 if target_qty > 0:
                     logger.info(f"以开盘价执行买入: {stock_code} {target_qty} 股 @ {open_price:.2f}")
                     self.place_order(stock_code, OrderType.BUY, target_qty, price=open_price, price_type="open")
@@ -678,6 +823,7 @@ class StrategyBacktestEngine:
                     logger.info(f"  {stock_code}: 开盘价={open_price:.2f}, 成本={pos.avg_cost:.2f}, 涨跌={change_pct:+.2f}%")
         
         stocks_to_sell_open = self._check_stop_loss_take_profit(price_type="open")
+        sold_stocks = set()
         for sell_info in stocks_to_sell_open:
             stock_code = sell_info["stock_code"]
             sell_price = sell_info["sell_price"]
@@ -685,25 +831,64 @@ class StrategyBacktestEngine:
             if pos:
                 logger.info(f"以开盘价执行止盈止损卖出: {stock_code} {pos.quantity} 股 @ {sell_price:.2f}")
                 self.place_order(stock_code, OrderType.SELL, pos.quantity, price=sell_price, price_type="open")
+                sold_stocks.add(stock_code)
                 # 清理记录
                 if stock_code in self._entry_prices:
                     del self._entry_prices[stock_code]
+                if stock_code in self._entry_dates:
+                    del self._entry_dates[stock_code]
                 if stock_code in self._stop_loss_prices:
                     del self._stop_loss_prices[stock_code]
                 if stock_code in self._take_profit_prices:
                     del self._take_profit_prices[stock_code]
         
-        # 步骤 3：更新持仓价格到今天收盘价
+        # 步骤 3：检查今天最高价和最低价，如果触发止盈/止损则按照止盈/止损价卖出
+        logger.info("检查盘中最高价和最低价是否触发止盈止损...")
+        # 先记录所有持仓的最高价和最低价
+        for stock_code in list(self.portfolio.positions.keys()):
+            if stock_code in sold_stocks:
+                continue
+            pos = self.portfolio.get_position(stock_code)
+            if pos:
+                high_price = self._get_stock_price(stock_code, current_date, "high")
+                low_price = self._get_stock_price(stock_code, current_date, "low")
+                if high_price and low_price:
+                    logger.info(f"  {stock_code}: 最高价={high_price:.2f}, 最低价={low_price:.2f}, 成本={pos.avg_cost:.2f}")
+        
+        stocks_to_sell_intraday = self._check_intraday_stop_loss_take_profit()
+        for sell_info in stocks_to_sell_intraday:
+            stock_code = sell_info["stock_code"]
+            if stock_code in sold_stocks:
+                continue
+            sell_price = sell_info["sell_price"]
+            pos = self.portfolio.get_position(stock_code)
+            if pos:
+                logger.info(f"以盘中止盈止损价执行卖出: {stock_code} {pos.quantity} 股 @ {sell_price:.2f}")
+                self.place_order(stock_code, OrderType.SELL, pos.quantity, price=sell_price, price_type="intraday")
+                sold_stocks.add(stock_code)
+                # 清理记录
+                if stock_code in self._entry_prices:
+                    del self._entry_prices[stock_code]
+                if stock_code in self._entry_dates:
+                    del self._entry_dates[stock_code]
+                if stock_code in self._stop_loss_prices:
+                    del self._stop_loss_prices[stock_code]
+                if stock_code in self._take_profit_prices:
+                    del self._take_profit_prices[stock_code]
+        
+        # 步骤 4：更新持仓价格到今天收盘价
         logger.info("更新持仓价格到今天收盘价...")
         for stock_code in self.portfolio.positions.keys():
             price = self._get_stock_price(stock_code, current_date, "close")
             if price:
                 self.portfolio.update_position_price(stock_code, price)
         
-        # 步骤 4：检查今天收盘价是否触发止盈止损（如果触发，按止盈止损价卖出）
-        logger.info("检查收盘价是否触发止盈止损...")
+        # 步骤 5：如果达到最长持股时间，在收盘时卖出
+        logger.info(f"检查是否持股超时（最长持股: {self.max_holding_days} 个交易日）...")
         # 先记录所有持仓的收盘价和涨跌幅
         for stock_code in list(self.portfolio.positions.keys()):
+            if stock_code in sold_stocks:
+                continue
             pos = self.portfolio.get_position(stock_code)
             if pos:
                 close_price = self._get_stock_price(stock_code, current_date, "close")
@@ -711,24 +896,45 @@ class StrategyBacktestEngine:
                     change_pct = (close_price - pos.avg_cost) / pos.avg_cost * 100
                     logger.info(f"  {stock_code}: 收盘价={close_price:.2f}, 成本={pos.avg_cost:.2f}, 涨跌={change_pct:+.2f}%")
         
-        stocks_to_sell_close = self._check_stop_loss_take_profit(price_type="close")
-        for sell_info in stocks_to_sell_close:
+        stocks_to_sell_timeout = self._check_hold_timeout_only()
+        for sell_info in stocks_to_sell_timeout:
             stock_code = sell_info["stock_code"]
+            if stock_code in sold_stocks:
+                continue
             sell_price = sell_info["sell_price"]
             pos = self.portfolio.get_position(stock_code)
             if pos:
-                logger.info(f"以止盈止损价执行卖出: {stock_code} {pos.quantity} 股 @ {sell_price:.2f}")
+                logger.info(f"以收盘价执行持股超时卖出: {stock_code} {pos.quantity} 股 @ {sell_price:.2f}")
                 self.place_order(stock_code, OrderType.SELL, pos.quantity, price=sell_price, price_type="close")
                 # 清理记录
                 if stock_code in self._entry_prices:
                     del self._entry_prices[stock_code]
+                if stock_code in self._entry_dates:
+                    del self._entry_dates[stock_code]
                 if stock_code in self._stop_loss_prices:
                     del self._stop_loss_prices[stock_code]
                 if stock_code in self._take_profit_prices:
                     del self._take_profit_prices[stock_code]
         
-        # 步骤 5：执行策略选股，挂买单（明天成交）
-        if self._strategy:
+        # 步骤 6：判断是否需要跑策略选股
+        need_run_strategy = False
+        
+        # 条件1：今天有股票被卖出
+        if len(sold_stocks) > 0:
+            need_run_strategy = True
+            logger.info(f"今天有 {len(sold_stocks)} 只股票被卖出，需要跑策略选股")
+        
+        # 条件2：持仓未满（还有空仓可以买新股）
+        if not need_run_strategy and self.max_positions is not None:
+            current_holdings = len(self.portfolio.positions)
+            pending_count = len(self._pending_orders)
+            total_used = current_holdings + pending_count
+            if total_used < self.max_positions:
+                need_run_strategy = True
+                logger.info(f"持仓未满（当前持仓: {current_holdings}, 挂单: {pending_count}, 最高持仓: {self.max_positions}），需要跑策略选股")
+        
+        # 执行策略选股（如果需要）
+        if self._strategy and need_run_strategy:
             selected_stocks = []
             from tqdm import tqdm
             
@@ -762,11 +968,19 @@ class StrategyBacktestEngine:
                 logger.info(f"选中的股票: {selected_stocks[:10]}{'...' if len(selected_stocks) > 10 else ''}")
             
             self.rebalance(selected_stocks)
+        elif self._strategy and not need_run_strategy:
+            logger.info("无需跑策略选股：没有股票被卖出且持仓已满")
 
         self.portfolio.record_equity(current_date)
+        
+        # 计算账户金额信息
+        cash = self.portfolio.cash
+        position_value = sum(pos.quantity * pos.current_price for pos in self.portfolio.positions.values())
+        total_equity = self.portfolio.get_total_equity()
+        
         self.current_date_index += 1
         
-        logger.info(f"=== 日期 {current_date} 完成 ===")
+        logger.info(f"=== 日期 {current_date} 完成 | 现金: {cash:.2f} | 持仓市值: {position_value:.2f} | 总金额: {total_equity:.2f} ===")
 
         return self.current_date_index < len(self.trading_dates)
 
@@ -800,6 +1014,7 @@ class StrategyBacktestEngine:
         self.current_date_index = 0
         self._data_provider.clear_cache()
         self._entry_prices.clear()
+        self._entry_dates.clear()
         self._stop_loss_prices.clear()
         self._take_profit_prices.clear()
         self._pending_orders.clear()
