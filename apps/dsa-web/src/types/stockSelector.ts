@@ -32,6 +32,7 @@ export interface StockCandidateInfo {
   strategy_matches: StrategyMatchInfo[];
   created_at: string;
   extra_data: Record<string, any>;
+  sectors: string[];
 }
 
 export interface StockSelectorRequest {
@@ -39,6 +40,7 @@ export interface StockSelectorRequest {
   strategy_ids?: string[];
   top_n?: number;
   update_data?: boolean;
+  update_realtime?: boolean;
 }
 
 export interface StockSelectorConfig {

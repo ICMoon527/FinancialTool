@@ -82,7 +82,7 @@ class StockCandidate:
             self.match_score = 0.0
             return
         total = sum(m.score for m in matched)
-        self.match_score = total / len(self.strategy_matches)
+        self.match_score = total / len(matched)
 
 
 class StockSelectorStrategy(ABC):

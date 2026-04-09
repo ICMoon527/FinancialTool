@@ -40,6 +40,7 @@ class StockCandidateInfo(BaseModel):
     overall_score: float
     strategy_matches: List[StrategyMatchInfo]
     created_at: datetime
+    sectors: List[str] = Field(default_factory=list)
     extra_data: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -49,6 +50,7 @@ class StockSelectorRequest(BaseModel):
     strategy_ids: Optional[List[str]] = None
     top_n: int = 5
     update_data: bool = False
+    update_realtime: bool = False
 
 
 class StockSelectorResponse(BaseModel):

@@ -62,7 +62,7 @@ def _convert_strategy_metadata_to_info(metadata) -> StrategyInfo:
     )
 
 
-def _convert_stock_candidate_to_info(candidate, active_strategy_ids: list[str]) -> StockCandidateInfo:
+def _convert_stock_candidate_to_info(candidate, active_strategy_ids: list[str], sector_manager=None) -> StockCandidateInfo:
     """Convert StockCandidate to StockCandidateInfo schema."""
     match_infos = [
         StrategyMatchInfo(
@@ -74,8 +74,15 @@ def _convert_stock_candidate_to_info(candidate, active_strategy_ids: list[str]) 
             match_details=m.match_details,
         )
         for m in candidate.strategy_matches
-        if m.strategy_id in active_strategy_ids
     ]
+    
+    sectors = []
+    if sector_manager:
+        try:
+            sectors = sector_manager.get_stock_sectors(candidate.code)
+        except Exception as e:
+            logger.warning(f"Failed to get sector info for {candidate.code}: {e}")
+    
     return StockCandidateInfo(
         stock_code=candidate.code,
         stock_name=candidate.name,
@@ -83,6 +90,7 @@ def _convert_stock_candidate_to_info(candidate, active_strategy_ids: list[str]) 
         overall_score=candidate.match_score,
         strategy_matches=match_infos,
         created_at=candidate.created_at,
+        sectors=sectors,
         extra_data=candidate.extra_data,
     )
 
@@ -176,8 +184,19 @@ async def screen_stocks(
     """
     start_time = time.time()
     try:
-        # 如果需要先更新数据
-        if request.update_data:
+        # 检查 update_realtime 和 update_data 优先级
+        # 如果同时指定，update_realtime 优先
+        use_update_realtime = request.update_realtime
+        use_update_data = request.update_data
+        
+        if use_update_realtime and use_update_data:
+            logger.info("同时指定了 update_realtime 和 update_data，将优先使用 update_realtime")
+            use_update_data = False
+        
+        # 如果需要先更新实时数据
+        if use_update_realtime:
+            await _update_realtime_stock_data(request.stock_codes, service)
+        elif use_update_data:
             await _update_stock_data(request.stock_codes, service)
 
         candidates = service.screen_stocks(
@@ -186,8 +205,13 @@ async def screen_stocks(
             top_n=request.top_n,
         )
 
+        # 获取 sector_manager
+        sector_manager = None
+        if service.strategy_manager:
+            sector_manager = service.strategy_manager.get_sector_manager()
+        
         active_ids = service.get_active_strategy_ids()
-        candidate_infos = [_convert_stock_candidate_to_info(c, active_ids) for c in candidates]
+        candidate_infos = [_convert_stock_candidate_to_info(c, active_ids, sector_manager) for c in candidates]
 
         execution_time_ms = (time.time() - start_time) * 1000
         return StockSelectorResponse(
@@ -206,6 +230,50 @@ async def screen_stocks(
             execution_time_ms=execution_time_ms,
             error=str(e),
         )
+
+
+async def _update_realtime_stock_data(stock_codes: Optional[list[str]], service: StockSelectorService) -> None:
+    """
+    更新实时股票数据
+
+    Args:
+        stock_codes: 股票代码列表，如果为 None 则更新所有股票
+        service: StockSelectorService 实例
+    """
+    from stock_selector.realtime_data_updater import get_realtime_updater
+    from stock_selector.stock_pool import get_all_stock_code_name_pairs, filter_special_stock_codes, filter_st_stocks
+    
+    logger.info(f"开始更新实时股票数据...")
+    
+    # 处理股票代码列表
+    if stock_codes is None:
+        stock_code_name_pairs = get_all_stock_code_name_pairs()
+        # 过滤ST股票
+        stock_code_name_pairs = filter_st_stocks(stock_code_name_pairs)
+        # 过滤特定板块的股票代码（科创板、创业板、北交所等）
+        stock_codes = [code for code, name in stock_code_name_pairs]
+        stock_codes = filter_special_stock_codes(stock_codes)
+    else:
+        # 如果用户指定了股票代码，先获取它们的名称，然后过滤ST股票
+        try:
+            all_pairs = get_all_stock_code_name_pairs()
+            code_to_name = {code: name for code, name in all_pairs}
+            # 过滤ST股票
+            filtered_codes = []
+            for code in stock_codes:
+                name = code_to_name.get(code, "")
+                if not any(keyword in name.upper() for keyword in ['ST', '*ST', 'SST', 'S*ST']):
+                    filtered_codes.append(code)
+            stock_codes = filtered_codes
+        except Exception:
+            pass
+    
+    # 使用实时数据更新器
+    realtime_updater = get_realtime_updater()
+    stats = realtime_updater.update_realtime_data(stock_codes=stock_codes)
+    
+    # 更新板块数据
+    _update_sector_data(service)
 
 
 async def _update_stock_data(stock_codes: Optional[list[str]], service: StockSelectorService) -> None:
@@ -262,7 +330,6 @@ async def _update_stock_data(stock_codes: Optional[list[str]], service: StockSel
         logger.warning(f"Tushare 下载器失败: {e}, 回退到旧版更新器")
         # 如果 Tushare 不可用，回退到旧版更新器
         try:
-            from stock_selector.data_update_tracker import get_update_tracker
             from stock_selector.batch_data_updater import get_batch_updater
             
             end_date = date.today()

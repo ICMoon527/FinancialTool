@@ -761,7 +761,7 @@ class DatabaseManager:
             
             # 如果最近数据是今天或昨天的，直接使用
             if days_diff <= 1:
-                logger.info(f"{code} 今天 {target_date} 数据未更新，使用最近数据 {latest_data.date}")
+                logger.debug(f"{code} 今天 {target_date} 数据未更新，使用最近数据 {latest_data.date}")
                 return True
             
             # 检查是否是非交易日

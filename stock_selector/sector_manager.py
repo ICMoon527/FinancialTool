@@ -428,7 +428,7 @@ class SectorManager:
             return {}, []
         
         try:
-            logger.info("[板块] 获取所有板块热度...")
+            logger.debug("[板块] 获取所有板块热度...")
             
             all_sectors = self._db_manager.get_all_sectors()
             if not all_sectors:
@@ -448,7 +448,7 @@ class SectorManager:
             self._heat_cache = (heat_dict_sorted, sector_names_sorted)
             self._heat_cache_timestamp = time.time()
             
-            logger.info(f"[板块] 获取成功，共 {len(heat_dict)} 个板块有热度数据")
+            logger.debug(f"[板块] 获取成功，共 {len(heat_dict)} 个板块有热度数据")
             return heat_dict_sorted, sector_names_sorted
             
         except Exception as e:

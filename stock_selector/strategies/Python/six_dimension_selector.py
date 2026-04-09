@@ -543,7 +543,7 @@ class SixDimensionSelectorStrategy(StockSelectorStrategy):
         matched_strategies = []
         strategy_scores = []
         weighted_scores = []
-        max_score = 1000.0
+        max_score = 500.0
 
         try:
             if self._data_provider:

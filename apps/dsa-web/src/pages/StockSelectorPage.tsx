@@ -74,6 +74,15 @@ const StockCandidateCard: React.FC<{
           <div>
             <div className="text-lg font-bold text-white">{candidate.stock_code}</div>
             <div className="text-xs text-muted">{candidate.stock_name || '-'}</div>
+            {candidate.sectors && candidate.sectors.length > 0 && (
+              <div className="flex flex-wrap gap-1 mt-1">
+                {candidate.sectors.map((sector, i) => (
+                  <span key={i} className="text-xs px-1.5 py-0.5 rounded-full bg-cyan/15 text-cyan">
+                    {sector}
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
         </div>
         <div className="text-right">
@@ -114,6 +123,7 @@ const StockSelectorPage: React.FC = () => {
   const [strategyTypeFilter, setStrategyTypeFilter] = useState<'ALL' | 'NATURAL_LANGUAGE' | 'PYTHON'>('ALL');
   
   const [updateData, setUpdateData] = useState(false);
+  const [updateRealtime, setUpdateRealtime] = useState(false);
   const [selectedStrategyIds, setSelectedStrategyIds] = useState<string[]>([]);
   const [isStrategyDropdownOpen, setIsStrategyDropdownOpen] = useState(false);
   
@@ -163,6 +173,7 @@ const StockSelectorPage: React.FC = () => {
         top_n: topN ?? 10,
         stock_codes: codes,
         update_data: updateData,
+        update_realtime: updateRealtime,
         strategy_ids: strategyIds,
       });
       
@@ -176,7 +187,7 @@ const StockSelectorPage: React.FC = () => {
     } finally {
       setIsScreening(false);
     }
-  }, [stockCodes, topN, updateData, selectedStrategyIds]);
+  }, [stockCodes, topN, updateData, updateRealtime, selectedStrategyIds]);
 
   useEffect(() => {
     const initPage = async () => {
@@ -343,11 +354,31 @@ const StockSelectorPage: React.FC = () => {
             <input
               type="checkbox"
               checked={updateData}
-              onChange={(e) => setUpdateData(e.target.checked)}
+              onChange={(e) => {
+                setUpdateData(e.target.checked);
+                if (e.target.checked) {
+                  setUpdateRealtime(false);
+                }
+              }}
               disabled={isScreening}
               className="rounded"
             />
             <span className="text-xs text-secondary">Update Data</span>
+          </label>
+          <label className="flex items-center gap-2 whitespace-nowrap cursor-pointer">
+            <input
+              type="checkbox"
+              checked={updateRealtime}
+              onChange={(e) => {
+                setUpdateRealtime(e.target.checked);
+                if (e.target.checked) {
+                  setUpdateData(false);
+                }
+              }}
+              disabled={isScreening}
+              className="rounded"
+            />
+            <span className="text-xs text-secondary">Update Realtime</span>
           </label>
         </div>
         {screeningError && (
