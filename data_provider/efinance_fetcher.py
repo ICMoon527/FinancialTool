@@ -789,53 +789,10 @@ class EfinanceFetcher(BaseFetcher):
 
     def get_sector_rankings(self, n: int = 5, return_all: bool = False) -> Optional[Tuple[List[Dict], List[Dict]]]:
         """
-        获取板块涨跌榜 (efinance)
+        获取板块涨跌榜 (efinance) - 已禁用
         """
-        import efinance as ef
-
-        try:
-            self._set_random_user_agent()
-            self._enforce_rate_limit()
-
-            logger.info("[API调用] ef.stock.get_realtime_quotes(['行业板块']) 获取板块行情...")
-            df = ef.stock.get_realtime_quotes(['行业板块'])
-            if df is None or df.empty:
-                logger.warning("[efinance] 板块行情数据为空")
-                return None
-
-            change_col = '涨跌幅' if '涨跌幅' in df.columns else 'pct_chg'
-            name_col = '股票名称' if '股票名称' in df.columns else 'name'
-            if change_col not in df.columns or name_col not in df.columns:
-                return None
-
-            df[change_col] = pd.to_numeric(df[change_col], errors='coerce')
-            df = df.dropna(subset=[change_col])
-            
-            if return_all:
-                # 返回所有板块，按涨跌排序
-                df_sorted = df.sort_values(change_col, ascending=False)
-                top_sectors = [
-                    {'name': str(row[name_col]), 'change_pct': float(row[change_col])}
-                    for _, row in df_sorted.iterrows()
-                ]
-                bottom_sectors = []
-            else:
-                # 返回前n个和后n个
-                top = df.nlargest(n, change_col)
-                bottom = df.nsmallest(n, change_col)
-
-                top_sectors = [
-                    {'name': str(row[name_col]), 'change_pct': float(row[change_col])}
-                    for _, row in top.iterrows()
-                ]
-                bottom_sectors = [
-                    {'name': str(row[name_col]), 'change_pct': float(row[change_col])}
-                    for _, row in bottom.iterrows()
-                ]
-            return top_sectors, bottom_sectors
-        except Exception as e:
-            logger.error(f"[efinance] 获取板块排行失败: {e}")
-            return None
+        logger.info("[efinance] 板块排行API已禁用，将尝试使用其他数据源")
+        return None
     
     def get_base_info(self, stock_code: str) -> Optional[Dict[str, Any]]:
         """
