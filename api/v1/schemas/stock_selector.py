@@ -4,12 +4,14 @@ Stock Selector API Schemas.
 """
 
 from datetime import datetime
-from typing import List, Optional, Dict, Any
-from pydantic import BaseModel, Field
+from typing import Any, Dict, List, Optional
+
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class StrategyInfo(BaseModel):
     """Strategy metadata."""
+
     id: str
     name: str
     display_name: str
@@ -24,6 +26,10 @@ class StrategyInfo(BaseModel):
 
 class StrategyMatchInfo(BaseModel):
     """Single strategy match result."""
+
+    model_config = ConfigDict(
+        arbitrary_types_allowed=True,
+    )
     strategy_id: str
     strategy_name: str
     matched: bool
@@ -34,6 +40,10 @@ class StrategyMatchInfo(BaseModel):
 
 class StockCandidateInfo(BaseModel):
     """Stock candidate with strategy matches."""
+
+    model_config = ConfigDict(
+        arbitrary_types_allowed=True,
+    )
     stock_code: str
     stock_name: str
     current_price: float
@@ -46,6 +56,7 @@ class StockCandidateInfo(BaseModel):
 
 class StockSelectorRequest(BaseModel):
     """Request to screen stocks."""
+
     stock_codes: Optional[List[str]] = None
     strategy_ids: Optional[List[str]] = None
     top_n: int = 5
@@ -55,6 +66,7 @@ class StockSelectorRequest(BaseModel):
 
 class StockSelectorResponse(BaseModel):
     """Response from stock screening."""
+
     success: bool
     candidates: List[StockCandidateInfo]
     total_screened: int
@@ -64,6 +76,7 @@ class StockSelectorResponse(BaseModel):
 
 class StrategiesResponse(BaseModel):
     """Response with available strategies."""
+
     success: bool
     strategies: List[StrategyInfo]
     active_strategy_ids: List[str]
@@ -71,16 +84,19 @@ class StrategiesResponse(BaseModel):
 
 class ActivateStrategyRequest(BaseModel):
     """Request to activate a strategy."""
+
     strategy_id: str
 
 
 class DeactivateStrategyRequest(BaseModel):
     """Request to deactivate a strategy."""
+
     strategy_id: str
 
 
 class StockSelectorConfigResponse(BaseModel):
     """选股器配置响应."""
+
     success: bool
     default_top_n: int
     error: Optional[str] = None

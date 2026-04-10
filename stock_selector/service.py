@@ -6,8 +6,10 @@ Stock Selector Service - High-level service for stock screening.
 import logging
 import concurrent.futures
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from tqdm import tqdm
+import pandas as pd
+import numpy as np
 
 from stock_selector.base import StockCandidate, StrategyMetadata
 from stock_selector.config import StockSelectorConfig, get_config
@@ -146,6 +148,96 @@ class StockSelectorService:
         logger.info("Screened %d stocks, returned top %d", len(stock_codes), len(ranked_candidates))
         return ranked_candidates
 
+    def _ema(self, data: pd.Series, period: int) -> pd.Series:
+        """计算指数移动平均"""
+        return data.ewm(span=period, adjust=False).mean()
+    
+    def _hhv(self, data: pd.Series, period: int) -> pd.Series:
+        """计算周期内最高值"""
+        return data.rolling(window=period).max()
+    
+    def _llv(self, data: pd.Series, period: int) -> pd.Series:
+        """计算周期内最低值"""
+        return data.rolling(window=period).min()
+    
+    def _calculate_control_degree(self, df: pd.DataFrame) -> Optional[float]:
+        """计算控盘度，复用 banker_control_selector_strategy.py 中的逻辑"""
+        if df is None or len(df) < 40:
+            return None
+        
+        try:
+            df = df.copy()
+            close = df['close']
+            open_price = df['open']
+            high = df['high']
+            low = df['low']
+            
+            aaa = (3 * close + open_price + high + low) / 6
+            ma12 = self._ema(aaa, 12)
+            ma36 = self._ema(aaa, 36)
+            ma36_prev = ma36.shift(1)
+            
+            control_degree = (ma12 - ma36_prev) / ma36_prev * 100 + 50
+            return float(control_degree.iloc[-1]) if pd.notna(control_degree.iloc[-1]) else None
+        except Exception as e:
+            logger.debug(f"Failed to calculate control degree: {e}")
+            return None
+    
+    def _calculate_purple_days(self, df: pd.DataFrame, market_data: Optional[pd.DataFrame]) -> Optional[int]:
+        """计算连紫数，复用 strong_detonation_python.py 中的逻辑"""
+        if df is None or len(df) < 60:
+            return None
+        
+        try:
+            df = df.copy()
+            close = df['close']
+            open_price = df['open']
+            high = df['high']
+            low = df['low']
+            
+            aaa = (3 * close + open_price + high + low) / 6
+            var1 = self._ema(aaa, 35)
+            var2 = (self._hhv(var1, 5) + self._hhv(var1, 15) + self._hhv(var1, 30)) / 3
+            var3 = (self._llv(var1, 5) + self._llv(var1, 15) + self._llv(var1, 30)) / 3
+            bull_line = (self._hhv(var2, 5) + self._hhv(var2, 15) + self._hhv(var2, 30)) / 3
+            
+            ema120_stock = self._ema(close, 120)
+            
+            if market_data is not None and not market_data.empty:
+                market_df = market_data.copy()
+                if "date" in market_df.columns:
+                    market_df["date"] = pd.to_datetime(market_df["date"]).dt.date
+                if "date" in df.columns:
+                    df["date"] = pd.to_datetime(df["date"]).dt.date
+                
+                market_df_renamed = market_df[["date", "close"]].rename(
+                    columns={"close": "close_index"}
+                )
+                merged_df = df.merge(market_df_renamed, on="date", how="left")
+                
+                if "close_index" in merged_df.columns:
+                    merged_df["close_index"] = merged_df["close_index"].ffill().bfill()
+                    if not merged_df["close_index"].isna().any():
+                        index_close = merged_df["close_index"]
+                        ema120_index = self._ema(index_close, 120)
+                        a1 = index_close / ema120_index
+                        market_midline = self._ema(ema120_stock * a1, 2)
+                    else:
+                        a1 = close / ema120_stock
+                        market_midline = self._ema(ema120_stock * a1, 2)
+                else:
+                    a1 = close / ema120_stock
+                    market_midline = self._ema(ema120_stock * a1, 2)
+            else:
+                a1 = close / ema120_stock
+                market_midline = self._ema(ema120_stock * a1, 2)
+            
+            purple_box = (aaa > bull_line) & (aaa > market_midline)
+            return int(purple_box.tail(10).sum())
+        except Exception as e:
+            logger.debug(f"Failed to calculate purple days: {e}")
+            return None
+
     def _screen_single_stock(
         self,
         stock_code: str,
@@ -153,6 +245,9 @@ class StockSelectorService:
     ) -> Optional[StockCandidate]:
         current_price = 0.0
         stock_name = stock_code
+        change_pct = None
+        control_degree = None
+        purple_days = None
 
         # 首先从股票池获取股票名称
         if self._db_manager:
@@ -168,6 +263,48 @@ class StockSelectorService:
                         stock_name = result
             except Exception as e:
                 logger.debug(f"Failed to get stock name from pool for {stock_code}: {e}")
+
+        # 尝试从数据提供者获取日线数据以计算指标
+        daily_data = None
+        market_data = None
+        if self.strategy_manager._data_provider:
+            try:
+                # 获取日线数据（至少150天，确保计算指标有足够数据）
+                daily_data_result = self.strategy_manager._data_provider.get_daily_data(stock_code, days=150)
+                if isinstance(daily_data_result, tuple) and len(daily_data_result) == 2:
+                    daily_data, _ = daily_data_result
+                else:
+                    daily_data = daily_data_result
+                
+                # 尝试从日线数据获取涨跌幅
+                if daily_data is not None and isinstance(daily_data, pd.DataFrame) and not daily_data.empty:
+                    if 'pct_chg' in daily_data.columns:
+                        change_pct = float(daily_data['pct_chg'].iloc[-1]) if pd.notna(daily_data['pct_chg'].iloc[-1]) else None
+                
+                # 计算控盘度
+                control_degree = self._calculate_control_degree(daily_data)
+                
+                # 获取大盘数据用于计算连紫数
+                try:
+                    market_data = self.strategy_manager._data_provider.get_index_daily_data("sh000001")
+                except Exception as e:
+                    logger.debug(f"Failed to get market data: {e}")
+                
+                # 计算连紫数
+                purple_days = self._calculate_purple_days(daily_data, market_data)
+            except Exception as e:
+                logger.debug(f"Failed to get daily data for {stock_code}: {e}")
+
+        # 尝试从实时行情获取涨跌幅
+        if change_pct is None and self.strategy_manager._data_provider:
+            try:
+                quote = self.strategy_manager._data_provider.get_realtime_quote(stock_code)
+                if quote:
+                    change_pct = getattr(quote, "pct_chg", None)
+                    if change_pct is not None:
+                        change_pct = float(change_pct)
+            except Exception as e:
+                logger.debug(f"Failed to get realtime quote pct_chg for {stock_code}: {e}")
 
         # Try to get data from database cache first
         if self._db_manager:
@@ -206,6 +343,11 @@ class StockSelectorService:
             name=stock_name,
             current_price=current_price,
         )
+
+        # 将计算得到的指标存储到 extra_data 字典中
+        candidate.extra_data["change_pct"] = change_pct
+        candidate.extra_data["control_degree"] = control_degree
+        candidate.extra_data["purple_days"] = purple_days
 
         for match in matches:
             candidate.add_strategy_match(match)

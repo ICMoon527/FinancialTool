@@ -64,6 +64,23 @@ const StockCandidateCard: React.FC<{
   candidate: StockCandidateInfo;
   rank: number;
 }> = ({ candidate, rank }) => {
+  const changePct = candidate.extra_data?.change_pct;
+  const controlDegree = candidate.extra_data?.control_degree;
+  const purpleDays = candidate.extra_data?.purple_days;
+
+  const getChangePctColor = (pct: number | undefined | null) => {
+    if (pct === undefined || pct === null) return 'text-muted';
+    if (pct > 0) return 'text-red-400';
+    if (pct < 0) return 'text-green-400';
+    return 'text-secondary';
+  };
+
+  const formatChangePct = (pct: number | undefined | null) => {
+    if (pct === undefined || pct === null) return '-';
+    const sign = pct > 0 ? '+' : '';
+    return `${sign}${pct.toFixed(2)}%`;
+  };
+
   return (
     <Card variant="gradient" padding="md" className="animate-fade-in">
       <div className="flex items-center justify-between mb-3">
@@ -90,6 +107,28 @@ const StockCandidateCard: React.FC<{
           <div className="text-xs text-muted">Score</div>
         </div>
       </div>
+      
+      <div className="grid grid-cols-3 gap-2 mb-3">
+        <div className="bg-white/5 rounded-lg p-2 text-center">
+          <div className={`text-sm font-bold ${getChangePctColor(changePct)}`}>
+            {formatChangePct(changePct)}
+          </div>
+          <div className="text-[10px] text-muted">涨跌幅</div>
+        </div>
+        <div className="bg-white/5 rounded-lg p-2 text-center">
+          <div className="text-sm font-bold text-yellow-400">
+            {controlDegree !== undefined && controlDegree !== null ? controlDegree.toFixed(2) : '-'}
+          </div>
+          <div className="text-[10px] text-muted">控盘度</div>
+        </div>
+        <div className="bg-white/5 rounded-lg p-2 text-center">
+          <div className="text-sm font-bold text-purple-400">
+            {purpleDays !== undefined ? purpleDays : '-'}
+          </div>
+          <div className="text-[10px] text-muted">强势起爆连紫数</div>
+        </div>
+      </div>
+      
       <div className="space-y-2">
         {candidate.strategy_matches.map((match: StrategyMatchInfo) => (
           <div key={match.strategy_id} className="flex items-center justify-between py-1">
@@ -241,6 +280,9 @@ const StockSelectorPage: React.FC = () => {
     };
   }, []);
 
+  // 移除固定高度设置，保持自然的 flexbox 布局
+  // 右侧 section 已经有 overflow-y-auto，配合 flex-1 会自动处理滚动
+
   const filteredStrategies = strategies.filter(s => {
     if (strategyTypeFilter === 'ALL') return true;
     return s.strategy_type === strategyTypeFilter;
@@ -387,46 +429,46 @@ const StockSelectorPage: React.FC = () => {
       </header>
 
       <main className="flex-1 flex overflow-hidden p-3 gap-3">
-        <div className="flex flex-col gap-3 w-80 flex-shrink-0 overflow-y-auto">
-          <Card padding="md">
-            <div className="mb-3">
-              <span className="label-uppercase">Strategies</span>
-            </div>
-            <div className="flex gap-2 mb-3">
-              <button
-                type="button"
-                onClick={() => setStrategyTypeFilter('ALL')}
-                className={`flex-1 px-2 py-1 rounded text-xs font-medium transition-all ${
-                  strategyTypeFilter === 'ALL'
-                    ? 'bg-cyan/20 text-cyan border border-cyan/30'
-                    : 'bg-transparent text-muted border border-white/10 hover:border-white/20'
-                }`}
-              >
-                All
-              </button>
-              <button
-                type="button"
-                onClick={() => setStrategyTypeFilter('NATURAL_LANGUAGE')}
-                className={`flex-1 px-2 py-1 rounded text-xs font-medium transition-all ${
-                  strategyTypeFilter === 'NATURAL_LANGUAGE'
-                    ? 'bg-purple/20 text-purple border border-purple/30'
-                    : 'bg-transparent text-muted border border-white/10 hover:border-white/20'
-                }`}
-              >
-                NL
-              </button>
-              <button
-                type="button"
-                onClick={() => setStrategyTypeFilter('PYTHON')}
-                className={`flex-1 px-2 py-1 rounded text-xs font-medium transition-all ${
-                  strategyTypeFilter === 'PYTHON'
-                    ? 'bg-emerald/20 text-emerald border border-emerald/30'
-                    : 'bg-transparent text-muted border border-white/10 hover:border-white/20'
-                }`}
-              >
-                PY
-              </button>
-            </div>
+        <div className="w-80 flex-shrink-0 rounded-2xl terminal-card p-4 overflow-hidden flex flex-col min-h-0 h-[1400px]">
+          <div className="mb-3 flex-shrink-0">
+            <span className="label-uppercase">Strategies</span>
+          </div>
+          <div className="flex gap-2 mb-3 flex-shrink-0">
+            <button
+              type="button"
+              onClick={() => setStrategyTypeFilter('ALL')}
+              className={`flex-1 px-2 py-1 rounded text-xs font-medium transition-all ${
+                strategyTypeFilter === 'ALL'
+                  ? 'bg-cyan/20 text-cyan border border-cyan/30'
+                  : 'bg-transparent text-muted border border-white/10 hover:border-white/20'
+              }`}
+            >
+              All
+            </button>
+            <button
+              type="button"
+              onClick={() => setStrategyTypeFilter('NATURAL_LANGUAGE')}
+              className={`flex-1 px-2 py-1 rounded text-xs font-medium transition-all ${
+                strategyTypeFilter === 'NATURAL_LANGUAGE'
+                  ? 'bg-purple/20 text-purple border border-purple/30'
+                  : 'bg-transparent text-muted border border-white/10 hover:border-white/20'
+              }`}
+            >
+              NL
+            </button>
+            <button
+              type="button"
+              onClick={() => setStrategyTypeFilter('PYTHON')}
+              className={`flex-1 px-2 py-1 rounded text-xs font-medium transition-all ${
+                strategyTypeFilter === 'PYTHON'
+                  ? 'bg-emerald/20 text-emerald border border-emerald/30'
+                  : 'bg-transparent text-muted border border-white/10 hover:border-white/20'
+              }`}
+            >
+              PY
+            </button>
+          </div>
+          <div className="flex-1 overflow-y-auto min-h-0">
             {isLoadingStrategies ? (
               <div className="flex items-center justify-center py-8">
                 <div className="w-6 h-6 border-2 border-cyan/20 border-t-cyan rounded-full animate-spin" />
@@ -447,10 +489,10 @@ const StockSelectorPage: React.FC = () => {
                 ))}
               </div>
             )}
-          </Card>
+          </div>
         </div>
 
-        <section className="flex-1 overflow-y-auto">
+        <section className="flex-1 overflow-y-auto pr-2 h-[1400px]">
           {isScreening ? (
             <div className="flex flex-col items-center justify-center h-64">
               <div className="w-full max-w-md">

@@ -2,6 +2,13 @@
  * Stock Selector Type Definitions
  */
 
+export interface StockCandidateExtraData {
+  change_pct?: number | null;
+  control_degree?: number | null;
+  purple_days?: number | null;
+  [key: string]: any;
+}
+
 export interface StrategyInfo {
   id: string;
   name: string;
@@ -31,7 +38,7 @@ export interface StockCandidateInfo {
   overall_score: number;
   strategy_matches: StrategyMatchInfo[];
   created_at: string;
-  extra_data: Record<string, any>;
+  extra_data: StockCandidateExtraData;
   sectors: string[];
 }
 

@@ -372,4 +372,4 @@ class StrategyManager:
             key=lambda c: c.match_score,
             reverse=True,
         )
-        return sorted_candidates[:top_n]
+        return sorted_candidates
