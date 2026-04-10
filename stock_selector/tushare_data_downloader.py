@@ -96,7 +96,7 @@ class TushareDataDownloader:
             trading_days = int(total_days * 250 / 365)
             return max(1, trading_days)
     
-    def _calculate_tushare_batch_size(self, start_date, end_date):
+    def _calculate_tushare_batch_size(self, start_date, end_date, actual_trading_days=None):
         """
         根据日期范围动态计算 Tushare 批量大小
         
@@ -106,11 +106,15 @@ class TushareDataDownloader:
         Args:
             start_date: 开始日期
             end_date: 结束日期
+            actual_trading_days: 实际需要的交易日数量（如果提供则优先使用）
             
         Returns:
             计算得到的批量大小
         """
-        trading_days = self._estimate_trading_days(start_date, end_date)
+        if actual_trading_days is not None:
+            trading_days = actual_trading_days
+        else:
+            trading_days = self._estimate_trading_days(start_date, end_date)
         
         batch_size = 5000 // trading_days
         
@@ -119,9 +123,14 @@ class TushareDataDownloader:
         
         batch_size = max(min_batch, min(batch_size, max_batch))
         
-        logger.info(f"动态计算 Tushare 批量大小: {batch_size} 只/批 "
-                   f"(交易日估算: {trading_days} 天, "
-                   f"5000/{trading_days} = {5000/trading_days:.2f})")
+        if actual_trading_days is not None:
+            logger.info(f"动态计算 Tushare 批量大小: {batch_size} 只/批 "
+                       f"(实际交易日: {trading_days} 天, "
+                       f"5000/{trading_days} = {5000/trading_days:.2f})")
+        else:
+            logger.info(f"动态计算 Tushare 批量大小: {batch_size} 只/批 "
+                       f"(交易日估算: {trading_days} 天, "
+                       f"5000/{trading_days} = {5000/trading_days:.2f})")
         
         return batch_size
     
@@ -436,7 +445,7 @@ class TushareDataDownloader:
             stock_code, start_date, end_date
         )
     
-    def _calculate_date_range(self, trading_days: int) -> Tuple[date, date]:
+    def _calculate_date_range(self, trading_days: int) -> Tuple[date, date, int]:
         """
         根据交易日数量计算准确的日期范围
         
@@ -444,7 +453,7 @@ class TushareDataDownloader:
             trading_days: 需要的交易日数量
             
         Returns:
-            (start_date, end_date) 元组
+            (start_date, end_date, actual_trading_days) 元组
         """
         end_date = date.today()
         
@@ -463,14 +472,14 @@ class TushareDataDownloader:
                 actual_trading_days = len(trade_dates[trade_dates.index(start_date):])
                 logger.info(f"使用交易日历：需要 {trading_days} 个交易日，实际获取 {actual_trading_days} 个交易日")
                 logger.info(f"日期范围：{start_date} 至 {end_date}")
-                return start_date, end_date
+                return start_date, end_date, actual_trading_days
         except Exception as e:
             logger.warning(f"获取交易日历失败: {e}，回退到日历日计算")
         
         # 回退到日历日计算
         start_date = end_date - timedelta(days=trading_days * 2 - 1)  # 多获取一些确保覆盖
         logger.info(f"使用日历日计算：日期范围 {start_date} 至 {end_date}")
-        return start_date, end_date
+        return start_date, end_date, trading_days
     
     def _process_batch_data(self, df: pd.DataFrame, batch_stocks: List[str], start_date: date, end_date: date, stats: Dict[str, any]):
         """
@@ -612,7 +621,7 @@ class TushareDataDownloader:
     def download_data(
         self,
         stock_codes: Optional[List[str]] = None,
-        days: int = 365,
+        days: Optional[int] = None,
         efinance_batch_size: Optional[int] = None,
         tushare_batch_size: Optional[int] = None
     ) -> Dict[str, any]:
@@ -639,6 +648,8 @@ class TushareDataDownloader:
         config = get_config()
         if efinance_batch_size is None:
             efinance_batch_size = config.efinance_batch_size
+        if days is None:
+            days = config.update_data_default_days
         
         if stock_codes is None:
             stock_codes = get_all_stock_codes()
@@ -649,13 +660,13 @@ class TushareDataDownloader:
         filtered_count = original_count - len(stock_codes)
         
         # 使用交易日历计算准确的日期范围
-        start_date, end_date = self._calculate_date_range(days)
+        start_date, end_date, actual_trading_days = self._calculate_date_range(days)
         start_str = start_date.strftime('%Y-%m-%d')
         end_str = end_date.strftime('%Y-%m-%d')
         
         # 动态计算 Tushare 批量大小（仅在用户未指定时）
         if tushare_batch_size is None:
-            tushare_batch_size = self._calculate_tushare_batch_size(start_date, end_date)
+            tushare_batch_size = self._calculate_tushare_batch_size(start_date, end_date, actual_trading_days=days)
         
         logger.info(f"开始下载数据：{len(stock_codes)} 只股票，{days} 个交易日数据（{start_date} 至 {end_date}）")
         
@@ -820,6 +831,8 @@ class TushareDataDownloader:
         config = get_config()
         if efinance_batch_size is None:
             efinance_batch_size = config.efinance_batch_size
+        if days is None:
+            days = config.update_data_default_days
         
         if stock_codes is None:
             stock_codes = get_all_stock_codes()

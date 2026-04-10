@@ -64,6 +64,8 @@ class StockSelectorConfig:
     # 数据下载批次配置
     efinance_batch_size: int = 10
     tushare_batch_size: int = 20
+    # 默认数据更新天数
+    update_data_default_days: int = 150
     
     # 六维选股配置
     six_dimension_main_trading_weight: float = 1.0

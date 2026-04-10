@@ -287,7 +287,8 @@ async def _update_stock_data(stock_codes: Optional[list[str]], service: StockSel
     from datetime import date, timedelta
     from stock_selector.stock_pool import get_all_stock_code_name_pairs, filter_special_stock_codes, filter_st_stocks
     
-    logger.info(f"开始更新股票数据 (最后 365 天)...")
+    config = get_config()
+    logger.info(f"开始更新股票数据 (最后 {config.update_data_default_days} 天)...")
     
     # 处理股票代码列表
     if stock_codes is None:
@@ -321,7 +322,7 @@ async def _update_stock_data(stock_codes: Optional[list[str]], service: StockSel
         downloader = get_tushare_downloader(rate_limit_per_minute=50)
         stats = downloader.download_data(
             stock_codes=stock_codes,
-            days=365
+            days=config.update_data_default_days
         )
         
         logger.info(f"Tushare 数据更新完成!")
@@ -333,9 +334,9 @@ async def _update_stock_data(stock_codes: Optional[list[str]], service: StockSel
             from stock_selector.batch_data_updater import get_batch_updater
             
             end_date = date.today()
-            target_start_date = end_date - timedelta(days=365 - 1)
+            target_start_date = end_date - timedelta(days=config.update_data_default_days - 1)
             actual_start_date = target_start_date
-            logger.info(f"强制更新全部 365 天数据")
+            logger.info(f"强制更新全部 {config.update_data_default_days} 天数据")
             logger.info(f"日期范围：{actual_start_date} 至 {end_date}")
             
             if actual_start_date <= end_date:
