@@ -183,6 +183,15 @@ class StockSelectorService:
             logger.debug(f"Failed to calculate control degree: {e}")
             return None
     
+    def _get_market_index_code(self, stock_code: str) -> str:
+        """根据股票代码获取对应的大盘指数代码"""
+        if stock_code.startswith(('60', '688')):
+            return 'sh000001'
+        elif stock_code.startswith(('00', '30')):
+            return 'sz399001'
+        else:
+            return 'sh000001'
+    
     def _calculate_purple_days(self, df: pd.DataFrame, market_data: Optional[pd.DataFrame]) -> Optional[int]:
         """计算连紫数，复用 strong_detonation_python.py 中的逻辑"""
         if df is None or len(df) < 60:
@@ -233,7 +242,17 @@ class StockSelectorService:
                 market_midline = self._ema(ema120_stock * a1, 2)
             
             purple_box = (aaa > bull_line) & (aaa > market_midline)
-            return int(purple_box.tail(10).sum())
+            latest_purple = bool(purple_box.iloc[-1]) if pd.notna(purple_box.iloc[-1]) else False
+            
+            consecutive_count = 0
+            if latest_purple:
+                for i in range(len(purple_box) - 1, -1, -1):
+                    if bool(purple_box.iloc[i]):
+                        consecutive_count += 1
+                    else:
+                        break
+            
+            return consecutive_count
         except Exception as e:
             logger.debug(f"Failed to calculate purple days: {e}")
             return None
@@ -264,10 +283,60 @@ class StockSelectorService:
             except Exception as e:
                 logger.debug(f"Failed to get stock name from pool for {stock_code}: {e}")
 
-        # 尝试从数据提供者获取日线数据以计算指标
+        # 优先从数据库读取日线数据
         daily_data = None
         market_data = None
-        if self.strategy_manager._data_provider:
+        if self._db_manager:
+            try:
+                from src.storage import StockDaily
+                from datetime import date, timedelta
+                from sqlalchemy import select, desc
+                
+                # 计算日期范围：获取最近150天的数据
+                end_date = date.today()
+                start_date = end_date - timedelta(days=200)  # 多取一些确保有足够数据
+                
+                with self._db_manager.get_session() as session:
+                    # 从数据库读取数据
+                    records = session.execute(
+                        select(StockDaily)
+                        .where(
+                            StockDaily.code == stock_code,
+                            StockDaily.date >= start_date,
+                            StockDaily.date <= end_date
+                        )
+                        .order_by(StockDaily.date)
+                    ).scalars().all()
+                    
+                    if records and len(records) >= 30:  # 确保有足够的数据
+                        # 转换为 DataFrame
+                        daily_data = pd.DataFrame([
+                            {
+                                'date': r.date,
+                                'open': r.open,
+                                'high': r.high,
+                                'low': r.low,
+                                'close': r.close,
+                                'volume': r.volume,
+                                'amount': r.amount,
+                                'pct_chg': r.pct_chg
+                            }
+                            for r in records
+                        ])
+                        logger.debug(f"从数据库读取 {stock_code} 数据成功，共 {len(daily_data)} 条")
+                        
+                        # 从数据库数据获取涨跌幅
+                        if not daily_data.empty and 'pct_chg' in daily_data.columns:
+                            change_pct = float(daily_data['pct_chg'].iloc[-1]) if pd.notna(daily_data['pct_chg'].iloc[-1]) else None
+                            logger.debug(f"从数据库获取 {stock_code} 涨跌幅: {change_pct}")
+                        
+                        # 计算控盘度
+                        control_degree = self._calculate_control_degree(daily_data)
+            except Exception as e:
+                logger.debug(f"Failed to get data from database for {stock_code}: {e}")
+
+        # 如果数据库中没有足够的数据，才从数据提供者获取
+        if daily_data is None and self.strategy_manager._data_provider:
             try:
                 # 获取日线数据（至少150天，确保计算指标有足够数据）
                 daily_data_result = self.strategy_manager._data_provider.get_daily_data(stock_code, days=150)
@@ -280,22 +349,26 @@ class StockSelectorService:
                 if daily_data is not None and isinstance(daily_data, pd.DataFrame) and not daily_data.empty:
                     if 'pct_chg' in daily_data.columns:
                         change_pct = float(daily_data['pct_chg'].iloc[-1]) if pd.notna(daily_data['pct_chg'].iloc[-1]) else None
-                
-                # 计算控盘度
+            except Exception as e:
+                logger.debug(f"Failed to get daily data from provider for {stock_code}: {e}")
+
+        # 如果有日线数据，计算控盘度和连紫数
+        if daily_data is not None and isinstance(daily_data, pd.DataFrame) and not daily_data.empty:
+            if control_degree is None:
                 control_degree = self._calculate_control_degree(daily_data)
-                
-                # 获取大盘数据用于计算连紫数
+            
+            # 获取大盘数据用于计算连紫数
+            if self.strategy_manager._data_provider:
                 try:
-                    market_data = self.strategy_manager._data_provider.get_index_daily_data("sh000001")
+                    market_index_code = self._get_market_index_code(stock_code)
+                    market_data = self.strategy_manager._data_provider.get_index_daily_data(market_index_code)
                 except Exception as e:
                     logger.debug(f"Failed to get market data: {e}")
-                
-                # 计算连紫数
-                purple_days = self._calculate_purple_days(daily_data, market_data)
-            except Exception as e:
-                logger.debug(f"Failed to get daily data for {stock_code}: {e}")
+            
+            # 计算连紫数
+            purple_days = self._calculate_purple_days(daily_data, market_data)
 
-        # 尝试从实时行情获取涨跌幅
+        # 尝试从实时行情获取涨跌幅（作为备选）
         if change_pct is None and self.strategy_manager._data_provider:
             try:
                 quote = self.strategy_manager._data_provider.get_realtime_quote(stock_code)
@@ -317,10 +390,19 @@ class StockSelectorService:
                     current_price = context.get('today', {}).get('close', 0.0)
                     stock_name = context.get('stock_name', stock_name)
 
+        # 准备预计算的指标
+        precomputed_metrics = {
+            'control_degree': control_degree,
+            'purple_days': purple_days,
+        }
+        
         # Now execute strategies with potential cached data
         matches = self.strategy_manager.execute_strategies(
             stock_code=stock_code,
+            stock_name=stock_name,
             strategy_ids=strategy_ids,
+            daily_data=daily_data,
+            precomputed_metrics=precomputed_metrics,
         )
 
         if not matches:
@@ -349,7 +431,18 @@ class StockSelectorService:
         candidate.extra_data["control_degree"] = control_degree
         candidate.extra_data["purple_days"] = purple_days
 
+        # 从六维策略匹配信息中提取动量二号信息
         for match in matches:
+            if match.strategy_id == "six_dimension_selector" and match.match_details:
+                sub_strategies = match.match_details.get("sub_strategies", {})
+                momentum2 = sub_strategies.get("momentum_2_red_pillar_python")
+                if momentum2:
+                    candidate.extra_data["momentum2_score_reason"] = momentum2.get("score_reason")
+                    candidate.extra_data["momentum2_today_height"] = momentum2.get("today_height")
+                    candidate.extra_data["momentum2_prev_height"] = momentum2.get("prev_height")
+                    candidate.extra_data["momentum2_red_pillar"] = momentum2.get("red_pillar")
+                    candidate.extra_data["momentum2_height_change_pct"] = momentum2.get("height_change_pct")
+                    candidate.extra_data["momentum2_prev_color"] = momentum2.get("prev_color")
             candidate.add_strategy_match(match)
 
         has_matched_strategy = any(match.matched for match in matches)

@@ -1631,7 +1631,7 @@ class DatabaseManager:
             # 非交易日，确认我们使用的是最近的交易日数据
             latest_date = today_data.date
             if is_market_open(market, latest_date):
-                logger.info(f"在非交易日 {target_date} 分析 {code}，使用最近交易日 {latest_date} 的数据")
+                logger.debug(f"在非交易日 {target_date} 分析 {code}，使用最近交易日 {latest_date} 的数据")
 
         context = {
             "code": code,

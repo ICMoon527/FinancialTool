@@ -217,12 +217,20 @@ class SixDimensionSelectorStrategy(StockSelectorStrategy):
             
             score = 80
             score_reason = "默认分"
+            height_change_pct = None
+            prev_color = None
             
-            if prev_is_green or prev_is_blue:
+            if prev_is_green:
                 score = 90
-                score_reason = "今天红，昨天绿/蓝"
+                score_reason = "今天红，昨天绿"
+                prev_color = "绿"
+            elif prev_is_blue:
+                score = 90
+                score_reason = "今天红，昨天蓝"
+                prev_color = "蓝"
             elif prev_is_red and prev_height > 0:
                 height_change_pct = ((today_height - prev_height) / prev_height) * 100
+                prev_color = "红"
                 if height_change_pct > 100:
                     score = 100
                     score_reason = f"昨天红，今天红，高度+{height_change_pct:.1f}%"
@@ -235,6 +243,7 @@ class SixDimensionSelectorStrategy(StockSelectorStrategy):
             elif prev_is_yellow:
                 score = 80
                 score_reason = "今天红，昨天黄"
+                prev_color = "黄"
             
             return {
                 'matched': True,
@@ -243,6 +252,8 @@ class SixDimensionSelectorStrategy(StockSelectorStrategy):
                 'score_reason': score_reason,
                 'today_height': today_height,
                 'prev_height': prev_height,
+                'height_change_pct': height_change_pct,
+                'prev_color': prev_color,
             }
         except Exception:
             return None
@@ -537,24 +548,27 @@ class SixDimensionSelectorStrategy(StockSelectorStrategy):
             logger.warning(f"计算板块分时出错 {stock_code}: {e}")
             return None
 
-    def select(self, stock_code: str, stock_name: Optional[str] = None) -> StrategyMatch:
+    def select(self, stock_code: str, stock_name: Optional[str] = None, daily_data: Optional[pd.DataFrame] = None, precomputed_metrics: Optional[Dict[str, Any]] = None) -> StrategyMatch:
         match_details = {}
         conditions_met = []
         matched_strategies = []
         strategy_scores = []
         weighted_scores = []
         max_score = 500.0
+        data_source = "preloaded"
 
         try:
             if self._data_provider:
                 realtime_quote = self._data_provider.get_realtime_quote(stock_code)
-                daily_data_result = self._data_provider.get_daily_data(stock_code, days=150)
-
-                if isinstance(daily_data_result, tuple) and len(daily_data_result) == 2:
-                    daily_data, data_source = daily_data_result
-                else:
-                    daily_data = daily_data_result
-                    data_source = "unknown"
+                
+                # 如果没有传入外部数据，才自己获取
+                if daily_data is None:
+                    daily_data_result = self._data_provider.get_daily_data(stock_code, days=150)
+                    if isinstance(daily_data_result, tuple) and len(daily_data_result) == 2:
+                        daily_data, data_source = daily_data_result
+                    else:
+                        daily_data = daily_data_result
+                        data_source = "unknown"
 
                 match_details["realtime_quote"] = {}
                 match_details["data_source"] = data_source
@@ -564,9 +578,6 @@ class SixDimensionSelectorStrategy(StockSelectorStrategy):
                     price = getattr(realtime_quote, "price", None)
                     match_details["realtime_quote"] = {"price": price}
 
-                # if daily_data is None or not isinstance(daily_data, pd.DataFrame) or daily_data.empty:
-                #     logger.debug(f"{stock_code}: 数据为空或无效 - daily_data={daily_data is not None}, 类型={type(daily_data) if daily_data is not None else 'None'}, 行数={len(daily_data) if (daily_data is not None and isinstance(daily_data, pd.DataFrame)) else 'N/A'}")
-                
                 if daily_data is not None and isinstance(daily_data, pd.DataFrame) and not daily_data.empty:
                     # logger.debug(f"{stock_code}: 数据行数={len(daily_data)}, 日期范围={daily_data['date'].min() if 'date' in daily_data.columns else 'N/A'} ~ {daily_data['date'].max() if 'date' in daily_data.columns else 'N/A'}")
                     
@@ -581,16 +592,37 @@ class SixDimensionSelectorStrategy(StockSelectorStrategy):
                             weighted_scores.append(weighted_score)
                             conditions_met.append(f"主力操盘买入信号(+{main_trading['score']}, 权重×{self._main_trading_weight})")
 
-                    banker_control = self._calculate_banker_control(daily_data)
-                    if banker_control:
+                    # 尝试复用预计算的控盘度
+                    if precomputed_metrics and "control_degree" in precomputed_metrics and precomputed_metrics["control_degree"] is not None:
+                        control_degree = precomputed_metrics["control_degree"]
+                        matched = control_degree >= 50 if control_degree is not None else False
+                        if control_degree is not None and control_degree >= 50:
+                            score = 100 - abs(53 - control_degree) * 5
+                        else:
+                            score = 0
+                        banker_control = {
+                            'matched': matched,
+                            'score': score,
+                            'control_degree': control_degree,
+                        }
                         match_details["sub_strategies"]["banker_control_selector"] = banker_control
-                        # logger.debug(f"{stock_code}: 庄家控盘 matched={banker_control['matched']}, score={banker_control['score']}, control_degree={banker_control.get('control_degree')}")
                         if banker_control["matched"]:
                             weighted_score = banker_control["score"] * self._bank_control_weight
                             matched_strategies.append("庄家控盘选股")
                             strategy_scores.append(banker_control["score"])
                             weighted_scores.append(weighted_score)
                             conditions_met.append(f"庄家控盘选股(+{banker_control['score']:.1f}, 权重×{self._bank_control_weight})")
+                    else:
+                        # 没有预计算的控盘度，自己计算
+                        banker_control = self._calculate_banker_control(daily_data)
+                        if banker_control:
+                            match_details["sub_strategies"]["banker_control_selector"] = banker_control
+                            if banker_control["matched"]:
+                                weighted_score = banker_control["score"] * self._bank_control_weight
+                                matched_strategies.append("庄家控盘选股")
+                                strategy_scores.append(banker_control["score"])
+                                weighted_scores.append(weighted_score)
+                                conditions_met.append(f"庄家控盘选股(+{banker_control['score']:.1f}, 权重×{self._bank_control_weight})")
 
                     momentum2 = self._calculate_momentum2(daily_data)
                     if momentum2:
@@ -614,6 +646,7 @@ class SixDimensionSelectorStrategy(StockSelectorStrategy):
                             weighted_scores.append(weighted_score)
                             conditions_met.append(f"共振追涨(+{resonance_chase['score']}, 权重×{self._resonance_weight})")
 
+                    # 尝试复用预计算的 purple_days，但强势起爆还需要更多计算，所以还是完整计算
                     strong_detonation = self._calculate_strong_detonation(daily_data, stock_code)
                     if strong_detonation:
                         match_details["sub_strategies"]["strong_detonation_selector"] = strong_detonation

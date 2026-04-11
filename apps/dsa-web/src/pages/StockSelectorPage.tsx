@@ -67,6 +67,8 @@ const StockCandidateCard: React.FC<{
   const changePct = candidate.extra_data?.change_pct;
   const controlDegree = candidate.extra_data?.control_degree;
   const purpleDays = candidate.extra_data?.purple_days;
+  const momentum2PrevColor = candidate.extra_data?.momentum2_prev_color;
+  const momentum2HeightChangePct = candidate.extra_data?.momentum2_height_change_pct;
 
   const getChangePctColor = (pct: number | undefined | null) => {
     if (pct === undefined || pct === null) return 'text-muted';
@@ -79,6 +81,53 @@ const StockCandidateCard: React.FC<{
     if (pct === undefined || pct === null) return '-';
     const sign = pct > 0 ? '+' : '';
     return `${sign}${pct.toFixed(2)}%`;
+  };
+
+  const renderMomentum2Display = () => {
+    if (!momentum2PrevColor) return <span>-</span>;
+    
+    const colorMap: Record<string, string> = {
+      '红': 'text-red-400',
+      '黄': 'text-yellow-400',
+      '绿': 'text-green-400',
+      '蓝': 'text-blue-400',
+    };
+    
+    if (momentum2PrevColor === '红') {
+      const heightChange = momentum2HeightChangePct !== undefined && momentum2HeightChangePct !== null 
+        ? `+${momentum2HeightChangePct.toFixed(0)}%` 
+        : '';
+      return (
+        <span>
+          <span className={colorMap['红']}>红</span>
+          <span className={colorMap['红']}>红</span>
+          {heightChange && <span className="text-red-400">{heightChange}</span>}
+        </span>
+      );
+    } else if (momentum2PrevColor === '黄') {
+      return (
+        <span>
+          <span className={colorMap['黄']}>黄</span>
+          <span className={colorMap['红']}>红</span>
+        </span>
+      );
+    } else if (momentum2PrevColor === '绿') {
+      return (
+        <span>
+          <span className={colorMap['绿']}>绿</span>
+          <span className={colorMap['红']}>红</span>
+        </span>
+      );
+    } else if (momentum2PrevColor === '蓝') {
+      return (
+        <span>
+          <span className={colorMap['蓝']}>蓝</span>
+          <span className={colorMap['红']}>红</span>
+        </span>
+      );
+    } else {
+      return <span className={colorMap['红']}>红</span>;
+    }
   };
 
   return (
@@ -108,24 +157,30 @@ const StockCandidateCard: React.FC<{
         </div>
       </div>
       
-      <div className="grid grid-cols-3 gap-2 mb-3">
-        <div className="bg-white/5 rounded-lg p-2 text-center">
+      <div className="grid grid-cols-4 gap-2 mb-3">
+        <div className="bg-white/5 rounded-lg p-1.5 text-center">
           <div className={`text-sm font-bold ${getChangePctColor(changePct)}`}>
             {formatChangePct(changePct)}
           </div>
-          <div className="text-[10px] text-muted">涨跌幅</div>
+          <div className="text-[9px] text-muted">涨跌幅</div>
         </div>
-        <div className="bg-white/5 rounded-lg p-2 text-center">
+        <div className="bg-white/5 rounded-lg p-1.5 text-center">
           <div className="text-sm font-bold text-yellow-400">
-            {controlDegree !== undefined && controlDegree !== null ? controlDegree.toFixed(2) : '-'}
+            {controlDegree !== undefined && controlDegree !== null ? controlDegree.toFixed(1) : '-'}
           </div>
-          <div className="text-[10px] text-muted">控盘度</div>
+          <div className="text-[9px] text-muted">控盘度</div>
         </div>
-        <div className="bg-white/5 rounded-lg p-2 text-center">
+        <div className="bg-white/5 rounded-lg p-1.5 text-center">
           <div className="text-sm font-bold text-purple-400">
             {purpleDays !== undefined ? purpleDays : '-'}
           </div>
-          <div className="text-[10px] text-muted">强势起爆连紫数</div>
+          <div className="text-[9px] text-muted">连紫数</div>
+        </div>
+        <div className="bg-white/5 rounded-lg p-1.5 text-center">
+          <div className="text-sm font-bold">
+            {renderMomentum2Display()}
+          </div>
+          <div className="text-[9px] text-muted">动能二号</div>
         </div>
       </div>
       

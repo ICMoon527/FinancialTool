@@ -5,7 +5,9 @@ Strategy Manager - Loads and manages stock selector strategies.
 
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
+
+import pandas as pd
 
 from stock_selector.base import (
     StockCandidate,
@@ -236,6 +238,8 @@ class StrategyManager:
         stock_code: str,
         stock_name: Optional[str] = None,
         strategy_ids: Optional[List[str]] = None,
+        daily_data: Optional[pd.DataFrame] = None,
+        precomputed_metrics: Optional[Dict[str, Any]] = None,
     ) -> List[StrategyMatch]:
         strategies_to_use = []
         if strategy_ids:
@@ -277,16 +281,30 @@ class StrategyManager:
                         # Set mock data provider for the strategy
                         strategy._data_provider = mock_data_provider
                         
-                        # Execute strategy with cached data
-                        match = strategy.select(stock_code, stock_name)
+                        # Execute strategy with cached data - try with daily_data and precomputed_metrics if available
+                        try:
+                            match = strategy.select(stock_code, stock_name, daily_data=daily_data, precomputed_metrics=precomputed_metrics)
+                        except TypeError:
+                            try:
+                                match = strategy.select(stock_code, stock_name, daily_data=daily_data)
+                            except TypeError:
+                                # If strategy doesn't accept either, call without them
+                                match = strategy.select(stock_code, stock_name)
                         results.append(match)
                         
                         # Restore original data provider
                         strategy._data_provider = original_data_provider
                         continue
                 
-                # No cached data, use original data provider
-                match = strategy.select(stock_code, stock_name)
+                # No cached data, use original data provider - try with daily_data and precomputed_metrics if available
+                try:
+                    match = strategy.select(stock_code, stock_name, daily_data=daily_data, precomputed_metrics=precomputed_metrics)
+                except TypeError:
+                    try:
+                        match = strategy.select(stock_code, stock_name, daily_data=daily_data)
+                    except TypeError:
+                        # If strategy doesn't accept either, call without them
+                        match = strategy.select(stock_code, stock_name)
                 results.append(match)
             except Exception as e:
                 logger.error("Strategy %s failed for %s: %s", strategy.id, stock_code, e)
