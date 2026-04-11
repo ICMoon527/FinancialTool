@@ -95,6 +95,87 @@ class StockSelectorService:
             except Exception:
                 pass
 
+        # 优化1: 批量获取股票名称
+        code_to_name_map = {}
+        if self._db_manager:
+            try:
+                from stock_selector.stock_pool import StockPoolItem
+                with self._db_manager.get_session() as session:
+                    from sqlalchemy import select
+                    results = session.execute(
+                        select(StockPoolItem.code, StockPoolItem.name)
+                        .where(StockPoolItem.code.in_(stock_codes))
+                    ).all()
+                    code_to_name_map = {code: name for code, name in results}
+            except Exception as e:
+                logger.debug(f"Failed to batch get stock names: {e}")
+
+        # 优化2: 批量获取日线数据
+        code_to_daily_data = {}
+        if self._db_manager:
+            try:
+                from src.storage import StockDaily
+                from datetime import date, timedelta
+                
+                end_date = date.today()
+                start_date = end_date - timedelta(days=200)
+                
+                with self._db_manager.get_session() as session:
+                    from sqlalchemy import select
+                    records = session.execute(
+                        select(StockDaily)
+                        .where(
+                            StockDaily.code.in_(stock_codes),
+                            StockDaily.date >= start_date,
+                            StockDaily.date <= end_date
+                        )
+                        .order_by(StockDaily.code, StockDaily.date)
+                    ).scalars().all()
+                    
+                    # 按股票代码分组
+                    current_code = None
+                    current_records = []
+                    for record in records:
+                        if record.code != current_code:
+                            if current_code is not None and len(current_records) >= 30:
+                                code_to_daily_data[current_code] = pd.DataFrame([
+                                    {
+                                        'date': r.date,
+                                        'open': r.open,
+                                        'high': r.high,
+                                        'low': r.low,
+                                        'close': r.close,
+                                        'volume': r.volume,
+                                        'amount': r.amount,
+                                        'pct_chg': r.pct_chg
+                                    }
+                                    for r in current_records
+                                ])
+                            current_code = record.code
+                            current_records = []
+                        current_records.append(record)
+                    
+                    # 处理最后一组
+                    if current_code is not None and len(current_records) >= 30:
+                        code_to_daily_data[current_code] = pd.DataFrame([
+                            {
+                                'date': r.date,
+                                'open': r.open,
+                                'high': r.high,
+                                'low': r.low,
+                                'close': r.close,
+                                'volume': r.volume,
+                                'amount': r.amount,
+                                'pct_chg': r.pct_chg
+                            }
+                            for r in current_records
+                        ])
+            except Exception as e:
+                logger.debug(f"Failed to batch get daily data: {e}")
+
+        # 优化3: 缓存大盘指数数据
+        market_data_cache = {}
+
         candidates: List[StockCandidate] = []
 
         # 根据配置决定使用多线程还是单线程模式
@@ -103,23 +184,25 @@ class StockSelectorService:
 
         def process_stock(code):
             try:
-                return self._screen_single_stock(code, strategy_ids)
+                return self._screen_single_stock_optimized(
+                    code, 
+                    strategy_ids, 
+                    code_to_name_map.get(code, code),
+                    code_to_daily_data.get(code),
+                    market_data_cache
+                )
             except Exception as e:
                 logger.error("Failed to screen stock %s: %s", code, e)
                 return None
 
         if enable_multithreading:
             # 多线程模式：使用 ThreadPoolExecutor 并发处理
-            # 线程数从配置读取，并与股票数量取最小值，避免创建过多线程
             max_workers = min(self.config.multithreading_workers, len(stock_codes))
             logger.info("使用多线程模式筛选股票，工作线程数: %d", max_workers)
 
-            # 使用线程池进行并发处理
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-                # 提交所有股票处理任务
                 futures = {executor.submit(process_stock, code): code for code in stock_codes}
                 
-                # 带进度条处理完成的任务
                 for future in tqdm(
                     concurrent.futures.as_completed(futures),
                     total=len(futures),
@@ -128,9 +211,7 @@ class StockSelectorService:
                 ):
                     results.append(future.result())
         else:
-            # 单线程模式：顺序处理，不使用线程池
             logger.info("使用单线程模式筛选股票")
-            # 带进度条顺序处理每只股票
             for code in tqdm(
                 stock_codes,
                 desc="Screening stocks",
@@ -139,7 +220,6 @@ class StockSelectorService:
                 result = process_stock(code)
                 results.append(result)
 
-        # Collect valid candidates
         for result in results:
             if result:
                 candidates.append(result)
@@ -450,6 +530,140 @@ class StockSelectorService:
         candidate.extra_data["purple_days"] = final_purple_days
 
         # 从六维策略匹配信息中提取动量二号信息
+        for match in matches:
+            if match.strategy_id == "six_dimension_selector" and match.match_details:
+                sub_strategies = match.match_details.get("sub_strategies", {})
+                momentum2 = sub_strategies.get("momentum_2_red_pillar_python")
+                if momentum2:
+                    candidate.extra_data["momentum2_score_reason"] = momentum2.get("score_reason")
+                    candidate.extra_data["momentum2_today_height"] = momentum2.get("today_height")
+                    candidate.extra_data["momentum2_prev_height"] = momentum2.get("prev_height")
+                    candidate.extra_data["momentum2_red_pillar"] = momentum2.get("red_pillar")
+                    candidate.extra_data["momentum2_height_change_pct"] = momentum2.get("height_change_pct")
+                    candidate.extra_data["momentum2_prev_color"] = momentum2.get("prev_color")
+            candidate.add_strategy_match(match)
+
+        has_matched_strategy = any(match.matched for match in matches)
+        if has_matched_strategy:
+            return candidate
+        else:
+            return None
+
+    def _screen_single_stock_optimized(
+        self,
+        stock_code: str,
+        strategy_ids: Optional[List[str]] = None,
+        stock_name: str = None,
+        daily_data: Optional[pd.DataFrame] = None,
+        market_data_cache: Optional[Dict[str, pd.DataFrame]] = None,
+    ) -> Optional[StockCandidate]:
+        current_price = 0.0
+        change_pct = None
+        control_degree = None
+        purple_days = None
+        market_data = None
+
+        if stock_name is None:
+            stock_name = stock_code
+
+        # 如果有预加载的日线数据，直接使用
+        if daily_data is not None and isinstance(daily_data, pd.DataFrame) and not daily_data.empty:
+            if 'pct_chg' in daily_data.columns:
+                change_pct = float(daily_data['pct_chg'].iloc[-1]) if pd.notna(daily_data['pct_chg'].iloc[-1]) else None
+            
+            control_degree = self._calculate_control_degree(daily_data)
+            
+            # 从缓存获取大盘数据
+            if market_data_cache is not None:
+                market_index_code = self._get_market_index_code(stock_code)
+                if market_index_code not in market_data_cache:
+                    if self.strategy_manager._data_provider:
+                        try:
+                            market_data_cache[market_index_code] = self.strategy_manager._data_provider.get_index_daily_data(market_index_code)
+                        except Exception as e:
+                            logger.debug(f"Failed to get market data for {market_index_code}: {e}")
+                            market_data_cache[market_index_code] = None
+                market_data = market_data_cache.get(market_index_code)
+            
+            purple_days = self._calculate_purple_days(daily_data, market_data)
+        else:
+            # 如果没有预加载的数据，回退到原来的方法
+            try:
+                return self._screen_single_stock(stock_code, strategy_ids)
+            except Exception as e:
+                logger.error("Failed to screen stock %s with fallback: %s", stock_code, e)
+                return None
+
+        # 尝试从实时行情获取涨跌幅（作为备选）
+        if change_pct is None and self.strategy_manager._data_provider:
+            try:
+                quote = self.strategy_manager._data_provider.get_realtime_quote(stock_code)
+                if quote:
+                    change_pct = getattr(quote, "pct_chg", None)
+                    if change_pct is not None:
+                        change_pct = float(change_pct)
+            except Exception as e:
+                logger.debug(f"Failed to get realtime quote pct_chg for {stock_code}: {e}")
+
+        # 从数据库缓存获取
+        if self._db_manager:
+            from datetime import date
+            today = date.today()
+            if self._db_manager.has_today_data(stock_code, today):
+                context = self._db_manager.get_analysis_context(stock_code, today)
+                if context:
+                    current_price = context.get('today', {}).get('close', 0.0)
+                    stock_name = context.get('stock_name', stock_name)
+
+        precomputed_metrics = {
+            'control_degree': control_degree,
+            'purple_days': purple_days,
+        }
+        
+        matches = self.strategy_manager.execute_strategies(
+            stock_code=stock_code,
+            stock_name=stock_name,
+            strategy_ids=strategy_ids,
+            daily_data=daily_data,
+            precomputed_metrics=precomputed_metrics,
+        )
+
+        if not matches:
+            return None
+
+        if current_price == 0.0:
+            try:
+                if self.strategy_manager._data_provider:
+                    quote = self.strategy_manager._data_provider.get_realtime_quote(stock_code)
+                    if quote:
+                        current_price = getattr(quote, "price", 0.0)
+                        if getattr(quote, "name", None):
+                            stock_name = quote.name
+            except Exception as e:
+                logger.debug("Failed to get realtime quote for %s: %s", stock_code, e)
+
+        candidate = StockCandidate(
+            code=stock_code,
+            name=stock_name,
+            current_price=current_price,
+        )
+
+        candidate.extra_data["change_pct"] = change_pct
+        candidate.extra_data["control_degree"] = control_degree
+        
+        final_purple_days = purple_days
+        for match in matches:
+            if match.strategy_id == "six_dimension_selector" and match.match_details:
+                sub_strategies = match.match_details.get("sub_strategies", {})
+                strong_detonation = sub_strategies.get("strong_detonation_selector")
+                if strong_detonation:
+                    consecutive_count = strong_detonation.get("consecutive_count")
+                    if consecutive_count is not None:
+                        final_purple_days = consecutive_count
+                        break
+        
+        candidate.extra_data["purple_days"] = final_purple_days
+
         for match in matches:
             if match.strategy_id == "six_dimension_selector" and match.match_details:
                 sub_strategies = match.match_details.get("sub_strategies", {})
