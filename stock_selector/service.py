@@ -332,6 +332,8 @@ class StockSelectorService:
                         
                         # 计算控盘度
                         control_degree = self._calculate_control_degree(daily_data)
+                        # 注意：从数据库读取数据时不计算连紫数，让后面统一的逻辑处理
+                        # 因为 strategy_manager._data_provider 此时可能是 None
             except Exception as e:
                 logger.debug(f"Failed to get data from database for {stock_code}: {e}")
 
@@ -352,21 +354,24 @@ class StockSelectorService:
             except Exception as e:
                 logger.debug(f"Failed to get daily data from provider for {stock_code}: {e}")
 
-        # 如果有日线数据，计算控盘度和连紫数
+        # 如果有日线数据但还没有计算控盘度和连紫数，才计算
         if daily_data is not None and isinstance(daily_data, pd.DataFrame) and not daily_data.empty:
             if control_degree is None:
                 control_degree = self._calculate_control_degree(daily_data)
             
-            # 获取大盘数据用于计算连紫数
-            if self.strategy_manager._data_provider:
-                try:
-                    market_index_code = self._get_market_index_code(stock_code)
-                    market_data = self.strategy_manager._data_provider.get_index_daily_data(market_index_code)
-                except Exception as e:
-                    logger.debug(f"Failed to get market data: {e}")
-            
-            # 计算连紫数
-            purple_days = self._calculate_purple_days(daily_data, market_data)
+            # 如果还没有获取大盘数据或计算连紫数，才计算
+            if market_data is None or purple_days is None:
+                # 获取大盘数据用于计算连紫数
+                if self.strategy_manager._data_provider and market_data is None:
+                    try:
+                        market_index_code = self._get_market_index_code(stock_code)
+                        market_data = self.strategy_manager._data_provider.get_index_daily_data(market_index_code)
+                    except Exception as e:
+                        logger.debug(f"Failed to get market data: {e}")
+                
+                # 计算连紫数
+                if purple_days is None:
+                    purple_days = self._calculate_purple_days(daily_data, market_data)
 
         # 尝试从实时行情获取涨跌幅（作为备选）
         if change_pct is None and self.strategy_manager._data_provider:
@@ -429,7 +434,20 @@ class StockSelectorService:
         # 将计算得到的指标存储到 extra_data 字典中
         candidate.extra_data["change_pct"] = change_pct
         candidate.extra_data["control_degree"] = control_degree
-        candidate.extra_data["purple_days"] = purple_days
+        
+        # 优先从六维策略的强势起爆匹配结果中获取连紫数
+        final_purple_days = purple_days
+        for match in matches:
+            if match.strategy_id == "six_dimension_selector" and match.match_details:
+                sub_strategies = match.match_details.get("sub_strategies", {})
+                strong_detonation = sub_strategies.get("strong_detonation_selector")
+                if strong_detonation:
+                    consecutive_count = strong_detonation.get("consecutive_count")
+                    if consecutive_count is not None:
+                        final_purple_days = consecutive_count
+                        break
+        
+        candidate.extra_data["purple_days"] = final_purple_days
 
         # 从六维策略匹配信息中提取动量二号信息
         for match in matches:
