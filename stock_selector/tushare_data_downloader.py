@@ -704,7 +704,7 @@ class TushareDataDownloader:
                 end_idx = min((batch_idx + 1) * tushare_batch_size, len(stock_codes))
                 batch_stocks = stock_codes[start_idx:end_idx]
                 
-                logger.info(f"处理第 {batch_idx + 1}/{total_batches} 批：{len(batch_stocks)} 只股票")
+                logger.debug(f"处理第 {batch_idx + 1}/{total_batches} 批：{len(batch_stocks)} 只股票")
                 
                 # 策略 1: 优先使用 Tushare 批量获取（稳定可靠）
                 pbar.set_description(f"总体进度 | 数据源: Tushare")
