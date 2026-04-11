@@ -785,7 +785,7 @@ class DatabaseManager:
             
             if is_non_trading_day:
                 # 非交易日，只要有最近的数据就返回 True
-                logger.info(f"{code} 在非交易日 {target_date}，使用最近数据 {latest_data.date}")
+                logger.debug(f"{code} 在非交易日 {target_date}，使用最近数据 {latest_data.date}")
                 return True
         
         return False

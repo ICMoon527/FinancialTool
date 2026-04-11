@@ -8,6 +8,7 @@ interface CardProps {
   variant?: 'default' | 'bordered' | 'gradient';
   hoverable?: boolean;
   padding?: 'none' | 'sm' | 'md' | 'lg';
+  onClick?: () => void;
 }
 
 /**
@@ -22,6 +23,7 @@ export const Card: React.FC<CardProps> = ({
   variant = 'default',
   hoverable = false,
   padding = 'md',
+  onClick,
 }) => {
   const paddingStyles = {
     none: '',
@@ -44,7 +46,7 @@ export const Card: React.FC<CardProps> = ({
 
   if (variant === 'gradient') {
     return (
-      <div className={`${variantStyles.gradient} ${className}`}>
+      <div className={`${variantStyles.gradient} ${className}`} onClick={onClick}>
         <div className={`gradient-border-card-inner ${paddingStyles[padding]}`}>
           {(title || subtitle) && (
             <div className="mb-3">
@@ -73,6 +75,7 @@ export const Card: React.FC<CardProps> = ({
         ${paddingStyles[padding]}
         ${className}
       `}
+      onClick={onClick}
     >
       {(title || subtitle) && (
         <div className="mb-3">

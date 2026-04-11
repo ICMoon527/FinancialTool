@@ -1,7 +1,7 @@
 import type React from 'react';
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { stockSelectorApi } from '../api/stockSelector';
-import { Card, Badge } from '../components/common';
+import { Card, Badge, KlineChart } from '../components/common';
 import type {
   StrategyInfo,
   StockCandidateInfo,
@@ -63,7 +63,9 @@ const StrategyItem: React.FC<{
 const StockCandidateCard: React.FC<{
   candidate: StockCandidateInfo;
   rank: number;
-}> = ({ candidate, rank }) => {
+  isSelected: boolean;
+  onClick: () => void;
+}> = ({ candidate, rank, isSelected, onClick }) => {
   const changePct = candidate.extra_data?.change_pct;
   const controlDegree = candidate.extra_data?.control_degree;
   const purpleDays = candidate.extra_data?.purple_days;
@@ -131,7 +133,12 @@ const StockCandidateCard: React.FC<{
   };
 
   return (
-    <Card variant="gradient" padding="md" className="animate-fade-in">
+    <Card 
+      variant="gradient" 
+      padding="md" 
+      className={`animate-fade-in cursor-pointer transition-all duration-200 ${isSelected ? 'ring-2 ring-cyan/50 shadow-[0_0_20px_rgba(0,212,255,0.2)]' : 'hover:ring-1 hover:ring-cyan/30'}`}
+      onClick={onClick}
+    >
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-3">
           <div className="w-8 h-8 rounded-full bg-cyan/20 flex items-center justify-center text-cyan font-bold text-sm">
@@ -211,6 +218,7 @@ const StockSelectorPage: React.FC = () => {
   const [isScreening, setIsScreening] = useState(false);
   const [screeningError, setScreeningError] = useState<string | null>(null);
   const [screeningStage, setScreeningStage] = useState('');
+  const [selectedStock, setSelectedStock] = useState<StockCandidateInfo | null>(null);
 
   const [topN, setTopN] = useState<number | null>(null);
   const [stockCodes, setStockCodes] = useState('');
@@ -334,6 +342,12 @@ const StockSelectorPage: React.FC = () => {
       document.removeEventListener('mousedown', handleClickOutside);
     };
   }, []);
+
+  useEffect(() => {
+    if (candidates.length > 0 && (!selectedStock || !candidates.find(c => c.stock_code === selectedStock.stock_code))) {
+      setSelectedStock(candidates[0]);
+    }
+  }, [candidates]);
 
   // 移除固定高度设置，保持自然的 flexbox 布局
   // 右侧 section 已经有 overflow-y-auto，配合 flex-1 会自动处理滚动
@@ -547,9 +561,9 @@ const StockSelectorPage: React.FC = () => {
           </div>
         </div>
 
-        <section className="flex-1 overflow-y-auto pr-2 h-[1400px]">
+        <section className="flex-1 overflow-hidden flex gap-3 h-[1400px]">
           {isScreening ? (
-            <div className="flex flex-col items-center justify-center h-64">
+            <div className="flex-1 flex flex-col items-center justify-center">
               <div className="w-full max-w-md">
                 <div className="flex items-center justify-center gap-3 mb-6">
                   <div className="w-10 h-10 border-3 border-cyan/20 border-t-cyan rounded-full animate-spin" />
@@ -571,7 +585,7 @@ const StockSelectorPage: React.FC = () => {
               </div>
             </div>
           ) : candidates.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-64 text-center">
+            <div className="flex-1 flex flex-col items-center justify-center text-center">
               <div className="w-12 h-12 mb-3 rounded-xl bg-elevated flex items-center justify-center">
                 <svg className="w-6 h-6 text-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
@@ -583,15 +597,32 @@ const StockSelectorPage: React.FC = () => {
               </p>
             </div>
           ) : (
-            <div className="grid gap-3 max-w-4xl">
-              {candidates.map((candidate, index) => (
-                <StockCandidateCard
-                  key={candidate.stock_code}
-                  candidate={candidate}
-                  rank={index + 1}
-                />
-              ))}
-            </div>
+            <>
+              <div className="w-1/2 overflow-y-auto pr-2">
+                <div className="grid gap-3">
+                  {candidates.map((candidate, index) => (
+                    <StockCandidateCard
+                      key={candidate.stock_code}
+                      candidate={candidate}
+                      rank={index + 1}
+                      isSelected={selectedStock?.stock_code === candidate.stock_code}
+                      onClick={() => setSelectedStock(candidate)}
+                    />
+                  ))}
+                </div>
+              </div>
+              
+              <div className="w-1/2 overflow-y-auto pl-2">
+                {selectedStock && (
+                  <div className="terminal-card rounded-2xl p-4">
+                    <KlineChart 
+                      stockCode={selectedStock.stock_code} 
+                      stockName={selectedStock.stock_name} 
+                    />
+                  </div>
+                )}
+              </div>
+            </>
           )}
         </section>
       </main>
