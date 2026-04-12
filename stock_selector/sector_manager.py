@@ -108,7 +108,7 @@ class SectorManager:
                         self._sector_cache = {'top': top, 'bottom': bottom}
                         self._sector_cache_timestamp = time.time()
                         
-                        logger.info(f"[板块] 从数据库获取成功，领涨: {[s['name'] for s in top]}, 领跌: {[s['name'] for s in bottom]}")
+                        logger.debug(f"[板块] 从数据库获取成功，领涨: {[s['name'] for s in top]}, 领跌: {[s['name'] for s in bottom]}")
                         return top, bottom
             except Exception as e:
                 logger.debug(f"[板块] 从数据库获取板块数据失败: {e}，将尝试从数据源获取")

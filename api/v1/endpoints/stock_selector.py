@@ -372,6 +372,9 @@ def _update_sector_data(service: StockSelectorService) -> None:
     logger.info("开始更新板块数据...")
     
     try:
+        from datetime import date, timedelta
+        from stock_selector.trading_calendar import is_trading_day, get_trading_calendar
+        
         # 获取 sector manager
         sector_manager = None
         if service.strategy_manager:
@@ -390,6 +393,31 @@ def _update_sector_data(service: StockSelectorService) -> None:
             logger.warning("Data manager 不可用，跳过板块数据更新")
             return
         
+        # 确定应该保存到哪个交易日
+        current_date = date.today()
+        target_date = current_date
+        
+        # 检查是否为交易日
+        if not is_trading_day(current_date):
+            logger.info(f"{current_date} 不是交易日，寻找最近的交易日...")
+            
+            # 向前查找最近的交易日
+            trading_calendar = get_trading_calendar()
+            all_trading_days = trading_calendar.get_all_trading_days()
+            
+            if all_trading_days:
+                # 筛选出 <= 当前日期的交易日
+                valid_days = [d for d in all_trading_days if d <= current_date]
+                if valid_days:
+                    target_date = valid_days[-1]
+                    logger.info(f"使用最近的交易日: {target_date}")
+                else:
+                    logger.warning("找不到合适的交易日，跳过板块数据更新")
+                    return
+            else:
+                logger.warning("交易日历为空，跳过板块数据更新")
+                return
+        
         # 获取所有板块数据
         all_sectors, _ = data_manager.get_sector_rankings(n=50, return_all=True)
         
@@ -403,9 +431,6 @@ def _update_sector_data(service: StockSelectorService) -> None:
         from src.storage import DatabaseManager
         db_manager = DatabaseManager.get_instance()
         
-        from datetime import date
-        current_date = date.today()
-        
         # 保存所有板块数据
         saved_count = 0
         for sector in all_sectors:
@@ -416,7 +441,7 @@ def _update_sector_data(service: StockSelectorService) -> None:
             if name:
                 if db_manager.save_sector_daily(
                     name=name,
-                    date=current_date,
+                    date=target_date,
                     change_pct=change_pct,
                     stock_count=stock_count,
                     limit_up_count=limit_up_count,
@@ -425,7 +450,7 @@ def _update_sector_data(service: StockSelectorService) -> None:
                     saved_count += 1
         
         if saved_count > 0:
-            logger.info(f"成功保存 {saved_count} 个板块数据，日期: {current_date}")
+            logger.info(f"成功保存 {saved_count} 个板块数据，日期: {target_date}")
         else:
             logger.warning("保存板块数据失败")
             
