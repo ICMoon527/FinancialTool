@@ -6,8 +6,10 @@
 import logging
 import time
 from datetime import date
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass, field
+from functools import lru_cache
+from collections import OrderedDict
 
 from src.storage import DatabaseManager
 
@@ -55,6 +57,22 @@ class SectorManager:
         self._heat_cache: Optional[Tuple[Dict[str, float], List[str]]] = None
         self._heat_cache_timestamp: float = 0
         self._heat_cache_ttl: int = 1800  # 30分钟
+        
+        # 缓存统计信息
+        self._cache_stats = {
+            'hits': 0,
+            'misses': 0,
+            'sector_hits': 0,
+            'sector_misses': 0,
+            'stock_sector_hits': 0,
+            'stock_sector_misses': 0,
+            'heat_hits': 0,
+            'heat_misses': 0
+        }
+        
+        # LRU 缓存：股票代码 -> 板块列表
+        self._lru_stock_sector_cache = OrderedDict()
+        self._LRU_CACHE_MAX_SIZE = 1000  # 最多缓存 1000 只股票的板块信息
 
     def _is_cache_valid(self, timestamp: float) -> bool:
         """检查缓存是否有效"""
@@ -73,10 +91,15 @@ class SectorManager:
         """
         # 检查缓存
         if not force_refresh and self._is_cache_valid(self._sector_cache_timestamp):
+            self._cache_stats['hits'] += 1
+            self._cache_stats['sector_hits'] += 1
             logger.debug("[板块] 使用缓存的板块数据")
             top = self._sector_cache.get('top', [])[:n]
             bottom = self._sector_cache.get('bottom', [])[:n]
             return top, bottom
+        
+        self._cache_stats['misses'] += 1
+        self._cache_stats['sector_misses'] += 1
 
         # 优先从数据库获取最新的板块数据（如果不强制刷新）
         if not force_refresh and self._db_manager:
@@ -87,10 +110,11 @@ class SectorManager:
                 # 从数据库获取今天的所有板块数据
                 all_sectors = self._db_manager.get_all_sectors()
                 if all_sectors:
-                    # 从数据库获取每个板块的最新数据
+                    # 使用批量查询获取所有板块数据（修复 N+1 查询问题）
+                    sector_daily_map = self._db_manager.get_sector_daily_batch(all_sectors, current_date)
                     sector_list = []
                     for sector_name in all_sectors:
-                        sector_daily = self._db_manager.get_sector_daily(sector_name, current_date)
+                        sector_daily = sector_daily_map.get(sector_name)
                         if sector_daily:
                             sector_list.append({
                                 'name': sector_daily.name,
@@ -132,7 +156,7 @@ class SectorManager:
 
     def get_stock_sectors(self, stock_code: str) -> List[str]:
         """
-        获取股票所属板块
+        获取股票所属板块（使用 LRU 缓存优化）
         
         Args:
             stock_code: 股票代码
@@ -140,10 +164,24 @@ class SectorManager:
         Returns:
             板块名称列表
         """
-        # 检查内存缓存
+        # 首先检查 LRU 缓存
+        if stock_code in self._lru_stock_sector_cache:
+            self._cache_stats['hits'] += 1
+            self._cache_stats['stock_sector_hits'] += 1
+            logger.debug(f"[板块] 使用 LRU 缓存的股票 {stock_code} 板块数据")
+            # 将访问的项移到末尾（最近使用）
+            self._lru_stock_sector_cache.move_to_end(stock_code)
+            return self._lru_stock_sector_cache[stock_code]
+        
+        self._cache_stats['misses'] += 1
+        self._cache_stats['stock_sector_misses'] += 1
+
+        # 检查内存缓存（保留原有的缓存机制）
         if stock_code in self._stock_sector_map and self._is_cache_valid(self._stock_sector_map_timestamp):
             logger.debug(f"[板块] 使用内存缓存的股票 {stock_code} 板块数据")
-            return self._stock_sector_map[stock_code]
+            sectors = self._stock_sector_map[stock_code]
+            self._update_lru_cache(stock_code, sectors)
+            return sectors
 
         # 检查是否需要强制更新
         force_update = False
@@ -159,6 +197,7 @@ class SectorManager:
                     # 更新内存缓存
                     self._stock_sector_map[stock_code] = db_sectors
                     self._stock_sector_map_timestamp = time.time()
+                    self._update_lru_cache(stock_code, db_sectors)
                     return db_sectors
             except Exception as e:
                 logger.error(f"[板块] 从数据库获取股票 {stock_code} 板块数据失败: {e}")
@@ -173,6 +212,7 @@ class SectorManager:
                     # 更新内存缓存
                     self._stock_sector_map[stock_code] = sectors
                     self._stock_sector_map_timestamp = time.time()
+                    self._update_lru_cache(stock_code, sectors)
                     
                     # 保存到数据库
                     try:
@@ -187,6 +227,20 @@ class SectorManager:
                 logger.error(f"[板块] 获取股票 {stock_code} 所属板块失败: {e}")
         
         return []
+    
+    def _update_lru_cache(self, stock_code: str, sectors: List[str]) -> None:
+        """
+        更新 LRU 缓存
+        
+        Args:
+            stock_code: 股票代码
+            sectors: 板块列表
+        """
+        # 如果缓存已满，删除最旧的项
+        if len(self._lru_stock_sector_cache) >= self._LRU_CACHE_MAX_SIZE:
+            self._lru_stock_sector_cache.popitem(last=False)
+        
+        self._lru_stock_sector_cache[stock_code] = sectors
 
     def is_hot_sector(self, sector_name: str, threshold_pct: float = 2.0) -> bool:
         """
@@ -314,8 +368,10 @@ class SectorManager:
         """
         momentum_score = 0.0
         
-        current_change = self.get_sector_change_pct(name)
-        avg_change = self.get_sector_avg_change_pct(name, current_date, 15)
+        # 一次性获取所有需要的板块数据，避免重复调用
+        sector_data_map = self._get_all_sector_data(current_date)
+        current_change = sector_data_map.get('change_pct', {}).get(name)
+        avg_change = sector_data_map.get('avg_change', {}).get(name)
         
         if current_change is not None and avg_change is not None:
             current_score = min(max(current_change * 10, 0), 100)
@@ -346,16 +402,24 @@ class SectorManager:
         """
         sentiment_score = 0.0
         
-        is_hot = self.is_hot_sector(name, threshold_pct=2.0)
-        hot_score = 100.0 if is_hot else 0.0
+        # 使用一次性获取的板块数据，避免重复调用
+        sector_data_map = self._get_all_sector_data(date.today())
+        sector_list = sector_data_map.get('sector_list', [])
         
+        is_hot = False
+        hot_score = 0.0
         has_limit_up_data = False
         ratio_score = 0.0
         found_sector = False
-        top, _ = self.get_sector_rankings(n=50)
-        for sector in top:
+        
+        # 在已获取的板块列表中查找
+        for sector in sector_list:
             if sector.get('name') == name:
                 found_sector = True
+                change_pct = sector.get('change_pct', 0.0)
+                is_hot = change_pct >= 2.0
+                hot_score = 100.0 if is_hot else 0.0
+                
                 stock_count = sector.get('stock_count', 0)
                 limit_up_count = sector.get('limit_up_count', 0)
                 if stock_count > 0:
@@ -372,6 +436,64 @@ class SectorManager:
             sentiment_score = hot_score * 1.0
         
         return min(max(sentiment_score, 0.0), 100.0)
+    
+    def _get_all_sector_data(self, current_date: date) -> Dict[str, Any]:
+        """
+        一次性获取所有需要的板块数据，避免重复计算和查询
+        
+        Args:
+            current_date: 当前日期
+            
+        Returns:
+            包含所有板块数据的字典
+        """
+        # 检查缓存
+        cache_key = f"sector_data_{current_date.isoformat()}"
+        if hasattr(self, '_sector_data_cache') and cache_key in self._sector_data_cache:
+            cache_time, data = self._sector_data_cache[cache_key]
+            if time.time() - cache_time < 300:  # 缓存 5 分钟
+                return data
+        
+        # 获取板块排行榜
+        top, _ = self.get_sector_rankings(n=100)
+        sector_list = top
+        
+        # 获取所有板块名称
+        sector_names = [s.get('name') for s in sector_list if s.get('name')]
+        
+        # 批量获取平均涨跌幅
+        avg_change_map = {}
+        if sector_names and self._db_manager:
+            avg_change_map = self._db_manager.get_sector_avg_change_pct_batch(
+                sector_names, current_date, days=15
+            )
+        
+        # 构建当前涨跌幅映射
+        change_pct_map = {}
+        for sector in sector_list:
+            name = sector.get('name')
+            if name:
+                change_pct_map[name] = sector.get('change_pct')
+        
+        # 构建并缓存结果
+        result = {
+            'sector_list': sector_list,
+            'change_pct': change_pct_map,
+            'avg_change': avg_change_map
+        }
+        
+        if not hasattr(self, '_sector_data_cache'):
+            self._sector_data_cache = {}
+        
+        self._sector_data_cache[cache_key] = (time.time(), result)
+        
+        # 限制缓存大小，只保留最近 3 天的数据
+        if len(self._sector_data_cache) > 3:
+            oldest_key = min(self._sector_data_cache.keys(), 
+                           key=lambda k: self._sector_data_cache[k][0])
+            del self._sector_data_cache[oldest_key]
+        
+        return result
 
     def calculate_sector_score(self, name: str, current_date: date) -> float:
         """
@@ -438,8 +560,58 @@ class SectorManager:
         self._sector_cache_timestamp = 0
         self._stock_sector_map = {}
         self._stock_sector_map_timestamp = 0
+        self._lru_stock_sector_cache.clear()
         self.clear_heat_cache()
+        if hasattr(self, '_sector_data_cache'):
+            self._sector_data_cache.clear()
+        self._reset_cache_stats()
         logger.info("[板块] 缓存已清除")
+    
+    def _reset_cache_stats(self) -> None:
+        """重置缓存统计信息"""
+        self._cache_stats = {
+            'hits': 0,
+            'misses': 0,
+            'sector_hits': 0,
+            'sector_misses': 0,
+            'stock_sector_hits': 0,
+            'stock_sector_misses': 0,
+            'heat_hits': 0,
+            'heat_misses': 0
+        }
+    
+    def get_cache_stats(self) -> Dict[str, Any]:
+        """
+        获取缓存统计信息
+        
+        Returns:
+            包含缓存统计信息的字典
+        """
+        total = self._cache_stats['hits'] + self._cache_stats['misses']
+        hit_rate = (self._cache_stats['hits'] / total * 100) if total > 0 else 0
+        
+        stats = {
+            'total_requests': total,
+            'hits': self._cache_stats['hits'],
+            'misses': self._cache_stats['misses'],
+            'hit_rate_percent': round(hit_rate, 2),
+            'lru_cache_size': len(self._lru_stock_sector_cache),
+            'lru_cache_max_size': self._LRU_CACHE_MAX_SIZE,
+            'sector_cache': {
+                'hits': self._cache_stats['sector_hits'],
+                'misses': self._cache_stats['sector_misses']
+            },
+            'stock_sector_cache': {
+                'hits': self._cache_stats['stock_sector_hits'],
+                'misses': self._cache_stats['stock_sector_misses']
+            },
+            'heat_cache': {
+                'hits': self._cache_stats['heat_hits'],
+                'misses': self._cache_stats['heat_misses']
+            }
+        }
+        
+        return stats
 
     def get_all_sectors_heat(self, end_date: Optional[date] = None) -> Tuple[Dict[str, float], List[str]]:
         """
@@ -455,8 +627,13 @@ class SectorManager:
             end_date = date.today()
         
         if time.time() - self._heat_cache_timestamp < self._heat_cache_ttl and self._heat_cache is not None:
+            self._cache_stats['hits'] += 1
+            self._cache_stats['heat_hits'] += 1
             logger.debug("[板块] 使用缓存的热度数据")
             return self._heat_cache
+        
+        self._cache_stats['misses'] += 1
+        self._cache_stats['heat_misses'] += 1
         
         if not self._db_manager:
             logger.error("[板块] 数据库管理器未初始化")
@@ -470,11 +647,11 @@ class SectorManager:
                 logger.warning("[板块] 没有找到任何板块数据")
                 return {}, []
             
-            heat_dict = {}
-            for sector_name in all_sectors:
-                avg_change = self.get_sector_avg_change_pct(sector_name, end_date, days=15)
-                if avg_change is not None:
-                    heat_dict[sector_name] = avg_change
+            # 使用批量聚合查询获取所有板块平均涨跌幅（修复 N+1 查询问题）
+            heat_dict = self._db_manager.get_sector_avg_change_pct_batch(all_sectors, end_date, days=15)
+            
+            # 过滤掉 None 值
+            heat_dict = {k: v for k, v in heat_dict.items() if v is not None}
             
             sorted_sectors = sorted(heat_dict.items(), key=lambda x: x[1], reverse=True)
             heat_dict_sorted = {k: v for k, v in sorted_sectors}

@@ -28,7 +28,7 @@ from tenacity import (
 
 from data_provider import DataFetcherManager, DataFetchError, RateLimitError
 from src.storage import DatabaseManager, StockDaily
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, or_
 
 from .data_update_tracker import DataUpdateTracker, get_update_tracker
 
@@ -245,7 +245,7 @@ class BatchDataUpdater:
     
     def save_batch_data(self, df: pd.DataFrame, stock_code: Optional[str] = None):
         """
-        保存批量数据到数据库
+        保存批量数据到数据库（优化版：批量查询 + 批量插入）
         
         Args:
             df: 数据DataFrame（可能包含多只股票）
@@ -255,9 +255,11 @@ class BatchDataUpdater:
             return
         
         saved_count = 0
+        records_to_process = []
         
         try:
             with self.db_manager.get_session() as session:
+                # 第一步：预处理所有数据行
                 for _, row in df.iterrows():
                     # 确定股票代码
                     code = stock_code
@@ -286,17 +288,46 @@ class BatchDataUpdater:
                     if not record_date:
                         continue
                     
-                    # 检查记录是否已存在
-                    existing = session.execute(
-                        select(StockDaily)
-                        .where(and_(
-                            StockDaily.code == code,
-                            StockDaily.date == record_date
-                        ))
-                    ).scalar_one_or_none()
+                    records_to_process.append({
+                        'code': code,
+                        'date': record_date,
+                        'row': row
+                    })
+                
+                if not records_to_process:
+                    return
+                
+                # 第二步：批量查询已存在的记录
+                code_date_pairs = [(rec['code'], rec['date']) for rec in records_to_process]
+                existing_records = {}
+                
+                if code_date_pairs:
+                    # 构建批量查询条件
+                    or_conditions = []
+                    for code, dt in code_date_pairs:
+                        or_conditions.append(and_(StockDaily.code == code, StockDaily.date == dt))
                     
-                    if existing:
+                    if or_conditions:
+                        stmt = select(StockDaily).where(or_(*or_conditions))
+                        results = session.execute(stmt).scalars().all()
+                        
+                        # 构建查找字典
+                        for rec in results:
+                            key = (rec.code, rec.date)
+                            existing_records[key] = rec
+                
+                # 第三步：分别处理更新和插入
+                new_records = []
+                
+                for rec_info in records_to_process:
+                    code = rec_info['code']
+                    record_date = rec_info['date']
+                    row = rec_info['row']
+                    key = (code, record_date)
+                    
+                    if key in existing_records:
                         # 更新现有记录
+                        existing = existing_records[key]
                         if 'open' in row:
                             existing.open = row.get('open')
                         if 'high' in row:
@@ -314,7 +345,7 @@ class BatchDataUpdater:
                         if 'pct_chg' in row:
                             existing.pct_chg = row.get('pct_chg')
                     else:
-                        # 创建新记录
+                        # 创建新记录（批量插入）
                         new_record = StockDaily(
                             code=code,
                             date=record_date,
@@ -326,14 +357,18 @@ class BatchDataUpdater:
                             amount=row.get('amount', 0) * 1000,
                             pct_chg=row.get('pct_chg')
                         )
-                        session.add(new_record)
+                        new_records.append(new_record)
                     
                     saved_count += 1
                 
+                # 批量插入新记录
+                if new_records:
+                    session.add_all(new_records)
+                
                 session.commit()
-                logger.debug(f"Saved {saved_count} records from batch")
+                logger.debug(f"Saved {saved_count} records from batch (optimized)")
         except Exception as e:
-            logger.error(f"Error saving batch data: {e}")
+            logger.error(f"Error saving batch data: {e}", exc_info=True)
             if 'session' in locals():
                 session.rollback()
     

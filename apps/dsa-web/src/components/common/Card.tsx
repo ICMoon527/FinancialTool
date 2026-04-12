@@ -5,9 +5,9 @@ interface CardProps {
   subtitle?: string;
   children: React.ReactNode;
   className?: string;
-  variant?: 'default' | 'bordered' | 'gradient';
+  variant?: 'default' | 'bordered' | 'gradient' | 'glass';
   hoverable?: boolean;
-  padding?: 'none' | 'sm' | 'md' | 'lg';
+  padding?: 'none' | 'sm' | 'md' | 'lg' | 'xl';
   onClick?: () => void;
 }
 
@@ -30,6 +30,7 @@ export const Card: React.FC<CardProps> = ({
     sm: 'p-3',
     md: 'p-4',
     lg: 'p-5',
+    xl: 'p-8',
   };
 
   const baseStyles = 'rounded-2xl';
@@ -38,16 +39,46 @@ export const Card: React.FC<CardProps> = ({
     default: 'terminal-card',
     bordered: 'terminal-card terminal-card-hover',
     gradient: 'gradient-border-card',
+    glass: 'bg-white/5 backdrop-blur-lg border border-white/10',
   };
 
   const hoverStyles = hoverable
     ? 'terminal-card-hover cursor-pointer'
     : '';
 
-  if (variant === 'gradient') {
-    return (
-      <div className={`${variantStyles.gradient} ${className}`} onClick={onClick}>
-        <div className={`gradient-border-card-inner ${paddingStyles[padding]}`}>
+  if (variant === 'gradient' || variant === 'glass') {
+    if (variant === 'gradient') {
+      return (
+        <div className={`${variantStyles.gradient} ${className}`} onClick={onClick}>
+          <div className={`gradient-border-card-inner ${paddingStyles[padding]}`}>
+            {(title || subtitle) && (
+              <div className="mb-3">
+                {subtitle && (
+                  <span className="label-uppercase">{subtitle}</span>
+                )}
+                {title && (
+                  <h3 className="text-lg font-semibold text-white mt-1">
+                    {title}
+                  </h3>
+                )}
+              </div>
+            )}
+            {children}
+          </div>
+        </div>
+      );
+    } else {
+      return (
+        <div
+          className={`
+            ${baseStyles}
+            ${variantStyles.glass}
+            ${hoverStyles}
+            ${paddingStyles[padding]}
+            ${className}
+          `}
+          onClick={onClick}
+        >
           {(title || subtitle) && (
             <div className="mb-3">
               {subtitle && (
@@ -62,8 +93,8 @@ export const Card: React.FC<CardProps> = ({
           )}
           {children}
         </div>
-      </div>
-    );
+      );
+    }
   }
 
   return (

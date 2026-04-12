@@ -317,7 +317,7 @@ def filter_special_stock_codes(stock_codes: List[str]) -> List[str]:
         过滤后的股票代码列表
     """
     original_count = len(stock_codes)
-    filtered_prefixes = ['688', '689', '300', '301', '43', '83', '87', '92']
+    filtered_prefixes = ['688', '689', '300', '301', '302', '43', '83', '87', '92']
     
     filtered_codes = [
         code for code in stock_codes 

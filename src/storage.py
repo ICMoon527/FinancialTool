@@ -1855,6 +1855,97 @@ class DatabaseManager:
             results = session.execute(stmt).scalars().all()
             return list(results) if results else []
 
+    def get_sector_daily_batch(
+        self, 
+        sector_names: List[str], 
+        date: date
+    ) -> Dict[str, Optional[SectorDaily]]:
+        """
+        批量获取多个板块在指定日期的数据
+
+        Args:
+            sector_names: 板块名称列表
+            date: 日期
+
+        Returns:
+            字典: {板块名称: SectorDaily实例, ...}
+        """
+        from sqlalchemy.orm import make_transient
+        
+        if not sector_names:
+            return {}
+        
+        with self.session_scope() as session:
+            stmt = select(SectorDaily).where(
+                and_(
+                    SectorDaily.name.in_(sector_names),
+                    SectorDaily.date == date
+                )
+            )
+            results = session.execute(stmt).scalars().all()
+            
+            result_dict = {}
+            for result in results:
+                session.expunge(result)
+                make_transient(result)
+                result_dict[result.name] = result
+            
+            for name in sector_names:
+                if name not in result_dict:
+                    result_dict[name] = None
+            
+            return result_dict
+
+    def get_sector_avg_change_pct_batch(
+        self, 
+        sector_names: List[str], 
+        end_date: date, 
+        days: int = 15
+    ) -> Dict[str, Optional[float]]:
+        """
+        批量计算多个板块近N天的平均涨跌幅
+
+        Args:
+            sector_names: 板块名称列表
+            end_date: 结束日期
+            days: 统计天数，默认15天
+
+        Returns:
+            字典: {板块名称: 平均涨跌幅, ...}
+        """
+        from datetime import timedelta
+        from sqlalchemy import func
+        
+        if not sector_names:
+            return {}
+        
+        start_date = end_date - timedelta(days=days)
+        
+        with self.session_scope() as session:
+            stmt = select(
+                SectorDaily.name,
+                func.avg(SectorDaily.change_pct).label('avg_change')
+            ).where(
+                and_(
+                    SectorDaily.name.in_(sector_names),
+                    SectorDaily.date >= start_date,
+                    SectorDaily.date <= end_date,
+                    SectorDaily.change_pct.isnot(None)
+                )
+            ).group_by(SectorDaily.name)
+            
+            results = session.execute(stmt).all()
+            
+            result_dict = {}
+            for row in results:
+                result_dict[row.name] = float(row.avg_change) if row.avg_change is not None else None
+            
+            for name in sector_names:
+                if name not in result_dict:
+                    result_dict[name] = None
+            
+            return result_dict
+
     def save_sector_daily(
         self,
         name: str,
