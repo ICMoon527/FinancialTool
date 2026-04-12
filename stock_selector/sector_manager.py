@@ -78,7 +78,42 @@ class SectorManager:
             bottom = self._sector_cache.get('bottom', [])[:n]
             return top, bottom
 
-        # 从数据源获取
+        # 优先从数据库获取最新的板块数据（如果不强制刷新）
+        if not force_refresh and self._db_manager:
+            try:
+                logger.debug("[板块] 尝试从数据库获取板块数据...")
+                from datetime import date
+                current_date = date.today()
+                # 从数据库获取今天的所有板块数据
+                all_sectors = self._db_manager.get_all_sectors()
+                if all_sectors:
+                    # 从数据库获取每个板块的最新数据
+                    sector_list = []
+                    for sector_name in all_sectors:
+                        sector_daily = self._db_manager.get_sector_daily(sector_name, current_date)
+                        if sector_daily:
+                            sector_list.append({
+                                'name': sector_daily.name,
+                                'change_pct': sector_daily.change_pct or 0.0,
+                                'stock_count': sector_daily.stock_count or 0,
+                                'limit_up_count': sector_daily.limit_up_count or 0,
+                            })
+                    if sector_list:
+                        # 按涨跌幅排序
+                        sorted_sectors = sorted(sector_list, key=lambda x: x['change_pct'], reverse=True)
+                        top = sorted_sectors[:n]
+                        bottom = sorted_sectors[-n:][::-1]  # 反转领跌板块
+                        
+                        # 更新缓存
+                        self._sector_cache = {'top': top, 'bottom': bottom}
+                        self._sector_cache_timestamp = time.time()
+                        
+                        logger.info(f"[板块] 从数据库获取成功，领涨: {[s['name'] for s in top]}, 领跌: {[s['name'] for s in bottom]}")
+                        return top, bottom
+            except Exception as e:
+                logger.debug(f"[板块] 从数据库获取板块数据失败: {e}，将尝试从数据源获取")
+
+        # 从数据源获取（当强制刷新或数据库没有数据时）
         if self._data_manager:
             try:
                 logger.info("[板块] 从数据源获取板块排行...")

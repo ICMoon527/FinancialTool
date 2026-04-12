@@ -63,7 +63,7 @@ class MarketDataCache:
         try:
             with open(cache_file, "rb") as f:
                 data = pickle.load(f)
-            logger.info(f"[大盘数据缓存] 从缓存加载 {symbol} 数据成功")
+            logger.debug(f"[大盘数据缓存] 从缓存加载 {symbol} 数据成功")
             return data
         except Exception as e:
             logger.warning(f"[大盘数据缓存] 加载缓存失败: {e}")

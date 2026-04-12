@@ -204,6 +204,9 @@ class TushareDataDownloader:
                                 existing.amount = row.get('amount')
                             if 'pct_chg' in row:
                                 existing.pct_chg = row.get('pct_chg')
+                            # 策略4：如果有 volume_ratio 字段也更新它
+                            if 'volume_ratio' in row and row.get('volume_ratio') is not None:
+                                existing.volume_ratio = row.get('volume_ratio')
                             saved_count += 1
                         else:
                             new_record = StockDaily(
@@ -215,7 +218,9 @@ class TushareDataDownloader:
                                 close=row.get('close'),
                                 volume=row.get('volume', 0),
                                 amount=row.get('amount', 0),
-                                pct_chg=row.get('pct_chg')
+                                pct_chg=row.get('pct_chg'),
+                                # 策略4：如果有 volume_ratio 字段也设置它
+                                volume_ratio=row.get('volume_ratio') if 'volume_ratio' in row else None
                             )
                             session.add(new_record)
                             saved_count += 1
@@ -458,27 +463,44 @@ class TushareDataDownloader:
         end_date = date.today()
         
         try:
+            # 使用本地交易日历
+            from .trading_calendar import get_trading_calendar
+            trading_calendar = get_trading_calendar()
+            
             # 获取足够长的交易日历（获取过去 2 年的数据）
             start_calendar_date = end_date - timedelta(days=730)
-            trade_dates = self.tushare_fetcher.get_trade_calendar(
-                start_date=start_calendar_date.strftime('%Y-%m-%d'),
-                end_date=end_date.strftime('%Y-%m-%d'),
-                is_open='1'
-            )
+            trade_dates = trading_calendar.get_trading_days(start_calendar_date, end_date)
             
             if trade_dates and len(trade_dates) >= trading_days:
                 # 使用交易日历计算准确的开始日期
                 start_date = trade_dates[-trading_days]
                 actual_trading_days = len(trade_dates[trade_dates.index(start_date):])
-                logger.info(f"使用交易日历：需要 {trading_days} 个交易日，实际获取 {actual_trading_days} 个交易日")
+                logger.info(f"使用本地交易日历：需要 {trading_days} 个交易日，实际获取 {actual_trading_days} 个交易日")
                 logger.info(f"日期范围：{start_date} 至 {end_date}")
                 return start_date, end_date, actual_trading_days
+            else:
+                logger.warning(f"本地交易日历数据不足，需要 {trading_days} 个，实际只有 {len(trade_dates) if trade_dates else 0} 个")
+                logger.info("尝试从 AKShare 更新交易日历...")
+                try:
+                    trading_calendar.refresh()
+                    # 重新获取交易日历
+                    trade_dates = trading_calendar.get_trading_days(start_calendar_date, end_date)
+                    if trade_dates and len(trade_dates) >= trading_days:
+                        start_date = trade_dates[-trading_days]
+                        actual_trading_days = len(trade_dates[trade_dates.index(start_date):])
+                        logger.info(f"使用更新后的本地交易日历：需要 {trading_days} 个交易日，实际获取 {actual_trading_days} 个交易日")
+                        logger.info(f"日期范围：{start_date} 至 {end_date}")
+                        return start_date, end_date, actual_trading_days
+                    else:
+                        logger.warning(f"更新后交易日历数据仍然不足，需要 {trading_days} 个，实际只有 {len(trade_dates) if trade_dates else 0} 个")
+                except Exception as update_error:
+                    logger.warning(f"更新交易日历失败: {update_error}")
         except Exception as e:
-            logger.warning(f"获取交易日历失败: {e}，回退到日历日计算")
+            logger.warning(f"获取本地交易日历失败: {e}，回退到日历日计算")
         
-        # 回退到日历日计算
-        start_date = end_date - timedelta(days=trading_days * 2 - 1)  # 多获取一些确保覆盖
-        logger.info(f"使用日历日计算：日期范围 {start_date} 至 {end_date}")
+        # 回退到日历日计算（1.5倍自然日）
+        start_date = end_date - timedelta(days=int(trading_days * 1.5))
+        logger.info(f"使用日历日计算（1.5倍）：日期范围 {start_date} 至 {end_date}")
         return start_date, end_date, trading_days
     
     def _process_batch_data(self, df: pd.DataFrame, batch_stocks: List[str], start_date: date, end_date: date, stats: Dict[str, any]):

@@ -27,6 +27,7 @@ from indicators.indicators.momentum_2 import Momentum2
 from indicators.indicators.strong_detonation import StrongDetonation
 from indicators.indicators.resonance_chase import ResonanceChase
 from src.storage import DatabaseManager, get_db
+from src.core.trading_calendar import get_start_date_by_trading_days, get_market_for_stock
 
 logger = logging.getLogger(__name__)
 
@@ -171,7 +172,10 @@ class VisualizationService:
         if start_date:
             query_start_date = start_date
         else:
-            query_start_date = today - timedelta(days=days)
+            # 根据股票代码确定市场
+            market = get_market_for_stock(stock_code) or "cn"
+            # 使用交易日数计算起始日期
+            query_start_date = get_start_date_by_trading_days(today, days, market)
         
         # 直接获取数据
         daily_data, source_name = fetcher_manager.get_daily_data(
@@ -394,7 +398,10 @@ class VisualizationService:
             if start_date:
                 target_start_date = start_date
             else:
-                target_start_date = today - timedelta(days=days)
+                # 根据股票代码确定市场
+                market = get_market_for_stock(stock_code) or "cn"
+                # 使用交易日数计算起始日期
+                target_start_date = get_start_date_by_trading_days(today, days, market)
             
             # 获取股票名称（只获取一次）
             stock_name = fetcher_manager.get_stock_name(stock_code)
@@ -553,7 +560,10 @@ class VisualizationService:
         if start_date:
             start_date = start_date
         else:
-            start_date = end_date - timedelta(days=days)
+            # 根据股票代码确定市场
+            market = get_market_for_stock(stock_code) or "cn"
+            # 使用交易日数计算起始日期
+            start_date = get_start_date_by_trading_days(end_date, days, market)
 
         try:
             stock_dailies = self.db.get_data_range(stock_code, start_date, end_date)
@@ -700,7 +710,10 @@ class VisualizationService:
         if start_date:
             start_date = start_date
         else:
-            start_date = end_date - timedelta(days=days)
+            # 根据股票代码确定市场
+            market = get_market_for_stock(stock_code) or "cn"
+            # 使用交易日数计算起始日期
+            start_date = get_start_date_by_trading_days(end_date, days, market)
 
         indicators_data = []
 

@@ -64,10 +64,12 @@ class Momentum2RedPillarStrategyPython(StockSelectorStrategy):
             包含指标计算结果的字典，数据不足时返回None
         """
         if df is None or len(df) < 6:
+            logger.debug(f"_calculate_momentum2: 数据不足 df={df is None}, len={len(df) if df is not None else 0}")
             return None
 
         try:
             df = df.copy()
+            logger.debug(f"_calculate_momentum2: 原始列: {list(df.columns)}")
             
             if 'Open' not in df.columns and 'open' in df.columns:
                 df = df.rename(columns={
@@ -77,13 +79,17 @@ class Momentum2RedPillarStrategyPython(StockSelectorStrategy):
                     'close': 'Close',
                     'volume': 'Volume'
                 })
+                logger.debug(f"_calculate_momentum2: 重命名后列: {list(df.columns)}")
 
             result_df = self._momentum2_indicator.calculate(df)
+            logger.debug(f"_calculate_momentum2: result_df 行数={len(result_df)}")
 
             latest = result_df.iloc[-1]
             prev = result_df.iloc[-2] if len(result_df) > 1 else None
 
-            is_red_pillar = bool(latest['strong_momentum1'])
+            is_red_pillar = bool(latest['strong_momentum1']) if pd.notna(latest['strong_momentum1']) else False
+
+            logger.debug(f"_calculate_momentum2: is_red_pillar={is_red_pillar}, latest['strong_momentum1']={latest['strong_momentum1']}")
 
             return {
                 'momentum_price': float(latest['momentum_price']),
@@ -96,9 +102,11 @@ class Momentum2RedPillarStrategyPython(StockSelectorStrategy):
             }
         except Exception as e:
             logger.debug(f"动能二号指标计算失败: {e}")
+            import traceback
+            traceback.print_exc()
             return None
 
-    def select(self, stock_code: str, stock_name: Optional[str] = None) -> StrategyMatch:
+    def select(self, stock_code: str, stock_name: Optional[str] = None, daily_data: Optional[pd.DataFrame] = None, precomputed_metrics: Optional[Dict[str, Any]] = None) -> StrategyMatch:
         """
         执行动能二号红色柱策略对单只股票进行筛选。
 
@@ -116,15 +124,18 @@ class Momentum2RedPillarStrategyPython(StockSelectorStrategy):
         max_score = 100.0
 
         try:
+            data_source = "preloaded"
             if self._data_provider:
                 realtime_quote = self._data_provider.get_realtime_quote(stock_code)
-                daily_data_result = self._data_provider.get_daily_data(stock_code, days=60)
                 
-                if isinstance(daily_data_result, tuple) and len(daily_data_result) == 2:
-                    daily_data, data_source = daily_data_result
-                else:
-                    daily_data = daily_data_result
-                    data_source = "unknown"
+                # 如果传入了 daily_data，直接使用；否则从数据提供者获取
+                if daily_data is None:
+                    daily_data_result = self._data_provider.get_daily_data(stock_code, days=60)
+                    if isinstance(daily_data_result, tuple) and len(daily_data_result) == 2:
+                        daily_data, data_source = daily_data_result
+                    else:
+                        daily_data = daily_data_result
+                        data_source = "unknown"
 
                 match_details["realtime_quote"] = {}
                 match_details["momentum2_indicators"] = {}

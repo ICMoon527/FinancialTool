@@ -15,6 +15,7 @@ from stock_selector.base import StockCandidate, StrategyMetadata
 from stock_selector.config import StockSelectorConfig, get_config
 from stock_selector.manager import StrategyManager
 from stock_selector.stock_pool import get_all_stock_code_name_pairs, filter_special_stock_codes, filter_st_stocks
+from stock_selector.strategies.Python.strong_detonation_python import MarketDataCache
 
 logger = logging.getLogger(__name__)
 
@@ -138,7 +139,7 @@ class StockSelectorService:
                     for record in records:
                         if record.code != current_code:
                             if current_code is not None and len(current_records) >= 30:
-                                code_to_daily_data[current_code] = pd.DataFrame([
+                                df = pd.DataFrame([
                                     {
                                         'date': r.date,
                                         'open': r.open,
@@ -151,13 +152,18 @@ class StockSelectorService:
                                     }
                                     for r in current_records
                                 ])
+                                # 数据清洗：过滤掉有问题的数据
+                                df = df.dropna(subset=['open', 'high', 'low', 'close'])
+                                df = df[df['low'] <= df['high']]
+                                if len(df) >= 30:
+                                    code_to_daily_data[current_code] = df
                             current_code = record.code
                             current_records = []
                         current_records.append(record)
                     
                     # 处理最后一组
                     if current_code is not None and len(current_records) >= 30:
-                        code_to_daily_data[current_code] = pd.DataFrame([
+                        df = pd.DataFrame([
                             {
                                 'date': r.date,
                                 'open': r.open,
@@ -170,8 +176,14 @@ class StockSelectorService:
                             }
                             for r in current_records
                         ])
+                        # 数据清洗：过滤掉有问题的数据
+                        df = df.dropna(subset=['open', 'high', 'low', 'close'])
+                        df = df[df['low'] <= df['high']]
+                        if len(df) >= 30:
+                            code_to_daily_data[current_code] = df
+                logger.info(f"从数据库批量读取了 {len(code_to_daily_data)} 只股票的日线数据")
             except Exception as e:
-                logger.debug(f"Failed to batch get daily data: {e}")
+                logger.warning(f"从数据库批量读取日线数据失败: {e}")
 
         # 优化3: 缓存大盘指数数据
         market_data_cache = {}
@@ -403,19 +415,31 @@ class StockSelectorService:
                             }
                             for r in records
                         ])
-                        logger.debug(f"从数据库读取 {stock_code} 数据成功，共 {len(daily_data)} 条")
                         
-                        # 从数据库数据获取涨跌幅
-                        if not daily_data.empty and 'pct_chg' in daily_data.columns:
-                            change_pct = float(daily_data['pct_chg'].iloc[-1]) if pd.notna(daily_data['pct_chg'].iloc[-1]) else None
-                            logger.debug(f"从数据库获取 {stock_code} 涨跌幅: {change_pct}")
-                        
-                        # 计算控盘度
-                        control_degree = self._calculate_control_degree(daily_data)
-                        # 注意：从数据库读取数据时不计算连紫数，让后面统一的逻辑处理
-                        # 因为 strategy_manager._data_provider 此时可能是 None
+                        # 数据清洗：过滤掉有问题的数据
+                        # 1. 过滤掉 open/high/low/close 有 NaN 的行
+                        daily_data = daily_data.dropna(subset=['open', 'high', 'low', 'close'])
+                        # 2. 过滤掉 low > high 的无效数据行
+                        daily_data = daily_data[daily_data['low'] <= daily_data['high']]
+                        # 3. 确保至少还有30条数据
+                        if len(daily_data) < 30:
+                            logger.debug(f"从数据库读取 {stock_code} 数据清洗后不足30条，放弃使用数据库数据")
+                            daily_data = None
+                        else:
+                            logger.debug(f"从数据库读取 {stock_code} 数据成功，原始 {len(records)} 条，清洗后 {len(daily_data)} 条")
+                            
+                            # 从数据库数据获取涨跌幅
+                            if not daily_data.empty and 'pct_chg' in daily_data.columns:
+                                change_pct = float(daily_data['pct_chg'].iloc[-1]) if pd.notna(daily_data['pct_chg'].iloc[-1]) else None
+                                logger.debug(f"从数据库获取 {stock_code} 涨跌幅: {change_pct}")
+                            
+                            # 计算控盘度
+                            control_degree = self._calculate_control_degree(daily_data)
+                            # 注意：从数据库读取数据时不计算连紫数，让后面统一的逻辑处理
+                            # 因为 strategy_manager._data_provider 此时可能是 None
             except Exception as e:
                 logger.debug(f"Failed to get data from database for {stock_code}: {e}")
+                daily_data = None
 
         # 如果数据库中没有足够的数据，才从数据提供者获取
         if daily_data is None and self.strategy_manager._data_provider:
@@ -441,28 +465,17 @@ class StockSelectorService:
             
             # 如果还没有获取大盘数据或计算连紫数，才计算
             if market_data is None or purple_days is None:
-                # 获取大盘数据用于计算连紫数
-                if self.strategy_manager._data_provider and market_data is None:
-                    try:
-                        market_index_code = self._get_market_index_code(stock_code)
-                        market_data = self.strategy_manager._data_provider.get_index_daily_data(market_index_code)
-                    except Exception as e:
-                        logger.debug(f"Failed to get market data: {e}")
-                
+                # 从缓存获取大盘数据，不调用外部API
+                market_index_code = self._get_market_index_code(stock_code)
+                market_data = MarketDataCache.load(market_index_code)
+                if market_data is None:
+                    logger.debug(f"未找到 {market_index_code} 的大盘缓存数据，将使用个股价格作为代理")
                 # 计算连紫数
                 if purple_days is None:
                     purple_days = self._calculate_purple_days(daily_data, market_data)
 
-        # 尝试从实时行情获取涨跌幅（作为备选）
-        if change_pct is None and self.strategy_manager._data_provider:
-            try:
-                quote = self.strategy_manager._data_provider.get_realtime_quote(stock_code)
-                if quote:
-                    change_pct = getattr(quote, "pct_chg", None)
-                    if change_pct is not None:
-                        change_pct = float(change_pct)
-            except Exception as e:
-                logger.debug(f"Failed to get realtime quote pct_chg for {stock_code}: {e}")
+        # 从日线数据获取涨跌幅，不调用外部API
+        # 如果日线数据中没有涨跌幅，则保持为None
 
         # Try to get data from database cache first
         if self._db_manager:
@@ -493,17 +506,9 @@ class StockSelectorService:
         if not matches:
             return None
 
-        # Fallback to realtime data if still no price
-        if current_price == 0.0:
-            try:
-                if self.strategy_manager._data_provider:
-                    quote = self.strategy_manager._data_provider.get_realtime_quote(stock_code)
-                    if quote:
-                        current_price = getattr(quote, "price", 0.0)
-                        if getattr(quote, "name", None):
-                            stock_name = quote.name
-            except Exception as e:
-                logger.debug("Failed to get realtime quote for %s: %s", stock_code, e)
+        # 从日线数据获取最新收盘价作为当前价格，不调用外部API
+        if current_price == 0.0 and daily_data is not None and not daily_data.empty:
+            current_price = float(daily_data['close'].iloc[-1])
 
         candidate = StockCandidate(
             code=stock_code,
@@ -573,17 +578,11 @@ class StockSelectorService:
             
             control_degree = self._calculate_control_degree(daily_data)
             
-            # 从缓存获取大盘数据
-            if market_data_cache is not None:
-                market_index_code = self._get_market_index_code(stock_code)
-                if market_index_code not in market_data_cache:
-                    if self.strategy_manager._data_provider:
-                        try:
-                            market_data_cache[market_index_code] = self.strategy_manager._data_provider.get_index_daily_data(market_index_code)
-                        except Exception as e:
-                            logger.debug(f"Failed to get market data for {market_index_code}: {e}")
-                            market_data_cache[market_index_code] = None
-                market_data = market_data_cache.get(market_index_code)
+            # 从缓存获取大盘数据，不调用外部API
+            market_index_code = self._get_market_index_code(stock_code)
+            market_data = MarketDataCache.load(market_index_code)
+            if market_data is None:
+                logger.debug(f"未找到 {market_index_code} 的大盘缓存数据，将使用个股价格作为代理")
             
             purple_days = self._calculate_purple_days(daily_data, market_data)
         else:
@@ -594,16 +593,8 @@ class StockSelectorService:
                 logger.error("Failed to screen stock %s with fallback: %s", stock_code, e)
                 return None
 
-        # 尝试从实时行情获取涨跌幅（作为备选）
-        if change_pct is None and self.strategy_manager._data_provider:
-            try:
-                quote = self.strategy_manager._data_provider.get_realtime_quote(stock_code)
-                if quote:
-                    change_pct = getattr(quote, "pct_chg", None)
-                    if change_pct is not None:
-                        change_pct = float(change_pct)
-            except Exception as e:
-                logger.debug(f"Failed to get realtime quote pct_chg for {stock_code}: {e}")
+        # 从日线数据获取涨跌幅，不调用外部API
+        # 如果日线数据中没有涨跌幅，则保持为None
 
         # 从数据库缓存获取
         if self._db_manager:
@@ -631,16 +622,9 @@ class StockSelectorService:
         if not matches:
             return None
 
-        if current_price == 0.0:
-            try:
-                if self.strategy_manager._data_provider:
-                    quote = self.strategy_manager._data_provider.get_realtime_quote(stock_code)
-                    if quote:
-                        current_price = getattr(quote, "price", 0.0)
-                        if getattr(quote, "name", None):
-                            stock_name = quote.name
-            except Exception as e:
-                logger.debug("Failed to get realtime quote for %s: %s", stock_code, e)
+        # 从日线数据获取最新收盘价作为当前价格，不调用外部API
+        if current_price == 0.0 and daily_data is not None and not daily_data.empty:
+            current_price = float(daily_data['close'].iloc[-1])
 
         candidate = StockCandidate(
             code=stock_code,

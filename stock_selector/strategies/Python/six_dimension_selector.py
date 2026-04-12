@@ -199,7 +199,7 @@ class SixDimensionSelectorStrategy(StockSelectorStrategy):
             latest = result_df.iloc[-1]
             prev = result_df.iloc[-2]
             
-            today_is_red = bool(latest['strong_momentum1'])
+            today_is_red = bool(latest['strong_momentum1']) if pd.notna(latest['strong_momentum1']) else False
             today_height = float(latest['momentum_price']) if pd.notna(latest['momentum_price']) else 0
             
             if not today_is_red:
@@ -209,10 +209,10 @@ class SixDimensionSelectorStrategy(StockSelectorStrategy):
                     'red_pillar': False,
                 }
             
-            prev_is_red = bool(prev['strong_momentum1'])
-            prev_is_yellow = bool(prev['medium_momentum1'])
-            prev_is_green = bool(prev['weak_momentum1'])
-            prev_is_blue = bool(prev['recovery_momentum1'])
+            prev_is_red = bool(prev['strong_momentum1']) if pd.notna(prev['strong_momentum1']) else False
+            prev_is_yellow = bool(prev['medium_momentum1']) if pd.notna(prev['medium_momentum1']) else False
+            prev_is_green = bool(prev['weak_momentum1']) if pd.notna(prev['weak_momentum1']) else False
+            prev_is_blue = bool(prev['recovery_momentum1']) if pd.notna(prev['recovery_momentum1']) else False
             prev_height = float(prev['momentum_price']) if pd.notna(prev['momentum_price']) else 0
             
             score = 80
@@ -391,7 +391,7 @@ class SixDimensionSelectorStrategy(StockSelectorStrategy):
             consecutive_count = 0
             if latest_purple:
                 for i in range(len(purple_box) - 1, -1, -1):
-                    if bool(purple_box.iloc[i]):
+                    if bool(purple_box.iloc[i]) if pd.notna(purple_box.iloc[i]) else False:
                         consecutive_count += 1
                     else:
                         break
@@ -555,20 +555,20 @@ class SixDimensionSelectorStrategy(StockSelectorStrategy):
         strategy_scores = []
         weighted_scores = []
         max_score = 500.0
-        data_source = "preloaded"
+        data_source = "database"
 
         try:
             if self._data_provider:
                 realtime_quote = self._data_provider.get_realtime_quote(stock_code)
                 
-                # 如果没有传入外部数据，才自己获取
+                # 只有在没有传入外部数据时，才自己获取
                 if daily_data is None:
+                    data_source = "data_provider"
                     daily_data_result = self._data_provider.get_daily_data(stock_code, days=150)
                     if isinstance(daily_data_result, tuple) and len(daily_data_result) == 2:
                         daily_data, data_source = daily_data_result
                     else:
                         daily_data = daily_data_result
-                        data_source = "unknown"
 
                 match_details["realtime_quote"] = {}
                 match_details["data_source"] = data_source

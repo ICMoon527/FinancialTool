@@ -42,7 +42,11 @@ def get_stock_selector_service() -> StockSelectorService:
     global _stock_selector_service
     if _stock_selector_service is None:
         _stock_selector_service = StockSelectorService()
-        logger.info("Stock Selector Service initialized (using config)")
+        # 设置数据提供者，与命令行调用保持一致
+        from data_provider import DataFetcherManager
+        data_fetcher_manager = DataFetcherManager()
+        _stock_selector_service.set_data_provider(data_fetcher_manager)
+        logger.info("Stock Selector Service initialized (using config with data provider)")
     return _stock_selector_service
 
 

@@ -1,15 +1,16 @@
 # -*- coding: utf-8 -*-
 """
 ===================================
-交易日历模块 (Issue #373)
+交易日历模块 (使用本地 trading_calendar.pkl)
 ===================================
 
 职责：
 1. 按市场（A股/港股/美股）判断当日是否为交易日
-2. 按市场时区取“今日”日期，避免服务器 UTC 导致日期错误
+2. 按市场时区取"今日"日期，避免服务器 UTC 导致日期错误
 3. 支持 per-stock 过滤：只分析当日开市市场的股票
+4. 根据交易日数计算起始日期
 
-依赖：exchange-calendars（可选，不可用时 fail-open）
+使用项目已有的 stock_selector/trading_calendar.py 模块
 """
 
 import logging
@@ -18,19 +19,21 @@ from typing import Optional, Set
 
 logger = logging.getLogger(__name__)
 
-# Exchange-calendars availability
-_XCALS_AVAILABLE = False
-try:
-    import exchange_calendars as xcals
-    _XCALS_AVAILABLE = True
-except ImportError:
-    logger.warning(
-        "exchange-calendars not installed; trading day check disabled. "
-        "Run: pip install exchange-calendars"
-    )
 
-# Market -> exchange code (exchange-calendars)
-MARKET_EXCHANGE = {"cn": "XSHG", "hk": "XHKG", "us": "XNYS"}
+# 导入项目已有的交易日历模块
+import sys
+from pathlib import Path
+
+# 确保可以导入 stock_selector 模块
+project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(project_root))
+
+from stock_selector.trading_calendar import (
+    get_trading_calendar,
+    is_trading_day as _is_trading_day_cn,
+    get_trading_days as _get_trading_days_cn
+)
+
 
 # Market -> IANA timezone for "today"
 MARKET_TIMEZONE = {
@@ -67,7 +70,8 @@ def is_market_open(market: str, check_date: date) -> bool:
     """
     Check if the given market is open on the given date.
 
-    Fail-open: returns True if exchange-calendars unavailable or date out of range.
+    For CN market, use local trading_calendar.pkl.
+    For other markets, fail-open: returns True.
 
     Args:
         market: 'cn' | 'hk' | 'us'
@@ -76,18 +80,11 @@ def is_market_open(market: str, check_date: date) -> bool:
     Returns:
         True if trading day (or fail-open), False otherwise
     """
-    if not _XCALS_AVAILABLE:
-        return True
-    ex = MARKET_EXCHANGE.get(market)
-    if not ex:
-        return True
-    try:
-        cal = xcals.get_calendar(ex)
-        session = datetime(check_date.year, check_date.month, check_date.day)
-        return cal.is_session(session)
-    except Exception as e:
-        logger.warning("trading_calendar.is_market_open fail-open: %s", e)
-        return True
+    if market == "cn":
+        # A股使用本地交易日历
+        return _is_trading_day_cn(check_date)
+    # 其他市场暂时使用 fail-open
+    return True
 
 
 def get_open_markets_today() -> Set[str]:
@@ -97,8 +94,6 @@ def get_open_markets_today() -> Set[str]:
     Returns:
         Set of market keys ('cn', 'hk', 'us') that are trading today
     """
-    if not _XCALS_AVAILABLE:
-        return {"cn", "hk", "us"}
     result: Set[str] = set()
     from zoneinfo import ZoneInfo
     for mkt, tz_name in MARKET_TIMEZONE.items():
@@ -124,36 +119,78 @@ def get_latest_trading_day(market: str, check_date: date) -> date:
     Returns:
         最近的交易日日期
     """
-    if not _XCALS_AVAILABLE:
+    if market != "cn":
+        # 非A股市场暂时返回原日期
         return check_date
     
-    ex = MARKET_EXCHANGE.get(market)
-    if not ex:
-        return check_date
+    # A股使用本地交易日历
+    current_date = check_date
     
-    try:
-        cal = xcals.get_calendar(ex)
-        current_date = check_date
-        
-        # 先检查当天
-        session_date = datetime(current_date.year, current_date.month, current_date.day)
-        if cal.is_session(session_date):
+    # 先检查当天
+    if _is_trading_day_cn(current_date):
+        return current_date
+    
+    # 如果当天不是交易日，向前查找最多30天
+    current_date = current_date - timedelta(days=1)
+    for i in range(30):
+        if _is_trading_day_cn(current_date):
             return current_date
-        
-        # 如果当天不是交易日，向前查找最多30天
         current_date = current_date - timedelta(days=1)
-        for i in range(30):
-            session_date = datetime(current_date.year, current_date.month, current_date.day)
-            if cal.is_session(session_date):
-                return current_date
-            current_date = current_date - timedelta(days=1)
+    
+    # 如果30天内都没找到，返回原始日期
+    logger.warning(f"未在 {check_date} 前30天内找到交易日，使用原始日期")
+    return check_date
+
+
+def get_start_date_by_trading_days(
+    end_date: date,
+    trading_days: int,
+    market: str = "cn"
+) -> date:
+    """
+    根据结束日期和交易日数，计算起始日期（向前推 N 个交易日）
+
+    Args:
+        end_date: 结束日期
+        trading_days: 需要的交易日数
+        market: 市场类型，默认为 'cn'（A股）
+
+    Returns:
+        计算得到的起始日期
+    """
+    if market != "cn":
+        # 非A股市场暂时回退到自然日计算
+        return end_date - timedelta(days=trading_days * 2)
+    
+    # A股使用本地交易日历
+    calendar = get_trading_calendar()
+    all_trading_days = calendar.get_all_trading_days()
+    
+    # 找到 end_date 在所有交易日中的位置
+    try:
+        # 先找到小于等于 end_date 的最新交易日
+        end_idx = None
+        for i, d in enumerate(reversed(all_trading_days)):
+            if d <= end_date:
+                end_idx = len(all_trading_days) - 1 - i
+                break
         
-        # 如果30天内都没找到，返回原始日期
-        logger.warning(f"未在 {check_date} 前30天内找到交易日，使用原始日期")
-        return check_date
+        if end_idx is None:
+            # 如果没找到，回退到自然日计算
+            logger.warning(f"未找到 {end_date} 之前的交易日，回退到自然日计算")
+            return end_date - timedelta(days=trading_days * 2)
+        
+        # 计算起始索引
+        start_idx = max(0, end_idx - trading_days + 1)
+        start_date = all_trading_days[start_idx]
+        
+        logger.info(f"根据 {trading_days} 个交易日计算，起始日期: {start_date}")
+        return start_date
+        
     except Exception as e:
-        logger.warning("trading_calendar.get_latest_trading_day fail-open: %s", e)
-        return check_date
+        logger.warning(f"get_start_date_by_trading_days 出错: {e}，回退到自然日计算")
+        # 出错时回退到自然日计算
+        return end_date - timedelta(days=trading_days * 2)
 
 
 def compute_effective_region(

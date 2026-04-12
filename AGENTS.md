@@ -23,5 +23,7 @@
   - 避免产生类似'XXX' object has no attribute 'XXX'的问题，完成检查后再结束任务
   - 避免产生Future Warning，可以选择过滤
   - 通过API联网获取数据时尽量获取完整的数据，避免获取部分数据导致数据不完整影响后续计算及分析
+  - 在此处data\trading\_calendar.pkl更新和使用交易日历
+  - 在此处data\cache更新和使用沪市和深市大盘指数数据
 
 ###
