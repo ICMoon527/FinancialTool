@@ -330,17 +330,6 @@ class SixDimensionSelectorStrategy(StockSelectorStrategy):
             return None
         try:
             df = df.copy()
-            close = df["close"]
-            open_price = df["open"]
-            high = df["high"]
-            low = df["low"]
-            aaa = (3 * close + open_price + high + low) / 6
-            var1 = self._ema(aaa, 35)
-            var2 = (self._hhv(var1, 5) + self._hhv(var1, 15) + self._hhv(var1, 30)) / 3
-            var3 = (self._llv(var1, 5) + self._llv(var1, 15) + self._llv(var1, 30)) / 3
-            bull_line = (self._hhv(var2, 5) + self._hhv(var2, 15) + self._hhv(var2, 30)) / 3
-            ema120_stock = self._ema(close, 120)
-
             index_symbol = self._get_market_index_code(stock_code)
             market_data = self._get_market_data(index_symbol)
 
@@ -359,7 +348,20 @@ class SixDimensionSelectorStrategy(StockSelectorStrategy):
                 if "close_index" in merged_df.columns:
                     merged_df["close_index"] = merged_df["close_index"].ffill().bfill()
                     if not merged_df["close_index"].isna().any():
+                        # 从 merged_df 中获取所有数据，确保索引一致
+                        close = merged_df["close"]
+                        open_price = merged_df["open"]
+                        high = merged_df["high"]
+                        low = merged_df["low"]
                         index_close = merged_df["close_index"]
+                        
+                        aaa = (3 * close + open_price + high + low) / 6
+                        var1 = self._ema(aaa, 35)
+                        var2 = (self._hhv(var1, 5) + self._hhv(var1, 15) + self._hhv(var1, 30)) / 3
+                        var3 = (self._llv(var1, 5) + self._llv(var1, 15) + self._llv(var1, 30)) / 3
+                        bull_line = (self._hhv(var2, 5) + self._hhv(var2, 15) + self._hhv(var2, 30)) / 3
+                        ema120_stock = self._ema(close, 120)
+                        
                         ema120_index = self._ema(index_close, 120)
                         a1 = index_close / ema120_index
                         market_midline = self._ema(ema120_stock * a1, 2)

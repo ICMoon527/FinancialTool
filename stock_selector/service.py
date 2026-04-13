@@ -152,9 +152,24 @@ class StockSelectorService:
                                     }
                                     for r in current_records
                                 ])
-                                # 数据清洗：过滤掉有问题的数据
+                                # 数据清洗：先修复有问题的数据，再过滤掉完全不可用的
                                 df = df.dropna(subset=['open', 'high', 'low', 'close'])
+                                
+                                # 修复每一行的 high 和 low，确保 low <= high
+                                for idx, row in df.iterrows():
+                                    if row['low'] > row['high']:
+                                        # 收集该行所有价格，重新计算 high 和 low
+                                        prices = [row['open'], row['high'], row['low'], row['close']]
+                                        df.at[idx, 'high'] = max(prices)
+                                        df.at[idx, 'low'] = min(prices)
+                                
+                                # 再次确保 low <= high
                                 df = df[df['low'] <= df['high']]
+                                
+                                # 过滤掉非交易日的数据
+                                from stock_selector.trading_calendar import is_trading_day
+                                df = df[df['date'].apply(lambda d: is_trading_day(d))]
+                                
                                 if len(df) >= 30:
                                     code_to_daily_data[current_code] = df
                             current_code = record.code
@@ -176,9 +191,24 @@ class StockSelectorService:
                             }
                             for r in current_records
                         ])
-                        # 数据清洗：过滤掉有问题的数据
+                        # 数据清洗：先修复有问题的数据，再过滤掉完全不可用的
                         df = df.dropna(subset=['open', 'high', 'low', 'close'])
+                        
+                        # 修复每一行的 high 和 low，确保 low <= high
+                        for idx, row in df.iterrows():
+                            if row['low'] > row['high']:
+                                # 收集该行所有价格，重新计算 high 和 low
+                                prices = [row['open'], row['high'], row['low'], row['close']]
+                                df.at[idx, 'high'] = max(prices)
+                                df.at[idx, 'low'] = min(prices)
+                        
+                        # 再次确保 low <= high
                         df = df[df['low'] <= df['high']]
+                        
+                        # 过滤掉非交易日的数据
+                        from stock_selector.trading_calendar import is_trading_day
+                        df = df[df['date'].apply(lambda d: is_trading_day(d))]
+                        
                         if len(df) >= 30:
                             code_to_daily_data[current_code] = df
                 logger.info(f"从数据库批量读取了 {len(code_to_daily_data)} 只股票的日线数据")

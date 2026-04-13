@@ -232,14 +232,45 @@ class RealtimeDataUpdater:
             record_date = date.today()
 
         try:
+            # 数据清洗：修复 open、high、low、close 的合理性
+            open_price = quote.open_price
+            high = quote.high
+            low = quote.low
+            close = quote.price
+            
+            # 收集所有可用的价格
+            prices = []
+            if open_price is not None:
+                prices.append(open_price)
+            if high is not None:
+                prices.append(high)
+            if low is not None:
+                prices.append(low)
+            if close is not None:
+                prices.append(close)
+            
+            if prices:
+                min_price = min(prices)
+                max_price = max(prices)
+                
+                # 如果 high 不是最大的，或者 low 不是最小的，进行修复
+                if high is None or high < max_price:
+                    high = max_price
+                if low is None or low > min_price:
+                    low = min_price
+                
+                # 如果 open 缺失，使用 close
+                if open_price is None:
+                    open_price = close
+            
             # 构建 StockDaily 对象
             stock_daily = StockDaily(
                 code=quote.code,
                 date=record_date,
-                open=quote.open_price,
-                high=quote.high,
-                low=quote.low,
-                close=quote.price,
+                open=open_price,
+                high=high,
+                low=low,
+                close=close,
                 volume=quote.volume,
                 amount=quote.amount,
                 pct_chg=quote.change_pct,
@@ -247,7 +278,7 @@ class RealtimeDataUpdater:
                 data_source=quote.source.value if quote.source else "RealtimeDataUpdater",
             )
 
-            logger.debug(f"成功转换 {quote.code} 实时行情到 StockDaily 格式")
+            logger.debug(f"成功转换 {quote.code} 实时行情到 StockDaily 格式（数据已清洗）")
             return stock_daily
 
         except Exception as e:
@@ -280,15 +311,16 @@ class RealtimeDataUpdater:
         if not stock_dailies:
             return 0, []
 
-        # 策略3：判断是否为完整交易日数据
-        is_complete_day = self._is_complete_trading_day_data()
-        if not is_complete_day:
-            logger.info("当前为盘中时间，只有在没有历史数据时才会写入新记录")
-
         success_count = 0
         failed_codes = []
 
         try:
+            # 检查是否是交易日，非交易日不保存
+            from stock_selector.trading_calendar import is_trading_day
+            if not is_trading_day(record_date):
+                logger.warning(f"{record_date} 不是交易日，不保存实时数据")
+                return 0, []
+            
             # 先收集所有股票代码
             codes_to_update = [sd.code for sd in stock_dailies]
 
@@ -314,11 +346,6 @@ class RealtimeDataUpdater:
                 new_records = []
                 for stock_daily in stock_dailies:
                     if stock_daily.code in existing_dict:
-                        # 策略3：如果是盘中时间且已有历史数据，跳过更新
-                        if not is_complete_day:
-                            logger.debug(f"盘中时间，保留历史数据，跳过更新: {stock_daily.code}")
-                            continue
-                        
                         # 策略2：检查数据源优先级
                         existing = existing_dict[stock_daily.code]
                         existing_priority = SOURCE_PRIORITY.get(existing.data_source, 0)
@@ -330,7 +357,7 @@ class RealtimeDataUpdater:
                                        f"新: {stock_daily.data_source}={new_priority})")
                             continue
                         
-                        # 更新现有记录（仅在收盘后且优先级足够时执行）
+                        # 更新现有记录（盘中或收盘后都可以更新）
                         if stock_daily.open is not None:
                             existing.open = stock_daily.open
                         if stock_daily.high is not None:
@@ -377,11 +404,6 @@ class RealtimeDataUpdater:
                         ).scalar_one_or_none()
 
                         if existing:
-                            # 策略3：如果是盘中时间且已有历史数据，跳过更新
-                            if not is_complete_day:
-                                logger.debug(f"盘中时间，保留历史数据，跳过更新: {stock_daily.code}")
-                                continue
-                            
                             # 策略2：检查数据源优先级
                             existing_priority = SOURCE_PRIORITY.get(existing.data_source, 0)
                             new_priority = SOURCE_PRIORITY.get(stock_daily.data_source, 0)
