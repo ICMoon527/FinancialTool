@@ -51,34 +51,10 @@ class StrongDetonation(BaseIndicator):
 
         df = data.copy()
         result = df.copy()
-
-        # AAA:=(3*C+H+L+O)/6
-        aaa = (3 * df['Close'] + df['High'] + df['Low'] + df['Open']) / 6
-        result['aaa'] = aaa
-
-        # VAR1:=EMA(AAA,35)
-        var1 = self._ema(aaa, 35)
-        result['var1'] = var1
-
-        # VAR2:=(HHV(VAR1,5)+HHV(VAR1,15)+HHV(VAR1,30))/3
-        var2 = (self._hhv(var1, 5) + self._hhv(var1, 15) + self._hhv(var1, 30)) / 3
-        result['var2'] = var2
-
-        # VAR3:=(LLV(VAR1,5)+LLV(VAR1,15)+LLV(VAR1,30))/3
-        var3 = (self._llv(var1, 5) + self._llv(var1, 15) + self._llv(var1, 30)) / 3
-        result['var3'] = var3
-
-        # 牛线:=(HHV(VAR2,5)+HHV(VAR2,15)+HHV(VAR2,30))/3
-        bull_line = (self._hhv(var2, 5) + self._hhv(var2, 15) + self._hhv(var2, 30)) / 3
-        result['bull_line'] = bull_line
-
-        # 熊线:=(LLV(VAR3,5)+LLV(VAR3,15)+LLV(VAR3,30))/3
-        bear_line = (self._llv(var3, 5) + self._llv(var3, 15) + self._llv(var3, 30)) / 3
-        result['bear_line'] = bear_line
-
+        
         # 大盘中线计算
-        # 先计算个股的长期趋势（EMA120）
-        ema120_stock = self._ema(df['Close'], 120)
+        ema120_stock = None
+        market_midline = None
         
         if index_data is not None and not index_data.empty:
             logger.info("[强势起爆指标] 使用真实大盘指数数据计算大盘中线")
@@ -106,11 +82,44 @@ class StrongDetonation(BaseIndicator):
                     # 填充缺失值，使用前向填充和后向填充
                     df['close_index'] = df['close_index'].ffill().bfill()
                     
+                    # 从 merged_df 统一获取所有数据，确保索引一致
+                    close = df['Close']
+                    open_price = df['Open']
+                    high = df['High']
+                    low = df['Low']
+                    
+                    # AAA:=(3*C+H+L+O)/6
+                    aaa = (3 * close + high + low + open_price) / 6
+                    result['aaa'] = aaa
+
+                    # VAR1:=EMA(AAA,35)
+                    var1 = self._ema(aaa, 35)
+                    result['var1'] = var1
+
+                    # VAR2:=(HHV(VAR1,5)+HHV(VAR1,15)+HHV(VAR1,30))/3
+                    var2 = (self._hhv(var1, 5) + self._hhv(var1, 15) + self._hhv(var1, 30)) / 3
+                    result['var2'] = var2
+
+                    # VAR3:=(LLV(VAR1,5)+LLV(VAR1,15)+LLV(VAR1,30))/3
+                    var3 = (self._llv(var1, 5) + self._llv(var1, 15) + self._llv(var1, 30)) / 3
+                    result['var3'] = var3
+
+                    # 牛线:=(HHV(VAR2,5)+HHV(VAR2,15)+HHV(VAR2,30))/3
+                    bull_line = (self._hhv(var2, 5) + self._hhv(var2, 15) + self._hhv(var2, 30)) / 3
+                    result['bull_line'] = bull_line
+
+                    # 熊线:=(LLV(VAR3,5)+LLV(VAR3,15)+LLV(VAR3,30))/3
+                    bear_line = (self._llv(var3, 5) + self._llv(var3, 15) + self._llv(var3, 30)) / 3
+                    result['bear_line'] = bear_line
+
+                    # 计算个股的长期趋势（EMA120）
+                    ema120_stock = self._ema(close, 120)
+                    
                     # 检查是否还有缺失值
                     if df['close_index'].isna().any():
                         logger.warning("[强势起爆指标] 部分大盘数据缺失，使用个股价格作为代理")
                         # 使用个股价格作为代理
-                        a1 = df['Close'] / ema120_stock
+                        a1 = close / ema120_stock
                         result['a1'] = a1
                         market_midline = self._ema(ema120_stock * a1, 2)
                     else:
@@ -125,22 +134,82 @@ class StrongDetonation(BaseIndicator):
                 else:
                     logger.warning("[强势起爆指标] 合并大盘数据失败，使用个股价格作为代理")
                     # 使用个股价格作为代理
-                    a1 = df['Close'] / ema120_stock
+                    # 先计算所有指标
+                    close = df['Close']
+                    open_price = df['Open']
+                    high = df['High']
+                    low = df['Low']
+                    
+                    aaa = (3 * close + high + low + open_price) / 6
+                    result['aaa'] = aaa
+                    var1 = self._ema(aaa, 35)
+                    result['var1'] = var1
+                    var2 = (self._hhv(var1, 5) + self._hhv(var1, 15) + self._hhv(var1, 30)) / 3
+                    result['var2'] = var2
+                    var3 = (self._llv(var1, 5) + self._llv(var1, 15) + self._llv(var1, 30)) / 3
+                    result['var3'] = var3
+                    bull_line = (self._hhv(var2, 5) + self._hhv(var2, 15) + self._hhv(var2, 30)) / 3
+                    result['bull_line'] = bull_line
+                    bear_line = (self._llv(var3, 5) + self._llv(var3, 15) + self._llv(var3, 30)) / 3
+                    result['bear_line'] = bear_line
+                    ema120_stock = self._ema(close, 120)
+                    
+                    a1 = close / ema120_stock
                     result['a1'] = a1
                     market_midline = self._ema(ema120_stock * a1, 2)
                     
             except Exception as e:
                 logger.warning(f"[强势起爆指标] 使用大盘数据计算失败: {e}，使用个股价格作为代理")
                 # 回退到代理模式
-                a1 = df['Close'] / ema120_stock
+                # 先计算所有指标
+                close = df['Close']
+                open_price = df['Open']
+                high = df['High']
+                low = df['Low']
+                
+                aaa = (3 * close + high + low + open_price) / 6
+                result['aaa'] = aaa
+                var1 = self._ema(aaa, 35)
+                result['var1'] = var1
+                var2 = (self._hhv(var1, 5) + self._hhv(var1, 15) + self._hhv(var1, 30)) / 3
+                result['var2'] = var2
+                var3 = (self._llv(var1, 5) + self._llv(var1, 15) + self._llv(var1, 30)) / 3
+                result['var3'] = var3
+                bull_line = (self._hhv(var2, 5) + self._hhv(var2, 15) + self._hhv(var2, 30)) / 3
+                result['bull_line'] = bull_line
+                bear_line = (self._llv(var3, 5) + self._llv(var3, 15) + self._llv(var3, 30)) / 3
+                result['bear_line'] = bear_line
+                ema120_stock = self._ema(close, 120)
+                
+                a1 = close / ema120_stock
                 result['a1'] = a1
                 market_midline = self._ema(ema120_stock * a1, 2)
             
         else:
             logger.warning("[强势起爆指标] 未获取到真实大盘指数数据，使用个股价格作为代理")
             
+            # 直接计算所有指标
+            close = df['Close']
+            open_price = df['Open']
+            high = df['High']
+            low = df['Low']
+            
+            aaa = (3 * close + high + low + open_price) / 6
+            result['aaa'] = aaa
+            var1 = self._ema(aaa, 35)
+            result['var1'] = var1
+            var2 = (self._hhv(var1, 5) + self._hhv(var1, 15) + self._hhv(var1, 30)) / 3
+            result['var2'] = var2
+            var3 = (self._llv(var1, 5) + self._llv(var1, 15) + self._llv(var1, 30)) / 3
+            result['var3'] = var3
+            bull_line = (self._hhv(var2, 5) + self._hhv(var2, 15) + self._hhv(var2, 30)) / 3
+            result['bull_line'] = bull_line
+            bear_line = (self._llv(var3, 5) + self._llv(var3, 15) + self._llv(var3, 30)) / 3
+            result['bear_line'] = bear_line
+            ema120_stock = self._ema(close, 120)
+            
             # A1:= 个股收盘价 / EMA(个股收盘价, 120) （模拟大盘强弱系数）
-            a1 = df['Close'] / ema120_stock
+            a1 = close / ema120_stock
             result['a1'] = a1
 
             # 大盘中线: EMA(个股EMA120 × A1, 2)

@@ -180,12 +180,8 @@ class RealtimeDataUpdater:
                     change_amount=safe_float(fields[31]) if len(fields) > 31 else None,
                     volume=safe_int(fields[6]) * 100 if fields[6] else None,
                     open_price=safe_float(fields[5]),
-                    high=safe_float(fields[34]) if len(fields) > 34 else None,
-                    low=(
-                        safe_float(fields[35].split("/")[0])
-                        if len(fields) > 35 and "/" in str(fields[35])
-                        else safe_float(fields[35]) if len(fields) > 35 else None
-                    ),
+                    high=safe_float(fields[33]) if len(fields) > 33 else None,
+                    low=safe_float(fields[34]) if len(fields) > 34 else None,
                     pre_close=safe_float(fields[4]),
                     turnover_rate=safe_float(fields[38]) if len(fields) > 38 else None,
                     amplitude=safe_float(fields[43]) if len(fields) > 43 else None,
