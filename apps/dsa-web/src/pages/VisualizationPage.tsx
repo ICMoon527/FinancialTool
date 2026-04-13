@@ -45,6 +45,7 @@ const VisualizationPage: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [visualizationData, setVisualizationData] = useState<VisualizationResponse | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
   const [searchHistory, setSearchHistory] = useState<VisualizationSearchHistoryItem[]>([]);
   const [selectedHistoryId, setSelectedHistoryId] = useState<number | null>(null);
   const [selectedIndicators, setSelectedIndicators] = useState<string[]>(
@@ -107,7 +108,7 @@ const VisualizationPage: React.FC = () => {
   const loadSearchHistory = useCallback(async () => {
     setIsLoadingHistory(true);
     try {
-      const response = await visualizationApi.getSearchHistory(20);
+      const response = await visualizationApi.getSearchHistory(100);
       setSearchHistory(response.items);
     } catch (err) {
       console.error('Failed to load search history:', err);
@@ -516,7 +517,7 @@ const VisualizationPage: React.FC = () => {
 
   // 1. 只更新 K 线数据（不碰主力操盘系列）
   useEffect(() => {
-    console.log('Updating K-line data only:', visualizationData);
+    console.log('Updating K-line data only:', visualizationData, 'refreshKey:', refreshKey);
     
     if (!visualizationData) {
       return;
@@ -556,7 +557,7 @@ const VisualizationPage: React.FC = () => {
     } catch (error) {
       console.error('Error updating K-line data:', error);
     }
-  }, [visualizationData]);
+  }, [visualizationData, refreshKey]);
   
   // 2. 只更新主力操盘系列（不碰 K 线）
   useEffect(() => {
@@ -647,7 +648,7 @@ const VisualizationPage: React.FC = () => {
     } catch (error) {
       console.error('Error updating main trading:', error);
     }
-  }, [selectedIndicators, visualizationData]);
+  }, [selectedIndicators, visualizationData, refreshKey]);
 
   // 更新子图数据
   useEffect(() => {
@@ -1521,7 +1522,7 @@ const VisualizationPage: React.FC = () => {
         console.warn('Failed to finalize subchart time sync:', e);
       }
     }, 100);
-  }, [visualizationData, selectedIndicators]);
+  }, [visualizationData, selectedIndicators, refreshKey]);
 
   // 搜索股票
   const handleSearch = async () => {
@@ -1553,7 +1554,10 @@ const VisualizationPage: React.FC = () => {
       );
 
       console.log('Visualization data received:', response);
-      setVisualizationData(response);
+      // 创建全新对象，确保React能检测到变化
+      const freshData = JSON.parse(JSON.stringify(response));
+      setVisualizationData(freshData);
+      setRefreshKey(prev => prev + 1);
 
       // 保存搜索历史
       await visualizationApi.saveSearchHistory({
@@ -1598,7 +1602,10 @@ const VisualizationPage: React.FC = () => {
         filterValidIndicators(['volume', 'main_capital_absorption', 'banker_control', 'main_trading']),
         startDateStr
       );
-      setVisualizationData(response);
+      // 创建全新对象，确保React能检测到变化
+      const freshData = JSON.parse(JSON.stringify(response));
+      setVisualizationData(freshData);
+      setRefreshKey(prev => prev + 1);
     } catch (err) {
       console.error('Failed to load visualization data:', err);
     } finally {

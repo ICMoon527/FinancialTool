@@ -22,7 +22,7 @@ export const historyApi = {
    * @param params 筛选和分页参数
    */
   getList: async (params: GetHistoryListParams = {}): Promise<HistoryListResponse> => {
-    const { stockCode, startDate, endDate, page = 1, limit = 20 } = params;
+    const { stockCode, startDate, endDate, page = 1, limit = 100 } = params;
 
     const queryParams: Record<string, string | number> = { page, limit };
     if (stockCode) queryParams.stock_code = stockCode;

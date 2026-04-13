@@ -221,7 +221,9 @@ class BatchDataUpdater:
         failed_stocks = []
         
         start_date_str = trade_date.strftime('%Y-%m-%d')
-        end_date_str = trade_date.strftime('%Y-%m-%d')
+        # 结束日期加一天，确保包含当天的数据
+        end_date_for_query = trade_date + timedelta(days=1)
+        end_date_str = end_date_for_query.strftime('%Y-%m-%d')
         
         for code in stock_codes:
             try:

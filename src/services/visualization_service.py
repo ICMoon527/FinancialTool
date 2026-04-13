@@ -177,11 +177,12 @@ class VisualizationService:
             # 使用交易日数计算起始日期
             query_start_date = get_start_date_by_trading_days(today, days, market)
         
-        # 直接获取数据
+        # 直接获取数据 - 结束日期加一天，确保包含当天的数据
+        end_date_for_query = today + timedelta(days=1)
         daily_data, source_name = fetcher_manager.get_daily_data(
             stock_code,
             start_date=query_start_date.strftime('%Y-%m-%d'),
-            end_date=today.strftime('%Y-%m-%d')
+            end_date=end_date_for_query.strftime('%Y-%m-%d')
         )
         
         if daily_data is None or daily_data.empty:
@@ -194,6 +195,13 @@ class VisualizationService:
             }
         
         logger.info(f"成功获取 {stock_code} 数据: {len(daily_data)} 条 (来源: {source_name})")
+        
+        # 打印数据日期范围，便于调试
+        if not daily_data.empty:
+            if 'date' in daily_data.columns:
+                first_date = daily_data['date'].iloc[0]
+                last_date = daily_data['date'].iloc[-1]
+                logger.info(f"{stock_code} 数据日期范围: {first_date} ~ {last_date}")
         
         # 转换数据格式
         kline_data = []
@@ -216,6 +224,12 @@ class VisualizationService:
                 'amount': float(row['amount']) if pd.notna(row['amount']) else 0,
                 'pct_chg': float(row['pct_chg']) if pd.notna(row['pct_chg']) else 0
             })
+        
+        # 打印转换后 kline_data 的日期范围，便于调试
+        if kline_data:
+            first_kline_date = kline_data[0]['date']
+            last_kline_date = kline_data[-1]['date']
+            logger.info(f"{stock_code} 转换后 K线数据日期范围: {first_kline_date} ~ {last_kline_date}")
         
         # 整合实时行情数据
         try:
@@ -420,12 +434,13 @@ class VisualizationService:
                     start_date_str = data_start_date.strftime('%Y-%m-%d')
                     end_date_str = data_end_date.strftime('%Y-%m-%d')
                     
-                    # 获取日线数据
-                    logger.info(f"正在获取 {stock_code} 数据: {start_date_str} ~ {end_date_str}")
+                    # 获取日线数据 - 结束日期加一天，确保包含当天的数据
+                    end_date_for_query = data_end_date + timedelta(days=1)
+                    logger.info(f"正在获取 {stock_code} 数据: {start_date_str} ~ {end_date_for_query.strftime('%Y-%m-%d')}")
                     daily_data, source_name = fetcher_manager.get_daily_data(
                         stock_code,
                         start_date=start_date_str,
-                        end_date=end_date_str
+                        end_date=end_date_for_query.strftime('%Y-%m-%d')
                     )
                     
                     if daily_data is not None and not daily_data.empty:
@@ -459,12 +474,13 @@ class VisualizationService:
                     start_date_str = data_start_date.strftime('%Y-%m-%d')
                     end_date_str = data_end_date.strftime('%Y-%m-%d')
                     
-                    # 获取日线数据
-                    logger.info(f"正在获取 {stock_code} 数据: {start_date_str} ~ {end_date_str}")
+                    # 获取日线数据 - 结束日期加一天，确保包含当天的数据
+                    end_date_for_query = data_end_date + timedelta(days=1)
+                    logger.info(f"正在获取 {stock_code} 数据: {start_date_str} ~ {end_date_for_query.strftime('%Y-%m-%d')}")
                     daily_data, source_name = fetcher_manager.get_daily_data(
                         stock_code,
                         start_date=start_date_str,
-                        end_date=end_date_str
+                        end_date=end_date_for_query.strftime('%Y-%m-%d')
                     )
                     
                     if daily_data is not None and not daily_data.empty:

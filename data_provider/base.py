@@ -997,17 +997,17 @@ class DataFetcherManager:
         """
         for i, fetcher in enumerate(self._fetchers):
             fetcher_name = fetcher.__class__.__name__
+            # 只尝试支持 get_index_daily_data 方法的 fetcher
+            if not hasattr(fetcher, 'get_index_daily_data'):
+                continue
             try:
                 logger.info(f"尝试使用 [{fetcher_name}] 获取 {symbol} 指数历史数据...")
-                if hasattr(fetcher, 'get_index_daily_data'):
-                    df = fetcher.get_index_daily_data(symbol, start_date, end_date)
-                    if df is not None and not df.empty:
-                        logger.info(f"[{fetcher_name}] 成功获取 {symbol} 指数历史数据")
-                        return df
-                    else:
-                        logger.warning(f"[{fetcher_name}] 未获取到 {symbol} 指数历史数据")
+                df = fetcher.get_index_daily_data(symbol, start_date, end_date)
+                if df is not None and not df.empty:
+                    logger.info(f"[{fetcher_name}] 成功获取 {symbol} 指数历史数据")
+                    return df
                 else:
-                    logger.warning(f"[{fetcher_name}] 不支持获取指数历史数据")
+                    logger.warning(f"[{fetcher_name}] 未获取到 {symbol} 指数历史数据")
             except Exception as e:
                 logger.warning(f"[{fetcher_name}] 获取 {symbol} 指数历史数据失败: {e}")
         

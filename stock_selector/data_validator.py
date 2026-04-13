@@ -158,11 +158,14 @@ class StockDataValidator:
         """
         try:
             logger.info(f"Fetching data for {stock_code}: {start_date} to {end_date}")
+            
+            # 结束日期加一天，确保包含当天的数据
+            end_date_for_query = end_date + timedelta(days=1)
 
             df, source = self.data_fetcher_manager.get_daily_data(
                 stock_code=stock_code,
                 start_date=start_date.strftime('%Y-%m-%d'),
-                end_date=end_date.strftime('%Y-%m-%d')
+                end_date=end_date_for_query.strftime('%Y-%m-%d')
             )
 
             if df is None or df.empty:

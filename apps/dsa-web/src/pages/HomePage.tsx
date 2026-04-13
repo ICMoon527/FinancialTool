@@ -31,7 +31,7 @@ const HomePage: React.FC = () => {
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(true);
   const [currentPage, setCurrentPage] = useState(1);
-  const pageSize = 20;
+  const pageSize = 100;
 
   // 报告详情状态
   const [selectedReport, setSelectedReport] = useState<AnalysisReport | null>(null);

@@ -80,7 +80,7 @@ export const visualizationApi = {
     return response.data as VisualizationResponse;
   },
 
-  async getSearchHistory(limit: number = 20): Promise<VisualizationSearchHistoryResponse> {
+  async getSearchHistory(limit: number = 100): Promise<VisualizationSearchHistoryResponse> {
     const response = await apiClient.get('/api/v1/visualization/history', {
       params: { limit },
     });

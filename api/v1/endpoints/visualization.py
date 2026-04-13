@@ -43,7 +43,7 @@ router = APIRouter()
     description="获取用户的可视化搜索历史记录"
 )
 def get_search_history(
-    limit: int = Query(20, ge=1, le=100, description="返回数量限制"),
+    limit: int = Query(20, ge=1, le=1000, description="返回数量限制"),
     db_manager: DatabaseManager = Depends(get_database_manager)
 ) -> VisualizationSearchHistoryResponse:
     """
