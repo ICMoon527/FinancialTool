@@ -37,7 +37,7 @@ StockCandidateCardSkeleton.displayName = 'StockCandidateCardSkeleton';
 
 // 骨架屏列表组件
 const StockListSkeleton = memo(({ count = 10 }: { count?: number }) => (
-  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5 px-1">
     {Array.from({ length: count }).map((_, i) => (
       <StockCandidateCardSkeleton key={i} />
     ))}
@@ -455,7 +455,7 @@ const StockSelectorPageOptimized: React.FC = () => {
           </div>
 
           {/* 右侧候选股票面板 */}
-          <div className="lg:col-span-3">
+          <div className="lg:col-span-3 pl-1">
             {error && (
               <div className="mb-4 p-4 bg-red-500/20 border border-red-500/30 rounded-lg">
                 <div className="flex items-center gap-2">
@@ -480,7 +480,7 @@ const StockSelectorPageOptimized: React.FC = () => {
                   </div>
                 </div>
                 
-                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5 px-1">
                   {sortedCandidates.map((candidate, index) => (
                     <StockCandidateCard
                       key={candidate.stock_code}

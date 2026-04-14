@@ -1649,7 +1649,7 @@ const VisualizationPage: React.FC = () => {
       <div className="p-3 border-b border-white/5 flex-shrink-0">
         <h3 className="text-sm font-medium text-white">搜索历史</h3>
       </div>
-      <div className="overflow-y-auto px-3 h-[1200px]">
+      <div className="overflow-y-auto px-3 py-1 h-[1200px]">
         {isLoadingHistory ? (
         <div className="flex items-center justify-center py-8">
           <div className="w-5 h-5 border-2 border-cyan/20 border-t-cyan rounded-full animate-spin" />
@@ -1657,7 +1657,7 @@ const VisualizationPage: React.FC = () => {
       ) : searchHistory.length === 0 ? (
         <p className="text-xs text-muted text-center py-4">暂无搜索历史</p>
       ) : (
-        <div className="space-y-1.5">
+        <div className="space-y-2">
           {searchHistory.map(item => {
             const isCurrentlyDisplayed = visualizationData && 
               visualizationData.stock_code === item.stock_code;

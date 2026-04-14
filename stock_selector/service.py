@@ -69,8 +69,9 @@ class StockSelectorService:
         strategy_ids: Optional[List[str]] = None,
         top_n: Optional[int] = None,
     ) -> List[StockCandidate]:
+        config = get_config()
         if top_n is None:
-            top_n = self.config.default_top_n
+            top_n = config.default_top_n
 
         # Use complete stock pool if none provided
         if stock_codes is None:
@@ -221,7 +222,7 @@ class StockSelectorService:
         candidates: List[StockCandidate] = []
 
         # 根据配置决定使用多线程还是单线程模式
-        enable_multithreading = self.config.enable_multithreading
+        enable_multithreading = config.enable_multithreading
         results = []
 
         def process_stock(code):
@@ -239,7 +240,7 @@ class StockSelectorService:
 
         if enable_multithreading:
             # 多线程模式：使用 ThreadPoolExecutor 并发处理
-            max_workers = min(self.config.multithreading_workers, len(stock_codes))
+            max_workers = min(config.multithreading_workers, len(stock_codes))
             logger.info("使用多线程模式筛选股票，工作线程数: %d", max_workers)
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:

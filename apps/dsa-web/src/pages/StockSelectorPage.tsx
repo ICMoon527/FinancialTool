@@ -560,8 +560,8 @@ const StockSelectorPage: React.FC = () => {
             </div>
           ) : (
             <>
-              <div className="w-1/2 overflow-y-auto pr-2">
-                <div className="grid gap-3">
+              <div className="w-1/2 overflow-y-auto pr-2 py-1 pl-1">
+                <div className="grid gap-4">
                   {candidates.map((candidate, index) => (
                     <StockCandidateCard
                       key={candidate.stock_code}

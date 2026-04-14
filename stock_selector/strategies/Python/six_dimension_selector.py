@@ -117,15 +117,9 @@ class SixDimensionSelectorStrategy(StockSelectorStrategy):
         self._main_trading_indicator = MainTrading()
         self._momentum2_indicator = Momentum2()
         
-        config = get_config()
-        self._main_trading_weight = config.six_dimension_main_trading_weight
-        self._bank_control_weight = config.six_dimension_bank_control_weight
-        self._momentum_v2_weight = config.six_dimension_momentum_v2_weight
-        self._resonance_weight = config.six_dimension_resonance_weight
-        self._strong_blast_weight = config.six_dimension_strong_blast_weight
-        self._sector_weight = config.six_dimension_sector_weight
-        self._min_matched_dimensions = config.six_dimension_min_matched_dimensions
-        logger.info(f"六维选股策略初始化: min_matched_dimensions={self._min_matched_dimensions}")
+        # 注意：每次使用配置时都调用 get_config() 获取最新配置，而不是保存为实例变量
+        # 这样配置更新后能立即生效
+        logger.info("六维选股策略初始化完成")
 
     def _ema(self, data: pd.Series, period: int) -> pd.Series:
         return data.ewm(span=period, adjust=False).mean()
@@ -588,11 +582,11 @@ class SixDimensionSelectorStrategy(StockSelectorStrategy):
                         match_details["sub_strategies"]["main_trading_buy_signal"] = main_trading
                         # logger.debug(f"{stock_code}: 主力操盘 matched={main_trading['matched']}, score={main_trading['score']}")
                         if main_trading["matched"]:
-                            weighted_score = main_trading["score"] * self._main_trading_weight
+                            weighted_score = main_trading["score"] * get_config().six_dimension_main_trading_weight
                             matched_strategies.append("主力操盘买入信号")
                             strategy_scores.append(main_trading["score"])
                             weighted_scores.append(weighted_score)
-                            conditions_met.append(f"主力操盘买入信号(+{main_trading['score']}, 权重×{self._main_trading_weight})")
+                            conditions_met.append(f"主力操盘买入信号(+{main_trading['score']}, 权重×{get_config().six_dimension_main_trading_weight})")
 
                     # 尝试复用预计算的控盘度
                     if precomputed_metrics and "control_degree" in precomputed_metrics and precomputed_metrics["control_degree"] is not None:
@@ -609,44 +603,44 @@ class SixDimensionSelectorStrategy(StockSelectorStrategy):
                         }
                         match_details["sub_strategies"]["banker_control_selector"] = banker_control
                         if banker_control["matched"]:
-                            weighted_score = banker_control["score"] * self._bank_control_weight
+                            weighted_score = banker_control["score"] * get_config().six_dimension_bank_control_weight
                             matched_strategies.append("庄家控盘选股")
                             strategy_scores.append(banker_control["score"])
                             weighted_scores.append(weighted_score)
-                            conditions_met.append(f"庄家控盘选股(+{banker_control['score']:.1f}, 权重×{self._bank_control_weight})")
+                            conditions_met.append(f"庄家控盘选股(+{banker_control['score']:.1f}, 权重×{get_config().six_dimension_bank_control_weight})")
                     else:
                         # 没有预计算的控盘度，自己计算
                         banker_control = self._calculate_banker_control(daily_data)
                         if banker_control:
                             match_details["sub_strategies"]["banker_control_selector"] = banker_control
                             if banker_control["matched"]:
-                                weighted_score = banker_control["score"] * self._bank_control_weight
+                                weighted_score = banker_control["score"] * get_config().six_dimension_bank_control_weight
                                 matched_strategies.append("庄家控盘选股")
                                 strategy_scores.append(banker_control["score"])
                                 weighted_scores.append(weighted_score)
-                                conditions_met.append(f"庄家控盘选股(+{banker_control['score']:.1f}, 权重×{self._bank_control_weight})")
+                                conditions_met.append(f"庄家控盘选股(+{banker_control['score']:.1f}, 权重×{get_config().six_dimension_bank_control_weight})")
 
                     momentum2 = self._calculate_momentum2(daily_data)
                     if momentum2:
                         match_details["sub_strategies"]["momentum_2_red_pillar_python"] = momentum2
                         # logger.debug(f"{stock_code}: 动能二号 matched={momentum2['matched']}, score={momentum2['score']}")
                         if momentum2["matched"]:
-                            weighted_score = momentum2["score"] * self._momentum_v2_weight
+                            weighted_score = momentum2["score"] * get_config().six_dimension_momentum_v2_weight
                             matched_strategies.append("动能二号红色柱")
                             strategy_scores.append(momentum2["score"])
                             weighted_scores.append(weighted_score)
-                            conditions_met.append(f"动能二号红色柱(+{momentum2['score']}, 权重×{self._momentum_v2_weight})")
+                            conditions_met.append(f"动能二号红色柱(+{momentum2['score']}, 权重×{get_config().six_dimension_momentum_v2_weight})")
 
                     resonance_chase = self._calculate_resonance_chase(daily_data)
                     if resonance_chase:
                         match_details["sub_strategies"]["resonance_chase"] = resonance_chase
                         # logger.debug(f"{stock_code}: 共振追涨 matched={resonance_chase['matched']}, score={resonance_chase['score']}")
                         if resonance_chase["matched"]:
-                            weighted_score = resonance_chase["score"] * self._resonance_weight
+                            weighted_score = resonance_chase["score"] * get_config().six_dimension_resonance_weight
                             matched_strategies.append("共振追涨")
                             strategy_scores.append(resonance_chase["score"])
                             weighted_scores.append(weighted_score)
-                            conditions_met.append(f"共振追涨(+{resonance_chase['score']}, 权重×{self._resonance_weight})")
+                            conditions_met.append(f"共振追涨(+{resonance_chase['score']}, 权重×{get_config().six_dimension_resonance_weight})")
 
                     # 尝试复用预计算的 purple_days，但强势起爆还需要更多计算，所以还是完整计算
                     strong_detonation = self._calculate_strong_detonation(daily_data, stock_code)
@@ -654,19 +648,19 @@ class SixDimensionSelectorStrategy(StockSelectorStrategy):
                         match_details["sub_strategies"]["strong_detonation_selector"] = strong_detonation
                         # logger.debug(f"{stock_code}: 强势起爆 matched={strong_detonation['matched']}, score={strong_detonation['score']}, consecutive_count={strong_detonation.get('consecutive_count')}")
                         if strong_detonation["matched"]:
-                            weighted_score = strong_detonation["score"] * self._strong_blast_weight
+                            weighted_score = strong_detonation["score"] * get_config().six_dimension_strong_blast_weight
                             consecutive_count = strong_detonation.get("consecutive_count", 0)
                             matched_strategies.append("强势起爆选股")
                             strategy_scores.append(strong_detonation["score"])
                             weighted_scores.append(weighted_score)
-                            conditions_met.append(f"强势起爆选股(+{strong_detonation['score']}, 权重×{self._strong_blast_weight}, 连续{consecutive_count}次)")
+                            conditions_met.append(f"强势起爆选股(+{strong_detonation['score']}, 权重×{get_config().six_dimension_strong_blast_weight}, 连续{consecutive_count}次)")
 
                     sector_score = self._calculate_sector_score(stock_code)
                     if sector_score:
                         match_details["sector_score"] = sector_score
                         # logger.debug(f"{stock_code}: 板块分 score={sector_score['score']}")
                         if sector_score["score"] > 0:
-                            weighted_score = sector_score["score"] * self._sector_weight
+                            weighted_score = sector_score["score"] * get_config().six_dimension_sector_weight
                             matched_strategies.append("板块分")
                             strategy_scores.append(sector_score["score"])
                             weighted_scores.append(weighted_score)
@@ -695,9 +689,9 @@ class SixDimensionSelectorStrategy(StockSelectorStrategy):
                                 sector_count = len(sector_details)
                                 avg_score_desc = f"{sector_score['score']:.1f}"
                                 weighted_score_desc = f"{weighted_score:.1f}"
-                                conditions_met.append(f"板块分(+{weighted_score_desc},原分{avg_score_desc}×权重{self._sector_weight},取{sector_count}个板块平均:[{sector_info_str}])")
+                                conditions_met.append(f"板块分(+{weighted_score_desc},原分{avg_score_desc}×权重{get_config().six_dimension_sector_weight},取{sector_count}个板块平均:[{sector_info_str}])")
                             else:
-                                conditions_met.append(f"板块分(+{sector_score['score']:.1f},权重×{self._sector_weight})")
+                                conditions_met.append(f"板块分(+{sector_score['score']:.1f},权重×{get_config().six_dimension_sector_weight})")
 
         except Exception as e:
             logger.warning(f"执行六维选股策略时出错 {stock_code}: {e}")
@@ -707,14 +701,15 @@ class SixDimensionSelectorStrategy(StockSelectorStrategy):
         else:
             raw_score = 0.0
 
+        config = get_config()
         raw_score = min(raw_score, max_score)
-        matched = len(matched_strategies) >= self._min_matched_dimensions
+        matched = len(matched_strategies) >= config.six_dimension_min_matched_dimensions
         
         # 调试：记录最终结果
-        # logger.debug(f"{stock_code}: 匹配维度数={len(matched_strategies)}, 需≥{self._min_matched_dimensions}, 总分={raw_score:.1f}, matched={matched}")
+        # logger.debug(f"{stock_code}: 匹配维度数={len(matched_strategies)}, 需≥{config.six_dimension_min_matched_dimensions}, 总分={raw_score:.1f}, matched={matched}")
 
         if matched_strategies:
-            reason = f"六维评分 {raw_score:.1f}，匹配{len(matched_strategies)}个维度(需≥{self._min_matched_dimensions})：{'; '.join(conditions_met)}"
+            reason = f"六维评分 {raw_score:.1f}，匹配{len(matched_strategies)}个维度(需≥{config.six_dimension_min_matched_dimensions})：{'; '.join(conditions_met)}"
         else:
             reason = f"六维评分 {raw_score:.1f}：未匹配任何策略"
 
@@ -723,7 +718,7 @@ class SixDimensionSelectorStrategy(StockSelectorStrategy):
         match_details["strategy_scores"] = strategy_scores
         match_details["weighted_scores"] = weighted_scores
         match_details["matched_dimensions_count"] = len(matched_strategies)
-        match_details["min_matched_dimensions"] = self._min_matched_dimensions
+        match_details["min_matched_dimensions"] = config.six_dimension_min_matched_dimensions
 
         return self.create_strategy_match(
             raw_score=raw_score,

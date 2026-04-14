@@ -104,7 +104,7 @@ class StockSelectorConfig:
             env_path = Path(env_file)
         else:
             env_path = Path(__file__).parent.parent / '.env'
-        load_dotenv(dotenv_path=env_path, override=False)
+        load_dotenv(dotenv_path=env_path, override=True)
         
         project_root = Path(__file__).parent.parent
         default_nl_dir = project_root / "stock_selector" / "strategies"
@@ -467,7 +467,12 @@ def stop_monitoring() -> None:
 
 
 # 模块初始化时从环境变量读取 ENABLE_DYNAMIC_CONFIG 配置
-# 如果 ENABLE_DYNAMIC_CONFIG=true，则自动启用动态配置功能
+# 如果 ENABLE_DYNAMIC_CONFIG=true，则自动启用动态配置功能并启动文件监控
 _env_enable = os.getenv("ENABLE_DYNAMIC_CONFIG", "").lower() == "true"
 if _env_enable:
     enable_dynamic_config(True)
+    # 自动启动 .env 文件监控
+    try:
+        start_monitoring()
+    except Exception as e:
+        pass
