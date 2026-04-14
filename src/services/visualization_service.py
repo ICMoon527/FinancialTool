@@ -53,16 +53,21 @@ def _is_trading_time() -> bool:
     return trading_start <= current_time <= trading_end
 
 
-def _should_add_realtime_quote(kline_data: List[Dict[str, Any]]) -> bool:
+def _should_add_realtime_quote(kline_data: List[Dict[str, Any]], force_update: bool = False) -> bool:
     """
     判断是否应该添加实时行情
     
     Args:
         kline_data: 现有的 K线数据列表，每个元素是包含 'date' 字段的字典
+        force_update: 是否强制更新，跳过交易时间和已有数据的检查
         
     Returns:
         True 如果应该添加实时行情，否则返回 False
     """
+    # 如果强制更新，直接返回 True
+    if force_update:
+        return True
+    
     # 首先检查是否为交易时间
     if not _is_trading_time():
         return False
@@ -139,7 +144,8 @@ class VisualizationService:
         stock_code: str,
         days: int = 365,
         indicator_types: Optional[List[str]] = None,
-        start_date: Optional[date] = None
+        start_date: Optional[date] = None,
+        force_update: bool = False
     ) -> Dict[str, Any]:
         """
         获取股票可视化数据（每次都重新获取所有数据）
@@ -234,7 +240,7 @@ class VisualizationService:
         # 整合实时行情数据
         try:
             # 首先判断是否需要整合实时行情
-            should_add = _should_add_realtime_quote(kline_data)
+            should_add = _should_add_realtime_quote(kline_data, force_update=force_update)
             
             if not should_add:
                 logger.info(f"{stock_code} 不需要整合实时行情（非交易时间或已有今日数据），使用历史数据")
@@ -254,7 +260,7 @@ class VisualizationService:
             logger.warning(f"获取或整合 {stock_code} 实时行情失败: {e}，继续使用历史数据")
         
         # 获取股票名称 - 如果不需要整合实时行情，则跳过实时行情获取
-        should_add = _should_add_realtime_quote(kline_data)
+        should_add = _should_add_realtime_quote(kline_data, force_update=force_update)
         stock_name = fetcher_manager.get_stock_name(stock_code, skip_realtime=not should_add)
         
         # 计算指标（不保存到数据库，直接计算）

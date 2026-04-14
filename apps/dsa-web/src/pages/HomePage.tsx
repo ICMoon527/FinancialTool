@@ -284,7 +284,7 @@ const HomePage: React.FC = () => {
         selectedId={selectedReport?.meta.id}
         onItemClick={(id) => { handleHistoryClick(id); setSidebarOpen(false); }}
         onLoadMore={handleLoadMore}
-        className="max-h-[62vh] md:max-h-[62vh] flex-1 overflow-hidden"
+        className="max-h-[88vh] md:max-h-[88vh] flex-1 overflow-hidden"
       />
     </div>
   );

@@ -119,8 +119,28 @@ class StockSelectorService:
                 from src.storage import StockDaily
                 from datetime import date, timedelta
                 
+                # 计算日期范围：获取最近N个交易日的数据（N来自配置）
+                from stock_selector.trading_calendar import get_trading_calendar
+                calendar = get_trading_calendar()
+                all_trading_days = calendar.get_all_trading_days()
                 end_date = date.today()
-                start_date = end_date - timedelta(days=200)
+                days_count = self.config.update_data_default_days
+                
+                # 找到今天在交易日历中的位置
+                try:
+                    today_index = all_trading_days.index(end_date)
+                    # 往前推N个交易日
+                    start_index = max(0, today_index - days_count)
+                    start_date = all_trading_days[start_index]
+                except ValueError:
+                    # 如果今天不在交易日历中，往前找最近的交易日
+                    today_index = len(all_trading_days) - 1
+                    for i in range(len(all_trading_days) - 1, -1, -1):
+                        if all_trading_days[i] <= end_date:
+                            today_index = i
+                            break
+                    start_index = max(0, today_index - days_count)
+                    start_date = all_trading_days[start_index]
                 
                 with self._db_manager.get_session() as session:
                     from sqlalchemy import select
@@ -415,9 +435,28 @@ class StockSelectorService:
                 from datetime import date, timedelta
                 from sqlalchemy import select, desc
                 
-                # 计算日期范围：获取最近150天的数据
+                # 计算日期范围：获取最近N个交易日的数据（N来自配置）
+                from stock_selector.trading_calendar import get_trading_calendar
+                calendar = get_trading_calendar()
+                all_trading_days = calendar.get_all_trading_days()
                 end_date = date.today()
-                start_date = end_date - timedelta(days=200)  # 多取一些确保有足够数据
+                days_count = self.config.update_data_default_days
+                
+                # 找到今天在交易日历中的位置
+                try:
+                    today_index = all_trading_days.index(end_date)
+                    # 往前推N个交易日
+                    start_index = max(0, today_index - days_count)
+                    start_date = all_trading_days[start_index]
+                except ValueError:
+                    # 如果今天不在交易日历中，往前找最近的交易日
+                    today_index = len(all_trading_days) - 1
+                    for i in range(len(all_trading_days) - 1, -1, -1):
+                        if all_trading_days[i] <= end_date:
+                            today_index = i
+                            break
+                    start_index = max(0, today_index - days_count)
+                    start_date = all_trading_days[start_index]
                 
                 with self._db_manager.get_session() as session:
                     # 从数据库读取数据
@@ -452,7 +491,10 @@ class StockSelectorService:
                         daily_data = daily_data.dropna(subset=['open', 'high', 'low', 'close'])
                         # 2. 过滤掉 low > high 的无效数据行
                         daily_data = daily_data[daily_data['low'] <= daily_data['high']]
-                        # 3. 确保至少还有30条数据
+                        # 3. 过滤掉非交易日的数据
+                        from stock_selector.trading_calendar import is_trading_day
+                        daily_data = daily_data[daily_data['date'].apply(is_trading_day)]
+                        # 4. 确保至少还有30条数据
                         if len(daily_data) < 30:
                             logger.debug(f"从数据库读取 {stock_code} 数据清洗后不足30条，放弃使用数据库数据")
                             daily_data = None
@@ -604,6 +646,18 @@ class StockSelectorService:
 
         # 如果有预加载的日线数据，直接使用
         if daily_data is not None and isinstance(daily_data, pd.DataFrame) and not daily_data.empty:
+            # 数据清洗：过滤掉非交易日的数据
+            from stock_selector.trading_calendar import is_trading_day
+            daily_data = daily_data[daily_data['date'].apply(is_trading_day)]
+            
+            if daily_data.empty or len(daily_data) < 30:
+                logger.debug(f"预加载数据清洗后不足30条，回退到原来的方法")
+                try:
+                    return self._screen_single_stock(stock_code, strategy_ids)
+                except Exception as e:
+                    logger.error("Failed to screen stock %s with fallback: %s", stock_code, e)
+                    return None
+            
             if 'pct_chg' in daily_data.columns:
                 change_pct = float(daily_data['pct_chg'].iloc[-1]) if pd.notna(daily_data['pct_chg'].iloc[-1]) else None
             

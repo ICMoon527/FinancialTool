@@ -211,6 +211,7 @@ def get_visualization_data(
     days: int = Query(3650, ge=1, le=3650, description="获取天数（如果提供了 start_date，则此参数被忽略）"),
     indicator_types: Optional[str] = Query(None, description="指标类型列表，逗号分隔"),
     start_date: Optional[str] = Query(None, description="起始日期，格式为 YYYY-MM-DD"),
+    force_update: bool = Query(False, description="是否强制更新，跳过交易时间和已有数据的检查"),
     db_manager: DatabaseManager = Depends(get_database_manager)
 ) -> VisualizationResponse:
     """
@@ -221,6 +222,7 @@ def get_visualization_data(
         days: 获取天数（如果提供了 start_date，则此参数被忽略）
         indicator_types: 指标类型列表（逗号分隔）
         start_date: 起始日期，格式为 YYYY-MM-DD
+        force_update: 是否强制更新，跳过交易时间和已有数据的检查
         db_manager: 数据库管理器依赖
 
     Returns:
@@ -246,7 +248,8 @@ def get_visualization_data(
             stock_code=stock_code,
             days=days,
             indicator_types=None,
-            start_date=start_date_obj
+            start_date=start_date_obj,
+            force_update=force_update
         )
 
         if not result.get('kline_data'):
