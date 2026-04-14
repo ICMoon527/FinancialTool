@@ -220,7 +220,6 @@ const StockSelectorPage: React.FC = () => {
   const [screeningStage, setScreeningStage] = useState('');
   const [selectedStock, setSelectedStock] = useState<StockCandidateInfo | null>(null);
 
-  const [topN, setTopN] = useState<number | null>(null);
   const [stockCodes, setStockCodes] = useState('');
   const [strategyTypeFilter, setStrategyTypeFilter] = useState<'ALL' | 'NATURAL_LANGUAGE' | 'PYTHON'>('ALL');
   
@@ -272,7 +271,6 @@ const StockSelectorPage: React.FC = () => {
       const codes = stockCodes.trim() ? stockCodes.trim().split(/[,\s]+/).filter(Boolean) : undefined;
       const strategyIds = selectedStrategyIds.length > 0 ? selectedStrategyIds : undefined;
       const response = await stockSelectorApi.screenStocks({
-        top_n: topN ?? 10,
         stock_codes: codes,
         update_data: updateData,
         update_realtime: updateRealtime,
@@ -289,39 +287,16 @@ const StockSelectorPage: React.FC = () => {
     } finally {
       setIsScreening(false);
     }
-  }, [stockCodes, topN, updateData, updateRealtime, selectedStrategyIds]);
+  }, [stockCodes, updateData, updateRealtime, selectedStrategyIds]);
 
   useEffect(() => {
     const initPage = async () => {
       setIsLoadingStrategies(true);
       try {
-        const [strategiesResult, configResult] = await Promise.allSettled([
-          fetchStrategies(),
-          stockSelectorApi.getConfig()
-        ]);
-        
-        if (strategiesResult.status === 'fulfilled') {
-          setStrategies(strategiesResult.value);
-        } else {
-          console.error('Failed to fetch strategies:', strategiesResult.reason);
-          setStrategies([]);
-        }
-        
-        if (configResult.status === 'fulfilled') {
-          console.log('Config response:', configResult.value);
-          if (configResult.value && configResult.value.success) {
-            setTopN(configResult.value.default_top_n);
-          } else {
-            console.error('Invalid config response:', configResult.value);
-            setTopN(10);
-          }
-        } else {
-          console.error('Failed to fetch config:', configResult.reason);
-          setTopN(10);
-        }
+        const strategiesResult = await fetchStrategies();
+        setStrategies(strategiesResult);
       } catch (err) {
         console.error('Failed to init page:', err);
-        setTopN(10);
         setStrategies([]);
       } finally {
         setIsLoadingStrategies(false);
@@ -427,19 +402,6 @@ const StockSelectorPage: React.FC = () => {
                 )}
               </div>
             )}
-          </div>
-          
-          <div className="flex items-center gap-1 whitespace-nowrap">
-            <span className="text-xs text-muted">Top</span>
-            <input
-              type="number"
-              min={1}
-              max={20}
-              value={topN ?? ''}
-              onChange={(e) => setTopN(parseInt(e.target.value, 10) || 10)}
-              disabled={isScreening || topN === null}
-              className="input-terminal w-14 text-center text-xs py-2"
-            />
           </div>
           
           <button

@@ -2618,18 +2618,28 @@ class DatabaseManager:
             limit: 返回数量限制
 
         Returns:
-            搜索历史记录列表
+            搜索历史记录列表（已去重）
         """
         with self.get_session() as session:
             results = (
                 session.execute(
                     select(VisualizationSearchHistory)
                     .order_by(desc(VisualizationSearchHistory.searched_at))
-                    .limit(limit)
                 )
                 .scalars()
                 .all()
             )
+
+            # 去重：只保留每个股票代码的最新记录
+            seen_stock_codes = set()
+            unique_results = []
+            for record in results:
+                if record.stock_code not in seen_stock_codes:
+                    seen_stock_codes.add(record.stock_code)
+                    unique_results.append(record)
+                    # 达到 limit 限制后停止
+                    if len(unique_results) >= limit:
+                        break
 
             return [
                 {
@@ -2639,7 +2649,7 @@ class DatabaseManager:
                     "searched_at": record.searched_at.isoformat() if record.searched_at else None,
                     "selected_indicators": record.get_selected_indicators()
                 }
-                for record in results
+                for record in unique_results
             ]
 
     def delete_duplicate_visualization_history(self, stock_code: str) -> int:

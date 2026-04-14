@@ -773,14 +773,15 @@ class VisualizationService:
         Returns:
             记录ID
         """
-        # 删除重复记录
-        self.db.delete_duplicate_visualization_history(stock_code)
-        # 保存新记录
-        return self.db.save_visualization_search_history(
+        # 先保存新记录
+        record_id = self.db.save_visualization_search_history(
             stock_code,
             stock_name,
             selected_indicators
         )
+        # 然后删除重复记录，只保留最新的那条（刚保存的）
+        self.db.delete_duplicate_visualization_history(stock_code)
+        return record_id
 
     def get_search_history(self, limit: int = 20) -> List[Dict[str, Any]]:
         """

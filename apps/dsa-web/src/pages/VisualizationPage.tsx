@@ -1658,43 +1658,57 @@ const VisualizationPage: React.FC = () => {
         <p className="text-xs text-muted text-center py-4">暂无搜索历史</p>
       ) : (
         <div className="space-y-1.5">
-          {searchHistory.map(item => (
-            <button
+          {searchHistory.map(item => {
+            const isCurrentlyDisplayed = visualizationData && 
+              visualizationData.stock_code === item.stock_code;
+            
+            return (
+              <button
               key={item.id}
               type="button"
               onClick={() => handleHistoryClick(item)}
-              className={`history-item w-full text-left ${selectedHistoryId === item.id ? 'active' : ''}`}
+              className={`history-item w-full text-left ${
+                isCurrentlyDisplayed 
+                  ? 'ring-2 ring-cyan/60 bg-cyan/10 border-transparent' 
+                  : (selectedHistoryId === item.id ? 'active' : '')
+              }`}
             >
-              <div className="flex items-center gap-2 w-full">
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center justify-between gap-1.5">
-                    <span className="font-medium text-white truncate text-xs">
-                      {item.stock_name ? `${item.stock_name} (${item.stock_code})` : item.stock_code}
-                    </span>
+                <div className="flex items-center gap-2 w-full">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center justify-between gap-1.5">
+                      <span className="font-medium text-white truncate text-xs">
+                        {item.stock_name ? `${item.stock_name} (${item.stock_code})` : item.stock_code}
+                      </span>
+                      {isCurrentlyDisplayed && (
+                        <span className="flex-shrink-0 text-cyan text-xs font-medium">
+                          展示中
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-1.5 mt-0.5">
+                      <span className="text-xs text-muted font-mono">
+                        {item.stock_code}
+                      </span>
+                      <span className="text-xs text-muted/50">·</span>
+                      <span className="text-xs text-muted">
+                        {new Date(item.searched_at).toLocaleString('zh-CN')}
+                      </span>
+                    </div>
                   </div>
-                  <div className="flex items-center gap-1.5 mt-0.5">
-                    <span className="text-xs text-muted font-mono">
-                      {item.stock_code}
-                    </span>
-                    <span className="text-xs text-muted/50">·</span>
-                    <span className="text-xs text-muted">
-                      {new Date(item.searched_at).toLocaleString('zh-CN')}
-                    </span>
-                  </div>
+                  <button
+                    type="button"
+                    onClick={(e) => handleDeleteHistory(item.id, e)}
+                    className="p-1 text-muted hover:text-danger transition-colors flex-shrink-0"
+                    title="删除"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  onClick={(e) => handleDeleteHistory(item.id, e)}
-                  className="p-1 text-muted hover:text-danger transition-colors flex-shrink-0"
-                  title="删除"
-                >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                  </svg>
-                </button>
-              </div>
-            </button>
-          ))}
+              </button>
+            );
+          })}
         </div>
       )}
     </div>

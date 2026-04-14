@@ -8,8 +8,9 @@ Configuration management for the stock selector system.
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Callable, Any, Tuple
 from dotenv import load_dotenv
+from .dynamic_config_manager import DynamicConfigManager
 
 
 @dataclass
@@ -265,15 +266,208 @@ class StockSelectorConfig:
 
 
 _config_instance: Optional[StockSelectorConfig] = None
+_dynamic_config_manager: Optional[DynamicConfigManager] = None
+_dynamic_config_enabled: bool = False
 
 
 def get_config() -> StockSelectorConfig:
-    global _config_instance
-    if _config_instance is None:
+    """
+    获取当前配置
+    
+    如果启用了动态配置，则从动态配置管理器获取配置；
+    否则，使用传统的全局配置实例。
+    
+    Returns:
+        StockSelectorConfig: 当前生效的配置对象
+    """
+    global _config_instance, _dynamic_config_manager, _dynamic_config_enabled
+    
+    if _dynamic_config_enabled:
+        if _dynamic_config_manager is None:
+            _dynamic_config_manager = DynamicConfigManager()
+        return _dynamic_config_manager.get_config()
+    else:
+        if _config_instance is None:
+            _config_instance = StockSelectorConfig.from_env()
+        return _config_instance
+
+
+def set_config(config: StockSelectorConfig, 
+               validator: Optional[Callable[[StockSelectorConfig], bool]] = None) -> Tuple[bool, Dict[str, Any]]:
+    """
+    设置新配置
+    
+    如果启用了动态配置，则使用动态配置管理器原子性地设置配置；
+    否则，直接设置全局配置实例。
+    
+    Args:
+        config: 新的配置对象
+        validator: 可选的配置验证函数，仅在启用动态配置时有效
+    
+    Returns:
+        Tuple[bool, Dict[str, Any]]: 
+            - 第一个元素：配置设置成功返回 True
+            - 第二个元素：包含变更信息的字典（仅在启用动态配置时有值）
+    """
+    global _config_instance, _dynamic_config_manager, _dynamic_config_enabled
+    
+    if _dynamic_config_enabled:
+        if _dynamic_config_manager is None:
+            _dynamic_config_manager = DynamicConfigManager()
+        return _dynamic_config_manager.set_config(config, validator)
+    else:
+        _config_instance = config
+        return True, {}
+
+
+def reload_config(config_path: Optional[str] = None,
+                  validator: Optional[Callable[[StockSelectorConfig], bool]] = None) -> Tuple[bool, Dict[str, Any]]:
+    """
+    重新加载配置
+    
+    如果启用了动态配置，则使用动态配置管理器重新加载配置；
+    否则，重新从环境变量加载配置并设置为全局实例。
+    
+    Args:
+        config_path: 可选的配置文件路径，仅在启用动态配置时有效
+        validator: 可选的配置验证函数，仅在启用动态配置时有效
+    
+    Returns:
+        Tuple[bool, Dict[str, Any]]: 
+            - 第一个元素：配置重新加载成功返回 True
+            - 第二个元素：包含变更信息的字典（仅在启用动态配置时有值）
+    """
+    global _config_instance, _dynamic_config_manager, _dynamic_config_enabled
+    
+    if _dynamic_config_enabled:
+        if _dynamic_config_manager is None:
+            _dynamic_config_manager = DynamicConfigManager()
+        return _dynamic_config_manager.reload_config(config_path, validator)
+    else:
         _config_instance = StockSelectorConfig.from_env()
-    return _config_instance
+        return True, {}
 
 
-def set_config(config: StockSelectorConfig) -> None:
-    global _config_instance
-    _config_instance = config
+def enable_dynamic_config(enable: bool) -> None:
+    """
+    启用或禁用动态配置功能
+    
+    当从禁用切换到启用时，会自动创建动态配置管理器并将当前配置迁移过去；
+    当从启用切换到禁用时，会将当前配置保存到全局配置实例中。
+    
+    Args:
+        enable: True 表示启用动态配置，False 表示禁用动态配置
+    """
+    global _config_instance, _dynamic_config_manager, _dynamic_config_enabled
+    
+    if enable == _dynamic_config_enabled:
+        return
+    
+    if enable:
+        if _dynamic_config_manager is None:
+            if _config_instance is not None:
+                _dynamic_config_manager = DynamicConfigManager(_config_instance)
+            else:
+                _dynamic_config_manager = DynamicConfigManager()
+        _dynamic_config_enabled = True
+    else:
+        if _dynamic_config_manager is not None:
+            _config_instance = _dynamic_config_manager.get_config()
+        _dynamic_config_enabled = False
+
+
+def rollback() -> Tuple[bool, Dict[str, Any]]:
+    """
+    回滚到上一个有效配置（仅在启用动态配置时有效）
+    
+    Returns:
+        Tuple[bool, Dict[str, Any]]: 
+            - 第一个元素：回滚成功返回 True
+            - 第二个元素：包含变更信息的字典
+    """
+    global _dynamic_config_manager, _dynamic_config_enabled
+    
+    if not _dynamic_config_enabled or _dynamic_config_manager is None:
+        return False, {}
+    
+    return _dynamic_config_manager.rollback()
+
+
+def register_callback(callback: Callable[[StockSelectorConfig, StockSelectorConfig], None]) -> str:
+    """
+    注册配置变更回调函数（仅在启用动态配置时有效）
+    
+    Args:
+        callback: 回调函数，签名为 (old_config: StockSelectorConfig, new_config: StockSelectorConfig) -> None
+    
+    Returns:
+        str: 回调函数的唯一ID，可用于后续取消注册
+    """
+    global _dynamic_config_manager, _dynamic_config_enabled
+    
+    if not _dynamic_config_enabled:
+        raise RuntimeError("动态配置未启用，无法注册回调函数")
+    
+    if _dynamic_config_manager is None:
+        _dynamic_config_manager = DynamicConfigManager()
+    
+    return _dynamic_config_manager.register_callback(callback)
+
+
+def unregister_callback(callback_id: str) -> bool:
+    """
+    取消注册配置变更回调函数（仅在启用动态配置时有效）
+    
+    Args:
+        callback_id: 回调函数的唯一ID
+    
+    Returns:
+        bool: 成功取消返回 True
+    """
+    global _dynamic_config_manager, _dynamic_config_enabled
+    
+    if not _dynamic_config_enabled or _dynamic_config_manager is None:
+        return False
+    
+    return _dynamic_config_manager.unregister_callback(callback_id)
+
+
+def start_monitoring(env_file_path: Optional[str] = None, 
+                     monitor_interval: float = 1.0,
+                     debounce_time: float = 0.5) -> None:
+    """
+    启动 .env 文件监控（仅在启用动态配置时有效）
+    
+    Args:
+        env_file_path: .env 文件路径
+        monitor_interval: 监控间隔（秒）
+        debounce_time: 防抖时间（秒）
+    """
+    global _dynamic_config_manager, _dynamic_config_enabled
+    
+    if not _dynamic_config_enabled:
+        raise RuntimeError("动态配置未启用，无法启动文件监控")
+    
+    if _dynamic_config_manager is None:
+        _dynamic_config_manager = DynamicConfigManager()
+    
+    _dynamic_config_manager.start_monitoring(env_file_path, monitor_interval, debounce_time)
+
+
+def stop_monitoring() -> None:
+    """
+    停止 .env 文件监控（仅在启用动态配置时有效）
+    """
+    global _dynamic_config_manager, _dynamic_config_enabled
+    
+    if not _dynamic_config_enabled or _dynamic_config_manager is None:
+        return
+    
+    _dynamic_config_manager.stop_monitoring()
+
+
+# 模块初始化时从环境变量读取 ENABLE_DYNAMIC_CONFIG 配置
+# 如果 ENABLE_DYNAMIC_CONFIG=true，则自动启用动态配置功能
+_env_enable = os.getenv("ENABLE_DYNAMIC_CONFIG", "").lower() == "true"
+if _env_enable:
+    enable_dynamic_config(True)
