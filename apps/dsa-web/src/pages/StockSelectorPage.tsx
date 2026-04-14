@@ -173,7 +173,7 @@ const StockCandidateCard: React.FC<{
         </div>
         <div className="bg-white/5 rounded-lg p-1.5 text-center">
           <div className="text-sm font-bold text-yellow-400">
-            {controlDegree !== undefined && controlDegree !== null ? controlDegree.toFixed(1) : '-'}
+            {controlDegree !== undefined && controlDegree !== null ? controlDegree.toFixed(2) : '-'}
           </div>
           <div className="text-[9px] text-muted">控盘度</div>
         </div>

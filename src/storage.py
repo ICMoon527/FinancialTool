@@ -2002,6 +2002,90 @@ class DatabaseManager:
             logger.error(f"保存板块 {name} 在 {date} 的数据失败: {e}")
             return False
 
+    def save_sector_dailies_batch(
+        self,
+        sectors: List[Dict],
+        date: date,
+        data_source: str = "unknown"
+    ) -> int:
+        """
+        批量保存板块每日数据（优化版）
+
+        Args:
+            sectors: 板块数据列表，每个元素是包含 'name' 和 'change_pct' 的字典
+            date: 日期
+            data_source: 数据来源
+
+        Returns:
+            保存成功的数量
+        """
+        if not sectors:
+            return 0
+        
+        saved_count = 0
+        
+        try:
+            with self.session_scope() as session:
+                # 1. 批量查询已有记录
+                sector_names = [s.get('name') for s in sectors if s.get('name')]
+                
+                if not sector_names:
+                    return 0
+                
+                stmt = select(SectorDaily).where(
+                    and_(
+                        SectorDaily.name.in_(sector_names),
+                        SectorDaily.date == date
+                    )
+                )
+                existing_records = session.execute(stmt).scalars().all()
+                
+                # 2. 构建已有记录的字典
+                existing_dict = {rec.name: rec for rec in existing_records}
+                
+                # 3. 分别更新和插入
+                new_records = []
+                for sector in sectors:
+                    name = sector.get('name')
+                    change_pct = sector.get('change_pct')
+                    
+                    if not name:
+                        continue
+                    
+                    if name in existing_dict:
+                        # 更新现有记录
+                        existing = existing_dict[name]
+                        if change_pct is not None:
+                            existing.change_pct = change_pct
+                        existing.stock_count = sector.get('stock_count', 0)
+                        existing.limit_up_count = sector.get('limit_up_count', 0)
+                        existing.data_source = data_source
+                        existing.updated_at = datetime.now()
+                        logger.info(f"更新板块 {name} 在 {date} 的数据: change_pct={change_pct}")
+                    else:
+                        # 添加新记录
+                        record = SectorDaily(
+                            name=name,
+                            date=date,
+                            change_pct=change_pct,
+                            stock_count=sector.get('stock_count', 0),
+                            limit_up_count=sector.get('limit_up_count', 0),
+                            data_source=data_source
+                        )
+                        new_records.append(record)
+                        logger.info(f"保存板块 {name} 在 {date} 的数据: change_pct={change_pct}")
+                
+                if new_records:
+                    session.add_all(new_records)
+                
+                session.commit()
+                saved_count = len(sector_names)
+                
+        except Exception as e:
+            logger.error(f"批量保存板块数据失败: {e}")
+        
+        return saved_count
+
     def save_sector_rankings(
         self,
         top_sectors: List[Dict],
@@ -2024,22 +2108,14 @@ class DatabaseManager:
         if date is None:
             date = datetime.now().date()
 
-        saved_count = 0
         all_sectors = top_sectors + bottom_sectors
-
-        for sector in all_sectors:
-            name = sector.get('name')
-            change_pct = sector.get('change_pct')
-            if name:
-                if self.save_sector_daily(
-                    name=name,
-                    date=date,
-                    change_pct=change_pct,
-                    data_source=data_source
-                ):
-                    saved_count += 1
-
-        return saved_count
+        
+        # 使用批量保存方法，性能更优
+        return self.save_sector_dailies_batch(
+            sectors=all_sectors,
+            date=date,
+            data_source=data_source
+        )
 
     @staticmethod
     def _parse_published_date(value: Optional[str]) -> Optional[datetime]:
