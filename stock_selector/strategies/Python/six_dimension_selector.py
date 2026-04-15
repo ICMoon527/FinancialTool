@@ -360,6 +360,7 @@ class SixDimensionSelectorStrategy(StockSelectorStrategy):
                         a1 = index_close / ema120_index
                         market_midline = self._ema(ema120_stock * a1, 2)
                     else:
+                        logger.warning(f"[六维策略 - {stock_code}] 填充后还有缺失值，返回 0")
                         return {
                             'matched': False,
                             'score': 0,
@@ -367,6 +368,7 @@ class SixDimensionSelectorStrategy(StockSelectorStrategy):
                             'consecutive_count': 0,
                         }
                 else:
+                    logger.warning(f"[六维策略 - {stock_code}] 没有 close_index 列，返回 0")
                     return {
                         'matched': False,
                         'score': 0,
@@ -374,6 +376,7 @@ class SixDimensionSelectorStrategy(StockSelectorStrategy):
                         'consecutive_count': 0,
                     }
             else:
+                logger.warning(f"[六维策略 - {stock_code}] 大盘数据是 None 或空，返回 0")
                 return {
                     'matched': False,
                     'score': 0,

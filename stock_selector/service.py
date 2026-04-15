@@ -589,17 +589,18 @@ class StockSelectorService:
         candidate.extra_data["change_pct"] = change_pct
         candidate.extra_data["control_degree"] = control_degree
         
-        # 优先从六维策略的强势起爆匹配结果中获取连紫数
+        # 优先使用我们自己计算的连紫数，只有在没有计算时才尝试从策略匹配中获取
         final_purple_days = purple_days
-        for match in matches:
-            if match.strategy_id == "six_dimension_selector" and match.match_details:
-                sub_strategies = match.match_details.get("sub_strategies", {})
-                strong_detonation = sub_strategies.get("strong_detonation_selector")
-                if strong_detonation:
-                    consecutive_count = strong_detonation.get("consecutive_count")
-                    if consecutive_count is not None:
-                        final_purple_days = consecutive_count
-                        break
+        if final_purple_days is None:
+            for match in matches:
+                if match.strategy_id == "six_dimension_selector" and match.match_details:
+                    sub_strategies = match.match_details.get("sub_strategies", {})
+                    strong_detonation = sub_strategies.get("strong_detonation_selector")
+                    if strong_detonation:
+                        consecutive_count = strong_detonation.get("consecutive_count")
+                        if consecutive_count is not None:
+                            final_purple_days = consecutive_count
+                            break
         
         candidate.extra_data["purple_days"] = final_purple_days
 
@@ -716,15 +717,16 @@ class StockSelectorService:
         candidate.extra_data["control_degree"] = control_degree
         
         final_purple_days = purple_days
-        for match in matches:
-            if match.strategy_id == "six_dimension_selector" and match.match_details:
-                sub_strategies = match.match_details.get("sub_strategies", {})
-                strong_detonation = sub_strategies.get("strong_detonation_selector")
-                if strong_detonation:
-                    consecutive_count = strong_detonation.get("consecutive_count")
-                    if consecutive_count is not None:
-                        final_purple_days = consecutive_count
-                        break
+        if final_purple_days is None:
+            for match in matches:
+                if match.strategy_id == "six_dimension_selector" and match.match_details:
+                    sub_strategies = match.match_details.get("sub_strategies", {})
+                    strong_detonation = sub_strategies.get("strong_detonation_selector")
+                    if strong_detonation:
+                        consecutive_count = strong_detonation.get("consecutive_count")
+                        if consecutive_count is not None:
+                            final_purple_days = consecutive_count
+                            break
         
         candidate.extra_data["purple_days"] = final_purple_days
 
