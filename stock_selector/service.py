@@ -16,6 +16,7 @@ from stock_selector.config import StockSelectorConfig, get_config
 from stock_selector.manager import StrategyManager
 from stock_selector.stock_pool import get_all_stock_code_name_pairs, filter_special_stock_codes, filter_st_stocks
 from stock_selector.strategies.Python.strong_detonation_python import MarketDataCache
+from stock_selector.trading_calendar import get_trading_calendar, is_trading_day
 
 logger = logging.getLogger(__name__)
 
@@ -120,7 +121,6 @@ class StockSelectorService:
                 from datetime import date, timedelta
                 
                 # 计算日期范围：获取最近N个交易日的数据（N来自配置）
-                from stock_selector.trading_calendar import get_trading_calendar
                 calendar = get_trading_calendar()
                 all_trading_days = calendar.get_all_trading_days()
                 end_date = date.today()
@@ -188,7 +188,6 @@ class StockSelectorService:
                                 df = df[df['low'] <= df['high']]
                                 
                                 # 过滤掉非交易日的数据
-                                from stock_selector.trading_calendar import is_trading_day
                                 df = df[df['date'].apply(lambda d: is_trading_day(d))]
                                 
                                 if len(df) >= 30:
@@ -227,7 +226,6 @@ class StockSelectorService:
                         df = df[df['low'] <= df['high']]
                         
                         # 过滤掉非交易日的数据
-                        from stock_selector.trading_calendar import is_trading_day
                         df = df[df['date'].apply(lambda d: is_trading_day(d))]
                         
                         if len(df) >= 30:
@@ -436,7 +434,6 @@ class StockSelectorService:
                 from sqlalchemy import select, desc
                 
                 # 计算日期范围：获取最近N个交易日的数据（N来自配置）
-                from stock_selector.trading_calendar import get_trading_calendar
                 calendar = get_trading_calendar()
                 all_trading_days = calendar.get_all_trading_days()
                 end_date = date.today()
@@ -492,7 +489,6 @@ class StockSelectorService:
                         # 2. 过滤掉 low > high 的无效数据行
                         daily_data = daily_data[daily_data['low'] <= daily_data['high']]
                         # 3. 过滤掉非交易日的数据
-                        from stock_selector.trading_calendar import is_trading_day
                         daily_data = daily_data[daily_data['date'].apply(is_trading_day)]
                         # 4. 确保至少还有30条数据
                         if len(daily_data) < 30:
@@ -647,7 +643,6 @@ class StockSelectorService:
         # 如果有预加载的日线数据，直接使用
         if daily_data is not None and isinstance(daily_data, pd.DataFrame) and not daily_data.empty:
             # 数据清洗：过滤掉非交易日的数据
-            from stock_selector.trading_calendar import is_trading_day
             daily_data = daily_data[daily_data['date'].apply(is_trading_day)]
             
             if daily_data.empty or len(daily_data) < 30:

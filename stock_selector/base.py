@@ -4,6 +4,7 @@ Base classes and data structures for stock selector.
 """
 
 import logging
+import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -90,10 +91,14 @@ class StockSelectorStrategy(ABC):
 
     def __init__(self, metadata: StrategyMetadata):
         self.metadata = metadata
-        self._data_provider = None
         self._sector_manager = None
         self._score_multiplier = metadata.score_multiplier
         self._max_raw_score = metadata.max_raw_score
+        
+        # 线程局部存储容器
+        self._local = threading.local()
+        # 初始化默认值
+        self._local._data_provider = None
 
     @property
     def score_multiplier(self) -> float:
@@ -114,6 +119,27 @@ class StockSelectorStrategy(ABC):
     def max_raw_score(self, value: float) -> None:
         """Set the maximum raw score."""
         self._max_raw_score = max(1.0, value)
+    
+    def set_data_provider(self, data_provider: Any) -> None:
+        """设置默认的数据提供者（向后兼容）"""
+        self._local._data_provider = data_provider
+    
+    def set_data_provider_for_thread(self, data_provider: Any) -> None:
+        """为当前线程设置数据提供者"""
+        self._local._data_provider = data_provider
+    
+    def get_data_provider(self) -> Any:
+        """获取当前线程的数据提供者"""
+        return getattr(self._local, '_data_provider', None)
+    
+    # 保持向后兼容：通过 property 让 self._data_provider 仍然能工作
+    @property
+    def _data_provider(self):
+        return self.get_data_provider()
+    
+    @_data_provider.setter
+    def _data_provider(self, value):
+        self.set_data_provider_for_thread(value)
 
     def normalize_score(self, raw_score: float) -> float:
         """

@@ -275,11 +275,11 @@ class StrategyManager:
                     if context:
                         # 使用导入的 Mock 类，不再重复定义
                         mock_quote = MockQuote(context, stock_name)
-                        original_data_provider = strategy._data_provider
+                        original_data_provider = strategy.get_data_provider()
                         mock_data_provider = MockDataProvider(self._db_manager, stock_code, mock_quote, original_data_provider)
                         
-                        # Set mock data provider for the strategy
-                        strategy._data_provider = mock_data_provider
+                        # 为当前线程设置 mock_data_provider（线程安全）
+                        strategy.set_data_provider_for_thread(mock_data_provider)
                         
                         # Execute strategy with cached data - try with daily_data and precomputed_metrics if available
                         try:
@@ -292,8 +292,10 @@ class StrategyManager:
                                 match = strategy.select(stock_code, stock_name)
                         results.append(match)
                         
-                        # Restore original data provider
-                        strategy._data_provider = original_data_provider
+                        # 恢复原始的数据提供者（可选，因为线程局部变量会自动处理）
+                        # 但为了保险起见，在当前线程上下文中恢复
+                        if original_data_provider is not None:
+                            strategy.set_data_provider_for_thread(original_data_provider)
                         continue
                 
                 # No cached data, use original data provider - try with daily_data and precomputed_metrics if available
