@@ -5,6 +5,7 @@ import * as lightweightCharts from 'lightweight-charts';
 import { visualizationApi, type VisualizationResponse, type VisualizationSearchHistoryItem } from '../api/visualization';
 import { validateStockCode } from '../utils/validation';
 import { Card } from '../components/common';
+import { useStockPriceHistory } from '../hooks';
 
 // 定义指标配置
 const INDICATOR_OPTIONS = [
@@ -38,6 +39,13 @@ const VisualizationPage: React.FC = () => {
   const filterValidIndicators = (indicators: string[]) => {
     return indicators.filter(id => validIndicatorIds.includes(id));
   };
+
+  // 股价记录管理
+  const { 
+    recordPrice, 
+    deletePriceRecord, 
+    calculatePriceChange 
+  } = useStockPriceHistory();
 
   // 状态管理
   const [stockCode, setStockCode] = useState('');
@@ -1559,6 +1567,14 @@ const VisualizationPage: React.FC = () => {
       setVisualizationData(freshData);
       setRefreshKey(prev => prev + 1);
 
+      // 记录股价（如果有K线数据，记录最新的收盘价）
+      if (freshData.kline_data && freshData.kline_data.length > 0) {
+        const latestKline = freshData.kline_data[freshData.kline_data.length - 1];
+        if (latestKline.close !== undefined && latestKline.close !== null) {
+          recordPrice(normalized, latestKline.close, latestKline.date);
+        }
+      }
+
       // 保存搜索历史
       await visualizationApi.saveSearchHistory({
         stock_code: normalized,
@@ -1606,6 +1622,24 @@ const VisualizationPage: React.FC = () => {
       const freshData = JSON.parse(JSON.stringify(response));
       setVisualizationData(freshData);
       setRefreshKey(prev => prev + 1);
+
+      // 记录股价（如果有K线数据，记录最新的收盘价）
+      if (freshData.kline_data && freshData.kline_data.length > 0) {
+        const latestKline = freshData.kline_data[freshData.kline_data.length - 1];
+        if (latestKline.close !== undefined && latestKline.close !== null) {
+          recordPrice(item.stock_code, latestKline.close, latestKline.date);
+        }
+      }
+
+      // 更新搜索历史记录时间戳，使其置顶显示
+      try {
+        await visualizationApi.updateSearchHistoryTimestamp(item.id);
+        // 重新加载搜索历史列表，以显示更新后的顺序
+        await loadSearchHistory();
+      } catch (err) {
+        console.error('Failed to update search history timestamp:', err);
+        // 即使更新失败也不影响用户使用数据
+      }
     } catch (err) {
       console.error('Failed to load visualization data:', err);
     } finally {
@@ -1627,10 +1661,12 @@ const VisualizationPage: React.FC = () => {
   };
 
   // 删除搜索历史
-  const handleDeleteHistory = async (recordId: number, e: React.MouseEvent) => {
+  const handleDeleteHistory = async (recordId: number, stockCode: string, e: React.MouseEvent) => {
     e.stopPropagation();
     try {
       await visualizationApi.deleteSearchHistory(recordId);
+      // 删除对应的股价记录
+      deletePriceRecord(stockCode);
       await loadSearchHistory();
     } catch (err) {
       console.error('Failed to delete search history:', err);
@@ -1697,7 +1733,7 @@ const VisualizationPage: React.FC = () => {
                   </div>
                   <button
                     type="button"
-                    onClick={(e) => handleDeleteHistory(item.id, e)}
+                    onClick={(e) => handleDeleteHistory(item.id, item.stock_code, e)}
                     className="p-1 text-muted hover:text-danger transition-colors flex-shrink-0"
                     title="删除"
                   >
@@ -1818,8 +1854,44 @@ const VisualizationPage: React.FC = () => {
               <h2 className="text-xl font-bold text-white">
                 {visualizationData.stock_name ? `${visualizationData.stock_name} (${visualizationData.stock_code})` : visualizationData.stock_code}
               </h2>
-              <div className="text-xs text-muted mt-1">
-                K线数据: {visualizationData.kline_data?.length || 0} 条
+              <div className="flex flex-wrap items-center gap-3 mt-1">
+                <div className="text-xs text-muted">
+                  K线数据: {visualizationData.kline_data?.length || 0} 条
+                </div>
+                {/* 展示涨跌幅 */}
+                {(() => {
+                  if (!visualizationData.kline_data || visualizationData.kline_data.length === 0) {
+                    return null;
+                  }
+                  const latestKline = visualizationData.kline_data[visualizationData.kline_data.length - 1];
+                  if (latestKline.close === undefined || latestKline.close === null) {
+                    return null;
+                  }
+                  const priceChange = calculatePriceChange(visualizationData.stock_code, latestKline.close);
+                  if (!priceChange.hasRecord) {
+                    return (
+                      <div className="text-xs text-muted flex items-center gap-1">
+                        <span className="inline-block w-2 h-2 rounded-full bg-gray-500"></span>
+                        首次搜索
+                      </div>
+                    );
+                  }
+                  const isPositive = priceChange.changePercent >= 0;
+                  const colorClass = isPositive ? 'text-red-400' : 'text-green-400';
+                  const bgClass = isPositive ? 'bg-red-400/10' : 'bg-green-400/10';
+                  const sign = isPositive ? '+' : '';
+                  return (
+                    <div className={`text-xs ${colorClass} ${bgClass} px-2 py-0.5 rounded flex items-center gap-1`}>
+                      <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: isPositive ? '#f87171' : '#4ade80' }}></span>
+                      涨跌幅: {sign}{priceChange.changePercent.toFixed(2)}%
+                      {priceChange.firstPrice && (
+                        <span className="text-xs text-muted/70 ml-1">
+                          (首价: {priceChange.firstPrice.toFixed(2)})
+                        </span>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
             </div>
           )}

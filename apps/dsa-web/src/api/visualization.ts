@@ -97,4 +97,9 @@ export const visualizationApi = {
   async deleteSearchHistory(recordId: number): Promise<void> {
     await apiClient.delete(`/api/v1/visualization/history/${recordId}`);
   },
+
+  async updateSearchHistoryTimestamp(recordId: number): Promise<VisualizationSearchHistoryItem> {
+    const response = await apiClient.patch(`/api/v1/visualization/history/${recordId}/timestamp`);
+    return response.data as VisualizationSearchHistoryItem;
+  },
 };

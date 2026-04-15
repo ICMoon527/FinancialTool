@@ -2722,6 +2722,44 @@ class DatabaseManager:
                 logger.error(f"删除可视化搜索历史失败: {e}")
                 return False
 
+    def update_visualization_search_history_timestamp(self, record_id: int) -> Optional[Dict[str, Any]]:
+        """
+        更新可视化搜索历史记录的时间戳为当前时间
+
+        Args:
+            record_id: 记录ID
+
+        Returns:
+            更新后的记录信息，失败返回 None
+        """
+        with self.get_session() as session:
+            try:
+                record = session.execute(
+                    select(VisualizationSearchHistory).where(
+                        VisualizationSearchHistory.id == record_id
+                    )
+                ).scalar_one_or_none()
+
+                if not record:
+                    logger.warning(f"未找到可视化搜索历史记录: {record_id}")
+                    return None
+
+                record.searched_at = datetime.now()
+                session.commit()
+                logger.info(f"更新可视化搜索历史记录时间戳: {record_id}, stock_code: {record.stock_code}")
+
+                return {
+                    "id": record.id,
+                    "stock_code": record.stock_code,
+                    "stock_name": record.stock_name,
+                    "searched_at": record.searched_at.isoformat() if record.searched_at else None,
+                    "selected_indicators": record.get_selected_indicators()
+                }
+            except Exception as e:
+                session.rollback()
+                logger.error(f"更新可视化搜索历史记录时间戳失败: {e}")
+                return None
+
 
 # 便捷函数
 def get_db() -> DatabaseManager:

@@ -800,3 +800,27 @@ class VisualizationService:
             搜索历史列表
         """
         return self.db.get_visualization_search_history(limit)
+
+    def update_search_history_timestamp(self, record_id: int) -> Optional[Dict[str, Any]]:
+        """
+        更新搜索历史记录的时间戳为当前时间
+
+        Args:
+            record_id: 记录ID
+
+        Returns:
+            更新后的记录信息，失败返回 None
+        """
+        return self.db.update_visualization_search_history_timestamp(record_id)
+
+    def delete_search_history(self, record_id: int) -> bool:
+        """
+        删除搜索历史记录
+
+        Args:
+            record_id: 记录ID
+
+        Returns:
+            是否成功删除
+        """
+        return self.db.delete_visualization_search_history(record_id)

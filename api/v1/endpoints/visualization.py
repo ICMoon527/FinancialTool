@@ -195,6 +195,65 @@ def delete_search_history(
         )
 
 
+@router.patch(
+    "/history/{record_id}/timestamp",
+    response_model=VisualizationSearchHistoryItem,
+    responses={
+        200: {"description": "更新成功"},
+        404: {"description": "记录不存在", "model": ErrorResponse},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="更新搜索历史记录时间戳",
+    description="将指定搜索历史记录的时间戳更新为当前时间，使其置顶显示"
+)
+def update_search_history_timestamp(
+    record_id: int,
+    db_manager: DatabaseManager = Depends(get_database_manager)
+) -> VisualizationSearchHistoryItem:
+    """
+    更新搜索历史记录时间戳为当前时间
+
+    Args:
+        record_id: 记录ID
+        db_manager: 数据库管理器依赖
+
+    Returns:
+        VisualizationSearchHistoryItem: 更新后的记录
+    """
+    try:
+        service = VisualizationService(db_manager)
+        updated_record = service.update_search_history_timestamp(record_id)
+        
+        if not updated_record:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "not_found",
+                    "message": f"未找到ID为 {record_id} 的记录"
+                }
+            )
+        
+        return VisualizationSearchHistoryItem(
+            id=updated_record['id'],
+            stock_code=updated_record['stock_code'],
+            stock_name=updated_record.get('stock_name'),
+            searched_at=updated_record['searched_at'],
+            selected_indicators=updated_record['selected_indicators']
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"更新搜索历史时间戳失败: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "internal_error",
+                "message": f"更新搜索历史时间戳失败: {str(e)}"
+            }
+        )
+
+
 @router.get(
     "/{stock_code}",
     response_model=VisualizationResponse,
