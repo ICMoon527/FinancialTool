@@ -47,6 +47,7 @@ from sqlalchemy.orm import (
 from sqlalchemy.exc import IntegrityError
 
 from src.config import get_config
+from src.cache import get_cache
 
 logger = logging.getLogger(__name__)
 
@@ -1197,10 +1198,10 @@ class DatabaseManager:
         use_cache: bool = True
     ) -> List[StockDaily]:
         """
-        优化的数据范围查询 - 带 LRU 缓存
+        优化的数据范围查询 - 带 LRU + Redis 双层缓存
 
         优化点：
-        1. LRU 缓存，避免重复查询
+        1. LRU + Redis 双层缓存，避免重复查询
         2. 批量加载
         
         Args:
@@ -1212,17 +1213,30 @@ class DatabaseManager:
         Returns:
             StockDaily 对象列表
         """
-        cache_key = (code, start_date, end_date)
+        if not use_cache:
+            with self.get_session() as session:
+                results = (
+                    session.execute(
+                        select(StockDaily)
+                        .where(and_(StockDaily.code == code, StockDaily.date >= start_date, StockDaily.date <= end_date))
+                        .order_by(StockDaily.date)
+                    )
+                    .scalars()
+                    .all()
+                )
+                return list(results)
         
-        if use_cache and cache_key in self._data_cache:
-            cached_data, timestamp = self._data_cache[cache_key]
-            age = (datetime.now() - timestamp).total_seconds()
-            
-            if age < self.CACHE_TTL_SECONDS:
-                logger.debug(f"缓存命中：{code} ({age:.1f}s old)")
-                self._data_cache.move_to_end(cache_key)
-                return cached_data
+        # 使用缓存管理器
+        cache = get_cache()
+        cache_key = f"stock:{code}:data_range:{start_date}:{end_date}"
         
+        # 尝试从缓存获取
+        cached_data = cache.get(cache_key)
+        if cached_data is not None:
+            # 将缓存的字典数据转换回 StockDaily 对象
+            return [self._dict_to_stock_daily(item) for item in cached_data]
+        
+        # 缓存未命中，从数据库查询
         with self.get_session() as session:
             results = (
                 session.execute(
@@ -1236,10 +1250,38 @@ class DatabaseManager:
             
             data = list(results)
             
-            if use_cache:
-                self._update_cache(cache_key, data)
+            # 将对象转换为字典以便缓存
+            cache_data = [item.to_dict() for item in data]
+            cache.set(cache_key, cache_data)
             
             return data
+    
+    def _dict_to_stock_daily(self, data: Dict[str, Any]) -> StockDaily:
+        """
+        将字典转换为 StockDaily 对象
+        
+        Args:
+            data: 字典数据
+            
+        Returns:
+            StockDaily 对象
+        """
+        stock = StockDaily()
+        stock.code = data.get('code')
+        stock.date = datetime.strptime(data['date'], '%Y-%m-%d').date() if isinstance(data.get('date'), str) else data.get('date')
+        stock.open = data.get('open')
+        stock.high = data.get('high')
+        stock.low = data.get('low')
+        stock.close = data.get('close')
+        stock.volume = data.get('volume')
+        stock.amount = data.get('amount')
+        stock.pct_chg = data.get('pct_chg')
+        stock.ma5 = data.get('ma5')
+        stock.ma10 = data.get('ma10')
+        stock.ma20 = data.get('ma20')
+        stock.volume_ratio = data.get('volume_ratio')
+        stock.data_source = data.get('data_source')
+        return stock
 
     def get_data_range_with_fields(
         self, 
@@ -1393,6 +1435,14 @@ class DatabaseManager:
                 logger.info(f"保存 {code} 数据成功，共 {total_count} 条（新增 {len(records_to_add)}, 更新 {len(records_to_update)}）")
                 
                 self._invalidate_cache(code)
+                
+                # 使用缓存管理器失效该股票的所有缓存
+                try:
+                    from src.cache import get_cache
+                    cache = get_cache()
+                    cache.invalidate_stock_data(code)
+                except Exception as e:
+                    logger.debug(f"缓存失效失败: {e}")
                 
                 return total_count
                 
@@ -2499,6 +2549,109 @@ class DatabaseManager:
             except Exception as e:
                 session.rollback()
                 logger.error(f"保存 {code} {indicator_type} 指标数据失败: {e}")
+                raise
+
+    def save_stock_indicators_bulk(
+        self,
+        code: str,
+        indicator_type: str,
+        df: pd.DataFrame,
+        data_source: str = "Unknown"
+    ) -> int:
+        """
+        批量保存股票技术指标数据（优化版本）
+        
+        优化点：
+        1. 批量查询已存在的记录（解决 N+1 问题）
+        2. 批量插入新记录
+        3. 批量更新现有记录
+        4. 减少数据库交互次数
+        
+        Args:
+            code: 股票代码
+            indicator_type: 指标类型
+            df: 包含指标数据的 DataFrame
+            data_source: 数据来源
+            
+        Returns:
+            保存的记录数（新增+更新）
+        """
+        if df is None or df.empty:
+            logger.warning(f"保存指标数据为空，跳过 {code} {indicator_type}")
+            return 0
+        
+        with self.get_session() as session:
+            try:
+                parsed_dates = []
+                for _, row in df.iterrows():
+                    row_date = self._parse_date(row.get("date"))
+                    if row_date:
+                        parsed_dates.append((row_date, row))
+                
+                if not parsed_dates:
+                    logger.warning(f"没有有效的日期数据，跳过 {code} {indicator_type}")
+                    return 0
+                
+                date_set = {d for d, _ in parsed_dates}
+                
+                existing_records = (
+                    session.execute(
+                        select(StockIndicator)
+                        .where(and_(
+                            StockIndicator.code == code,
+                            StockIndicator.date.in_(date_set),
+                            StockIndicator.indicator_type == indicator_type
+                        ))
+                    )
+                    .scalars()
+                    .all()
+                )
+                
+                existing_map = {(rec.date, rec.indicator_type): rec for rec in existing_records}
+                
+                records_to_add = []
+                records_to_update = []
+                
+                for row_date, row in parsed_dates:
+                    key = (row_date, indicator_type)
+                    indicator_data_dict = row.to_dict()
+                    if 'date' in indicator_data_dict:
+                        del indicator_data_dict['date']
+                    
+                    if key in existing_map:
+                        records_to_update.append((row_date, indicator_data_dict, existing_map[key]))
+                    else:
+                        records_to_add.append((row_date, indicator_data_dict))
+                
+                if records_to_add:
+                    for row_date, indicator_data_dict in records_to_add:
+                        record = StockIndicator.create_from_dict(
+                            code=code,
+                            date=row_date,
+                            indicator_type=indicator_type,
+                            data=indicator_data_dict
+                        )
+                        session.add(record)
+                    
+                    logger.info(f"批量插入 {code} {indicator_type} 指标数据：{len(records_to_add)} 条")
+                
+                if records_to_update:
+                    for row_date, indicator_data_dict, existing_record in records_to_update:
+                        existing_record.indicator_data = json.dumps(indicator_data_dict, ensure_ascii=False)
+                        existing_record.updated_at = datetime.now()
+                    
+                    logger.info(f"批量更新 {code} {indicator_type} 指标数据：{len(records_to_update)} 条")
+                
+                session.commit()
+                
+                total_count = len(records_to_add) + len(records_to_update)
+                logger.info(f"保存 {code} {indicator_type} 指标数据成功，共 {total_count} 条（新增 {len(records_to_add)}, 更新 {len(records_to_update)}）")
+                
+                return total_count
+                
+            except Exception as e:
+                session.rollback()
+                logger.error(f"保存 {code} {indicator_type} 指标数据失败：{e}")
                 raise
 
     def get_stock_indicators(

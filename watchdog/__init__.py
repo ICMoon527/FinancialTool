@@ -10,29 +10,33 @@ __version__ = "1.0.0"
 __author__ = "Daily Stock Analysis Team"
 
 from watchdog.base import (
-    ActionType,
     AlertLevel,
     ConditionType,
     StrategyType,
     WatchdogAlert,
     WatchdogCondition,
-    WatchdogDecision,
     WatchdogStrategy,
     WatchdogWatchlist,
 )
 from watchdog.config import WatchdogConfig, WatchdogPersistence, get_config, set_config
 from watchdog.monitor import MarketDataProvider, WatchdogMonitor
 from watchdog.notifier import WatchdogNotifier
+from watchdog.risk_manager import (
+    RiskLevel,
+    PositionStatus,
+    Position,
+    PortfolioMetrics,
+    RiskAlert,
+    RiskManager,
+)
 from watchdog.service import WatchdogService
 
 __all__ = [
-    "ActionType",
     "AlertLevel",
     "ConditionType",
     "StrategyType",
     "WatchdogAlert",
     "WatchdogCondition",
-    "WatchdogDecision",
     "WatchdogStrategy",
     "WatchdogWatchlist",
     "WatchdogConfig",
@@ -43,4 +47,10 @@ __all__ = [
     "WatchdogMonitor",
     "WatchdogNotifier",
     "WatchdogService",
+    "RiskLevel",
+    "PositionStatus",
+    "Position",
+    "PortfolioMetrics",
+    "RiskAlert",
+    "RiskManager",
 ]

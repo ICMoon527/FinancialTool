@@ -95,7 +95,7 @@ class StockRepository:
             保存的记录数
         """
         try:
-            return self.db.save_daily_data(df, code, data_source)
+            return self.db.save_daily_data_bulk(df, code, data_source)
         except Exception as e:
             logger.error(f"保存日线数据失败: {e}")
             return 0

@@ -2,6 +2,7 @@ import type React from 'react';
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { backtestApi } from '../api/backtest';
 import { Card } from '../components/common';
+import { BacktestChartsContainer } from '../components/charts';
 import type {
   StrategyInfo,
   StrategyBacktestTaskStatusResponse,
@@ -491,25 +492,17 @@ const BacktestPage: React.FC = () => {
               )}
 
               {/* 图表 */}
-              {resultData.reports && typeof resultData.reports === 'object' && (
-                <div className="mt-6 space-y-4">
-                  <h3 className="text-md font-semibold text-white">图表</h3>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {Object.entries(resultData.reports as Record<string, string>).map(([name, path]) => (
-                      <Card key={name} padding="md">
-                        <div className="mb-2">
-                          <span className="label-uppercase">{name}</span>
-                        </div>
-                        <img 
-                          src={`/${path}`} 
-                          alt={name}
-                          className="w-full rounded"
-                        />
-                      </Card>
-                    ))}
-                  </div>
-                </div>
-              )}
+              <div className="mt-6">
+                <BacktestChartsContainer
+                  loading={isRunning && !resultData}
+                  error={runError}
+                  onRetry={() => {
+                    if (taskId) {
+                      pollTaskStatus(taskId);
+                    }
+                  }}
+                />
+              </div>
             </div>
           )}
         </div>

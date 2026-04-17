@@ -48,6 +48,7 @@ dingtalk-stream==0.24.3      # 钉钉 Stream SDK
 
 # 数据库
 # SQLite 是 Python 内置，无需额外安装
+redis==5.2.0                  # Redis 缓存支持
 
 # Discord 机器人
 discord.py==2.4.0            # Discord 机器人开发库

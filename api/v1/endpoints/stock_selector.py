@@ -23,10 +23,40 @@ from api.v1.schemas.stock_selector import (
 )
 from stock_selector import StockSelectorService
 from stock_selector.config import get_config
+from stock_selector.market_data_cache import MarketDataCache
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Stock Selector"])
+
+
+def _update_market_data():
+    """
+    更新大盘数据缓存
+    """
+    try:
+        logger.info("开始更新大盘数据缓存...")
+        
+        from data_provider import DataFetcherManager
+        from stock_selector.market_data_cache import MarketDataCache
+        
+        data_fetcher = DataFetcherManager()
+        
+        # 更新上证指数 (sh000001)
+        sh_data = data_fetcher.get_index_daily_data("sh000001")
+        if sh_data is not None and not sh_data.empty:
+            MarketDataCache.save("sh000001", sh_data)
+            logger.info(f"上证指数缓存更新成功，共 {len(sh_data)} 条")
+        
+        # 更新深证成指 (sz399001)
+        sz_data = data_fetcher.get_index_daily_data("sz399001")
+        if sz_data is not None and not sz_data.empty:
+            MarketDataCache.save("sz399001", sz_data)
+            logger.info(f"深证成指缓存更新成功，共 {len(sz_data)} 条")
+        
+        logger.info("大盘数据缓存更新完成！")
+    except Exception as e:
+        logger.warning(f"更新大盘数据缓存失败: {e}")
 
 # Global service instance
 _stock_selector_service: Optional[StockSelectorService] = None
@@ -188,6 +218,10 @@ async def screen_stocks(
     """
     start_time = time.time()
     try:
+        # 设置市场数据缓存的强制更新模式
+        # 只有在 update_realtime 或 update_data 时才更新大盘数据缓存
+        MarketDataCache.set_force_update(request.update_realtime or request.update_data)
+        
         # 检查 update_realtime 和 update_data 优先级
         # 如果同时指定，update_realtime 优先
         use_update_realtime = request.update_realtime
@@ -202,6 +236,9 @@ async def screen_stocks(
             await _update_realtime_stock_data(request.stock_codes, service)
         elif use_update_data:
             await _update_stock_data(request.stock_codes, service)
+        
+        # 更新完数据后，关闭强制更新模式，让 screen 可以正常使用缓存
+        MarketDataCache.set_force_update(False)
 
         candidates = service.screen_stocks(
             stock_codes=request.stock_codes,
@@ -275,6 +312,9 @@ async def _update_realtime_stock_data(stock_codes: Optional[list[str]], service:
     # 使用实时数据更新器
     realtime_updater = get_realtime_updater()
     stats = realtime_updater.update_realtime_data(stock_codes=stock_codes)
+    
+    # 更新大盘数据缓存
+    _update_market_data()
     
     # 更新板块数据
     _update_sector_data(service)
@@ -357,6 +397,9 @@ async def _update_stock_data(stock_codes: Optional[list[str]], service: StockSel
         except Exception as e2:
             logger.error(f"旧版更新器也失败: {e2}")
             raise
+    
+    # 更新大盘数据缓存
+    _update_market_data()
     
     # 更新板块数据
     _update_sector_data(service)

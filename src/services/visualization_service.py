@@ -699,8 +699,8 @@ class VisualizationService:
         
         result_df = calculator.calculate(df_for_calc)
 
-        # 保存指标数据
-        saved_count = self.db.save_stock_indicators(
+        # 保存指标数据（使用批量保存优化）
+        saved_count = self.db.save_stock_indicators_bulk(
             stock_code,
             indicator_type,
             result_df,

@@ -186,6 +186,15 @@ class Config:
     # === 数据库配置 ===
     database_path: str = "./data/stock_analysis.db"
 
+    # === Redis 缓存配置 ===
+    redis_enabled: bool = False  # 是否启用 Redis 缓存
+    redis_host: str = "127.0.0.1"  # Redis 主机地址
+    redis_port: int = 6379  # Redis 端口
+    redis_db: int = 0  # Redis 数据库编号
+    redis_password: Optional[str] = None  # Redis 密码（可选）
+    redis_ttl_seconds: int = 300  # 缓存 TTL：5 分钟
+    redis_max_cache_entries: int = 1000  # 最大缓存条目数（用于内存 LRU 缓存）
+
     # 是否保存分析上下文快照（用于历史回溯）
     save_context_snapshot: bool = True
 
@@ -537,6 +546,14 @@ class Config:
             ],
             markdown_to_image_max_chars=int(os.getenv('MARKDOWN_TO_IMAGE_MAX_CHARS', '15000')),
             database_path=os.getenv('DATABASE_PATH', './data/stock_analysis.db'),
+            # Redis 缓存配置
+            redis_enabled=os.getenv('REDIS_ENABLED', 'false').lower() == 'true',
+            redis_host=os.getenv('REDIS_HOST', '127.0.0.1'),
+            redis_port=int(os.getenv('REDIS_PORT', '6379')),
+            redis_db=int(os.getenv('REDIS_DB', '0')),
+            redis_password=os.getenv('REDIS_PASSWORD') or None,
+            redis_ttl_seconds=int(os.getenv('REDIS_TTL_SECONDS', '300')),
+            redis_max_cache_entries=int(os.getenv('REDIS_MAX_CACHE_ENTRIES', '1000')),
             save_context_snapshot=os.getenv('SAVE_CONTEXT_SNAPSHOT', 'true').lower() == 'true',
             backtest_enabled=os.getenv('BACKTEST_ENABLED', 'true').lower() == 'true',
             backtest_eval_window_days=int(os.getenv('BACKTEST_EVAL_WINDOW_DAYS', '10')),

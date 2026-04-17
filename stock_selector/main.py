@@ -17,6 +17,36 @@ logger = logging.getLogger(__name__)
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from stock_selector import StockSelectorService
+from stock_selector.market_data_cache import MarketDataCache
+
+
+def _update_market_data():
+    """
+    更新大盘数据缓存
+    """
+    try:
+        logger.info("开始更新大盘数据缓存...")
+        
+        from data_provider import DataFetcherManager
+        from stock_selector.market_data_cache import MarketDataCache
+        
+        data_fetcher = DataFetcherManager()
+        
+        # 更新上证指数 (sh000001)
+        sh_data = data_fetcher.get_index_daily_data("sh000001")
+        if sh_data is not None and not sh_data.empty:
+            MarketDataCache.save("sh000001", sh_data)
+            logger.info(f"上证指数缓存更新成功，共 {len(sh_data)} 条")
+        
+        # 更新深证成指 (sz399001)
+        sz_data = data_fetcher.get_index_daily_data("sz399001")
+        if sz_data is not None and not sz_data.empty:
+            MarketDataCache.save("sz399001", sz_data)
+            logger.info(f"深证成指缓存更新成功，共 {len(sz_data)} 条")
+        
+        logger.info("大盘数据缓存更新完成！")
+    except Exception as e:
+        logger.warning(f"更新大盘数据缓存失败: {e}")
 
 
 def list_strategies(service: StockSelectorService):
@@ -144,6 +174,10 @@ def screen_stocks(
     rate_limit: int = 50,
     update_realtime: bool = False,
 ):
+    # 设置市场数据缓存的强制更新模式
+    # 只有在 update_data 或 update_realtime 时才更新大盘数据缓存
+    MarketDataCache.set_force_update(update_data or update_realtime)
+    
     if update_days is None:
         update_days = service.config.update_data_default_days
     print("Screening stocks...")
@@ -231,6 +265,9 @@ def screen_stocks(
         realtime_updater = get_realtime_updater()
         stats = realtime_updater.update_realtime_data(stock_codes=stock_codes)
 
+        # 更新大盘数据缓存
+        _update_market_data()
+
         # 更新板块数据
         update_sector_data(service)
 
@@ -309,8 +346,14 @@ def screen_stocks(
             else:
                 print("Invalid date range!\n")
 
+        # 更新大盘数据缓存
+        _update_market_data()
+        
         # 更新板块数据
         update_sector_data(service)
+    
+    # 更新完数据后，关闭强制更新模式，让 screen 可以正常使用缓存
+    MarketDataCache.set_force_update(False)
 
     candidates = service.screen_stocks(stock_codes=stock_codes, top_n=top_n)
 

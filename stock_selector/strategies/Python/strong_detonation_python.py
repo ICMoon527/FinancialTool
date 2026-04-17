@@ -18,67 +18,9 @@ from stock_selector.base import (
     StrategyType,
 )
 from stock_selector.strategies.python_strategy_loader import register_strategy
+from stock_selector.market_data_cache import MarketDataCache
 
 logger = logging.getLogger(__name__)
-
-
-class MarketDataCache:
-    """大盘数据缓存管理器"""
-
-    _CACHE_DIR = None
-    _CACHE_VALID_HOURS = 24
-
-    @classmethod
-    def _get_cache_dir(cls) -> Path:
-        """获取缓存目录路径"""
-        if cls._CACHE_DIR is None:
-            project_root = Path(__file__).parent.parent.parent.parent
-            cls._CACHE_DIR = project_root / "data" / "cache"
-            cls._CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        return cls._CACHE_DIR
-
-    @classmethod
-    def _get_cache_file_path(cls, symbol: str) -> Path:
-        """获取缓存文件路径"""
-        cache_dir = cls._get_cache_dir()
-        return cache_dir / f"market_{symbol}.pkl"
-
-    @classmethod
-    def _is_cache_valid(cls, cache_file: Path) -> bool:
-        """检查缓存是否有效"""
-        if not cache_file.exists():
-            return False
-        try:
-            file_mtime = datetime.fromtimestamp(cache_file.stat().st_mtime)
-            return datetime.now() - file_mtime < timedelta(hours=cls._CACHE_VALID_HOURS)
-        except Exception:
-            return False
-
-    @classmethod
-    def load(cls, symbol: str) -> Optional[pd.DataFrame]:
-        """从缓存加载大盘数据"""
-        cache_file = cls._get_cache_file_path(symbol)
-        if not cls._is_cache_valid(cache_file):
-            return None
-        try:
-            with open(cache_file, "rb") as f:
-                data = pickle.load(f)
-            logger.debug(f"[大盘数据缓存] 从缓存加载 {symbol} 数据成功")
-            return data
-        except Exception as e:
-            logger.warning(f"[大盘数据缓存] 加载缓存失败: {e}")
-            return None
-
-    @classmethod
-    def save(cls, symbol: str, data: pd.DataFrame) -> None:
-        """保存大盘数据到缓存"""
-        cache_file = cls._get_cache_file_path(symbol)
-        try:
-            with open(cache_file, "wb") as f:
-                pickle.dump(data, f)
-            logger.info(f"[大盘数据缓存] 保存 {symbol} 数据到缓存成功")
-        except Exception as e:
-            logger.warning(f"[大盘数据缓存] 保存缓存失败: {e}")
 
 
 @register_strategy
@@ -126,7 +68,7 @@ class StrongDetonationSelectorStrategy(StockSelectorStrategy):
         return data.rolling(window=period).min()
 
     def _get_market_data(self) -> Optional[pd.DataFrame]:
-        """获取大盘数据（带缓存）"""
+        """获取大盘数据（只使用缓存，不联网）"""
         symbol = "sh000001"
 
         if StrongDetonationSelectorStrategy._market_data_cache is not None:
@@ -136,17 +78,9 @@ class StrongDetonationSelectorStrategy(StockSelectorStrategy):
         if cached_data is not None:
             StrongDetonationSelectorStrategy._market_data_cache = cached_data
             return cached_data
-
-        if self._data_provider:
-            try:
-                market_data = self._data_provider.get_index_daily_data(symbol)
-                if market_data is not None and not market_data.empty:
-                    MarketDataCache.save(symbol, market_data)
-                    StrongDetonationSelectorStrategy._market_data_cache = market_data
-                    return market_data
-            except Exception as e:
-                logger.warning(f"获取大盘数据失败: {e}")
-
+        
+        # 只使用缓存，不联网获取
+        logger.warning(f"[强势起爆] 大盘数据缓存 {symbol} 不存在，且不联网获取")
         return None
 
     def _calculate_strong_detonation_indicators(

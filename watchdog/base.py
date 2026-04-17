@@ -87,13 +87,13 @@ class WatchdogCondition:
 @dataclass
 class WatchdogAlert:
     """Alert notification data structure."""
-    id: str = field(default_factory=lambda: str(datetime.now().timestamp()))
     stock_code: str
     stock_name: str
     strategy_id: str
     strategy_name: str
     alert_level: AlertLevel
     message: str
+    id: str = field(default_factory=lambda: str(datetime.now().timestamp()))
     trigger_time: datetime = field(default_factory=datetime.now)
     triggered_conditions: List[WatchdogCondition] = field(default_factory=list)
     current_data: Dict[str, Any] = field(default_factory=dict)

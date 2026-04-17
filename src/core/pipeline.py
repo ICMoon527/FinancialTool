@@ -172,9 +172,9 @@ class StockAnalysisPipeline:
             if df is None or df.empty:
                 return False, "获取数据为空"
 
-            # 保存到数据库
-            saved_count = self.db.save_daily_data(df, code, source_name)
-            logger.info(f"{stock_name}({code}) 数据保存成功（来源: {source_name}，新增 {saved_count} 条）")
+            # 保存到数据库（使用批量保存优化）
+            saved_count = self.db.save_daily_data_bulk(df, code, source_name)
+            logger.info(f"{stock_name}({code}) 数据保存成功（来源: {source_name}，新增/更新 {saved_count} 条）")
 
             return True, None
 
