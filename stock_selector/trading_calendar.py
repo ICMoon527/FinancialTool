@@ -125,6 +125,24 @@ class TradingCalendar:
             self._trading_days_sorted = sorted(trading_days)
         
         return self._trading_days_sorted
+    
+    def get_previous_trading_day(self, target_date=None):
+        """获取指定日期之前（包括当天）的最近一个交易日"""
+        if target_date is None:
+            from datetime import date
+            target_date = date.today()
+        
+        all_trading_days = self.get_all_trading_days()
+        
+        # 从后往前找第一个 <= target_date 的交易日
+        for d in reversed(all_trading_days):
+            if d <= target_date:
+                return d
+        
+        # 如果没找到，返回最后一个交易日
+        if all_trading_days:
+            return all_trading_days[-1]
+        return target_date
 
 
 # 全局单例
@@ -146,4 +164,9 @@ def is_trading_day(target_date):
 
 def get_trading_days(start_date, end_date):
     return get_trading_calendar().get_trading_days(start_date, end_date)
+
+
+def get_previous_trading_day(target_date=None):
+    """获取指定日期之前（包括当天）的最近一个交易日"""
+    return get_trading_calendar().get_previous_trading_day(target_date)
 

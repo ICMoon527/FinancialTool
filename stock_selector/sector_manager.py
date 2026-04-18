@@ -104,14 +104,22 @@ class SectorManager:
         # 优先从数据库获取最新的板块数据（如果不强制刷新）
         if not force_refresh and self._db_manager:
             try:
-                logger.debug("[板块] 尝试从数据库获取板块数据...")
+                logger.info("[板块] 尝试从数据库获取板块数据...")
                 from datetime import date
+                from stock_selector.trading_calendar import get_previous_trading_day
+                
                 current_date = date.today()
-                # 从数据库获取今天的所有板块数据
+                
+                # 获取离今天最近的交易日
+                target_date = get_previous_trading_day(current_date)
+                if target_date != current_date:
+                    logger.info(f"{current_date} 不是交易日，使用最近的交易日: {target_date}")
+                
+                # 从数据库获取目标日期的所有板块数据
                 all_sectors = self._db_manager.get_all_sectors()
                 if all_sectors:
                     # 使用批量查询获取所有板块数据（修复 N+1 查询问题）
-                    sector_daily_map = self._db_manager.get_sector_daily_batch(all_sectors, current_date)
+                    sector_daily_map = self._db_manager.get_sector_daily_batch(all_sectors, target_date)
                     sector_list = []
                     for sector_name in all_sectors:
                         sector_daily = sector_daily_map.get(sector_name)
@@ -132,10 +140,10 @@ class SectorManager:
                         self._sector_cache = {'top': top, 'bottom': bottom}
                         self._sector_cache_timestamp = time.time()
                         
-                        logger.debug(f"[板块] 从数据库获取成功，领涨: {[s['name'] for s in top]}, 领跌: {[s['name'] for s in bottom]}")
+                        logger.debug(f"[板块] 从数据库获取成功，日期: {target_date}，领涨: {[s['name'] for s in top]}, 领跌: {[s['name'] for s in bottom]}")
                         return top, bottom
             except Exception as e:
-                logger.debug(f"[板块] 从数据库获取板块数据失败: {e}，将尝试从数据源获取")
+                logger.warning(f"[板块] 从数据库获取板块数据失败: {e}，将尝试从数据源获取", exc_info=True)
 
         # 从数据源获取（当强制刷新或数据库没有数据时）
         if self._data_manager:

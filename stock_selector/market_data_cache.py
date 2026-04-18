@@ -19,7 +19,7 @@ class MarketDataCache:
     """大盘数据缓存管理器"""
 
     _CACHE_DIR = None
-    _CACHE_VALID_HOURS = 24  # 默认缓存有效期为24小时
+    _CACHE_VALID_HOURS = 24 * 7  # 默认缓存有效期为7天（168小时）
     _force_update = False  # 强制更新标志
 
     @classmethod
@@ -73,14 +73,39 @@ class MarketDataCache:
         """从缓存加载大盘数据"""
         cache_file = cls._get_cache_file_path(symbol)
         
-        if not cls._is_cache_valid(cache_file):
+        # 如果强制更新模式，直接返回 None
+        if cls._force_update:
+            return None
+            
+        if not cache_file.exists():
             return None
             
         try:
             with open(cache_file, "rb") as f:
                 data = pickle.load(f)
-            logger.debug(f"[大盘数据缓存] 从缓存加载 {symbol} 数据成功")
-            return data
+            
+            # 检查数据是否有效：看数据中最新的日期是不是最近的交易日
+            if data is not None and not data.empty and 'date' in data.columns:
+                from datetime import date
+                from stock_selector.trading_calendar import get_previous_trading_day
+                
+                # 获取数据中最新的日期
+                latest_date_in_cache = pd.to_datetime(data['date'].iloc[-1]).date()
+                
+                # 获取离今天最近的交易日
+                today = date.today()
+                latest_trading_day = get_previous_trading_day(today)
+                
+                # 检查缓存中的最新日期是否 >= 最近的交易日
+                if latest_date_in_cache >= latest_trading_day:
+                    logger.debug(f"[大盘数据缓存] 从缓存加载 {symbol} 数据成功，最新日期: {latest_date_in_cache}")
+                    return data
+                else:
+                    logger.warning(f"[大盘数据缓存] {symbol} 缓存数据日期({latest_date_in_cache})早于最近交易日({latest_trading_day})，请更新数据")
+                    return None
+            else:
+                logger.warning(f"[大盘数据缓存] {symbol} 缓存数据格式不正确")
+                return None
         except Exception as e:
             logger.warning(f"[大盘数据缓存] 加载缓存失败: {e}，将尝试清理损坏的文件")
             cls._cleanup_corrupted_cache(cache_file)

@@ -1,3 +1,4 @@
+
 # -*- coding: utf-8 -*-
 """
 Afternoon 2:30 Short-Term Strategy - Comprehensive Python implementation.
@@ -84,20 +85,28 @@ class ShortTermStrategyPython(StockSelectorStrategy):
                 'macd': float(latest['macd']),
                 'signal': float(latest['signal']),
                 'histogram': float(latest['histogram']),
-                'golden_cross': golden_cross,
-                'about_to_golden': about_to_golden,
+                'golden_cross': bool(golden_cross),
+                'about_to_golden': bool(about_to_golden),
             }
         except Exception as e:
             logger.debug(f"MACD calculation failed: {e}")
             return None
 
-    def select(self, stock_code: str, stock_name: Optional[str] = None) -> StrategyMatch:
+    def select(
+        self,
+        stock_code: str,
+        stock_name: Optional[str] = None,
+        daily_data: Optional[pd.DataFrame] = None,
+        precomputed_metrics: Optional[Dict[str, Any]] = None,
+    ) -> StrategyMatch:
         """
         Execute the short-term strategy for a single stock.
 
         Args:
             stock_code: Stock code to analyze
             stock_name: Optional stock name
+            daily_data: Optional pre-loaded daily data (from cache or database)
+            precomputed_metrics: Optional precomputed metrics
 
         Returns:
             StrategyMatch result
@@ -111,14 +120,17 @@ class ShortTermStrategyPython(StockSelectorStrategy):
         try:
             if self._data_provider:
                 realtime_quote = self._data_provider.get_realtime_quote(stock_code)
-                daily_data_result = self._data_provider.get_daily_data(stock_code, days=60)
                 
-                # Handle tuple return value (DataFrame, data_source)
-                if isinstance(daily_data_result, tuple) and len(daily_data_result) == 2:
-                    daily_data, data_source = daily_data_result
-                else:
-                    daily_data = daily_data_result
-                    data_source = "unknown"
+                data_to_use = daily_data
+                data_source = "preloaded"
+                
+                if data_to_use is None or not isinstance(data_to_use, pd.DataFrame) or data_to_use.empty:
+                    daily_data_result = self._data_provider.get_daily_data(stock_code, days=60)
+                    if isinstance(daily_data_result, tuple) and len(daily_data_result) == 2:
+                        data_to_use, data_source = daily_data_result
+                    else:
+                        data_to_use = daily_data_result
+                        data_source = "unknown"
 
                 match_details["realtime_quote"] = {}
                 match_details["daily_indicators"] = {}
@@ -158,9 +170,9 @@ class ShortTermStrategyPython(StockSelectorStrategy):
                             conditions_failed.append(f"量能未放大 (实际: {volume_ratio:.2f})")
                             match_details["conditions"]["volume_spike"] = {"passed": False, "value": volume_ratio}
 
-                if daily_data is not None and isinstance(daily_data, pd.DataFrame) and not daily_data.empty:
-                    ma5 = self._calculate_ma(daily_data, 5)
-                    macd_result = self._calculate_macd(daily_data)
+                if data_to_use is not None and isinstance(data_to_use, pd.DataFrame) and not data_to_use.empty:
+                    ma5 = self._calculate_ma(data_to_use, 5)
+                    macd_result = self._calculate_macd(data_to_use)
 
                     match_details["daily_indicators"] = {
                         "ma5": ma5,
@@ -190,10 +202,10 @@ class ShortTermStrategyPython(StockSelectorStrategy):
                             conditions_failed.append("MACD未呈 bullish 形态")
                             match_details["conditions"]["macd_bullish"] = {"passed": False}
 
-                    if len(daily_data) >= 6:
-                        recent_volumes = daily_data['volume'].tail(5)
+                    if len(data_to_use) >= 6:
+                        recent_volumes = data_to_use['volume'].tail(5)
                         avg_volume_5d = recent_volumes.mean()
-                        current_volume = daily_data['volume'].iloc[-1]
+                        current_volume = data_to_use['volume'].iloc[-1]
 
                         if current_volume >= avg_volume_5d * 1.5:
                             conditions_met.append("成交量 > 5日均值1.5倍")
@@ -202,7 +214,6 @@ class ShortTermStrategyPython(StockSelectorStrategy):
                         else:
                             conditions_failed.append("成交量未达5日均值1.5倍")
                             match_details["conditions"]["volume_vs_avg"] = {"passed": False, "current": current_volume, "avg_5d": avg_volume_5d}
-
         except Exception as e:
             logger.warning(f"Error executing strategy for {stock_code}: {e}")
             conditions_failed.append(f"策略执行错误: {str(e)[:50]}")
@@ -212,9 +223,9 @@ class ShortTermStrategyPython(StockSelectorStrategy):
         matched = raw_score >= 50
 
         if conditions_met:
-            reason = f"综合评分 {raw_score:.0f}/{max_score:.0f}：" + "; ".join(conditions_met)
+            reason = f"综合评分 {raw_score:.0f}/{max_score:.0f}: " + "; ".join(conditions_met)
         else:
-            reason = f"综合评分 {raw_score:.0f}/{max_score:.0f}：未满足核心条件"
+            reason = f"综合评分 {raw_score:.0f}/{max_score:.0f}: 未满足核心条件"
 
         match_details["conditions_met"] = conditions_met
         match_details["conditions_failed"] = conditions_failed
@@ -225,3 +236,4 @@ class ShortTermStrategyPython(StockSelectorStrategy):
             reason=reason,
             match_details=match_details,
         )
+

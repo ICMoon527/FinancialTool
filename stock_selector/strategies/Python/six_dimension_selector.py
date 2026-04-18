@@ -340,10 +340,10 @@ class SixDimensionSelectorStrategy(StockSelectorStrategy):
                 score = 0
             
             return {
-                'matched': latest_purple,
-                'score': score,
-                'purple_box': latest_purple,
-                'consecutive_count': consecutive_count,
+                'matched': bool(latest_purple),
+                'score': int(score),
+                'purple_box': bool(latest_purple),
+                'consecutive_count': int(consecutive_count),
             }
         except Exception:
             return None

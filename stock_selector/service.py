@@ -618,8 +618,13 @@ class StockSelectorService:
                     candidate.extra_data["momentum2_prev_color"] = momentum2.get("prev_color")
             candidate.add_strategy_match(match)
 
-        has_matched_strategy = any(match.matched for match in matches)
-        if has_matched_strategy:
+        # 判断是否所有选择的策略都匹配
+        # 首先筛选出我们选择的策略匹配结果
+        selected_match_ids = [match.strategy_id for match in matches]
+        # 检查是否所有选择的策略都匹配
+        all_strategies_matched = all(match.matched for match in matches)
+        
+        if all_strategies_matched:
             return candidate
         else:
             return None
@@ -743,8 +748,13 @@ class StockSelectorService:
                     candidate.extra_data["momentum2_prev_color"] = momentum2.get("prev_color")
             candidate.add_strategy_match(match)
 
-        has_matched_strategy = any(match.matched for match in matches)
-        if has_matched_strategy:
+        # 判断是否所有选择的策略都匹配
+        # 首先筛选出我们选择的策略匹配结果
+        selected_match_ids = [match.strategy_id for match in matches]
+        # 检查是否所有选择的策略都匹配
+        all_strategies_matched = all(match.matched for match in matches)
+        
+        if all_strategies_matched:
             return candidate
         else:
             return None

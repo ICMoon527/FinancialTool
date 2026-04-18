@@ -1,5 +1,5 @@
 import type React from 'react';
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { stockSelectorApi } from '../api/stockSelector';
 import { Card, Badge, KlineChart } from '../components/common';
 import type {
@@ -227,6 +227,10 @@ const StockSelectorPage: React.FC = () => {
   const [updateRealtime, setUpdateRealtime] = useState(false);
   const [selectedStrategyIds, setSelectedStrategyIds] = useState<string[]>([]);
   const [isStrategyDropdownOpen, setIsStrategyDropdownOpen] = useState(false);
+
+  const [sortField, setSortField] = useState<'score' | 'purpleDays'>('score');
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
+  const [filterEnabled, setFilterEnabled] = useState(false);
   
   const strategyDropdownRef = useRef<HTMLDivElement>(null);
 
@@ -318,12 +322,6 @@ const StockSelectorPage: React.FC = () => {
     };
   }, []);
 
-  useEffect(() => {
-    if (candidates.length > 0 && (!selectedStock || !candidates.find(c => c.stock_code === selectedStock.stock_code))) {
-      setSelectedStock(candidates[0]);
-    }
-  }, [candidates]);
-
   // 移除固定高度设置，保持自然的 flexbox 布局
   // 右侧 section 已经有 overflow-y-auto，配合 flex-1 会自动处理滚动
 
@@ -331,6 +329,43 @@ const StockSelectorPage: React.FC = () => {
     if (strategyTypeFilter === 'ALL') return true;
     return s.strategy_type === strategyTypeFilter;
   });
+
+  const processedCandidates = useMemo(() => {
+    let result = [...candidates];
+
+    if (filterEnabled) {
+      result = result.filter(candidate => {
+        const changePct = candidate.extra_data?.change_pct;
+        return changePct !== undefined && changePct !== null && Math.abs(changePct) <= 3;
+      });
+    }
+
+    result.sort((a, b) => {
+      if (sortField === 'score') {
+        return sortOrder === 'desc' ? b.overall_score - a.overall_score : a.overall_score - b.overall_score;
+      } else {
+        const purpleDaysA = a.extra_data?.purple_days;
+        const purpleDaysB = b.extra_data?.purple_days;
+
+        if (purpleDaysA === undefined || purpleDaysA === null) {
+          return 1;
+        }
+        if (purpleDaysB === undefined || purpleDaysB === null) {
+          return -1;
+        }
+
+        return sortOrder === 'desc' ? purpleDaysB - purpleDaysA : purpleDaysA - purpleDaysB;
+      }
+    });
+
+    return result;
+  }, [candidates, sortField, sortOrder, filterEnabled]);
+
+  useEffect(() => {
+    if (processedCandidates.length > 0 && (!selectedStock || !processedCandidates.find(c => c.stock_code === selectedStock.stock_code))) {
+      setSelectedStock(processedCandidates[0]);
+    }
+  }, [processedCandidates]);
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -561,8 +596,59 @@ const StockSelectorPage: React.FC = () => {
           ) : (
             <>
               <div className="w-1/2 overflow-y-auto pr-2 py-1 pl-1">
+                <div className="mb-4 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSortField('score');
+                      setSortOrder('desc');
+                    }}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 border cursor-pointer ${
+                      sortField === 'score'
+                        ? 'border-cyan/40 bg-cyan/10 text-cyan shadow-[0_0_8px_rgba(0,212,255,0.15)]'
+                        : 'border-white/10 bg-transparent text-muted hover:border-white/20 hover:text-secondary'
+                    }`}
+                  >
+                    <span>综合评分</span>
+                    {sortField === 'score' && (
+                      <span className="ml-1">{sortOrder === 'desc' ? '↓' : '↑'}</span>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (sortField !== 'purpleDays') {
+                        setSortField('purpleDays');
+                        setSortOrder('asc');
+                      } else {
+                        setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
+                      }
+                    }}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 border cursor-pointer ${
+                      sortField === 'purpleDays'
+                        ? 'border-cyan/40 bg-cyan/10 text-cyan shadow-[0_0_8px_rgba(0,212,255,0.15)]'
+                        : 'border-white/10 bg-transparent text-muted hover:border-white/20 hover:text-secondary'
+                    }`}
+                  >
+                    <span>连紫数</span>
+                    {sortField === 'purpleDays' && (
+                      <span className="ml-1">{sortOrder === 'desc' ? '↓' : '↑'}</span>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setFilterEnabled(!filterEnabled)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 border cursor-pointer ${
+                      filterEnabled
+                        ? 'border-cyan/40 bg-cyan/10 text-cyan shadow-[0_0_8px_rgba(0,212,255,0.15)]'
+                        : 'border-white/10 bg-transparent text-muted hover:border-white/20 hover:text-secondary'
+                    }`}
+                  >
+                    筛选3%以内涨跌幅
+                  </button>
+                </div>
                 <div className="grid gap-4">
-                  {candidates.map((candidate, index) => (
+                  {processedCandidates.map((candidate, index) => (
                     <StockCandidateCard
                       key={candidate.stock_code}
                       candidate={candidate}
