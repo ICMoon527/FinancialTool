@@ -452,10 +452,21 @@ class EfinanceFetcher(BaseFetcher):
         existing_cols = [col for col in keep_cols if col in df.columns]
         df = df[existing_cols]
         
-        # 如果换手率列存在，确保转换为小数形式（efinance 返回的是百分比，如 5.2 表示 5.2%）
+        # 如果换手率列存在，智能判断是否需要除以100
         if 'turnover_rate' in df.columns:
             df['turnover_rate'] = pd.to_numeric(df['turnover_rate'], errors='coerce')
-            df['turnover_rate'] = (df['turnover_rate'] / 100.0).clip(0, 1)  # 转换为小数并限制在 0-1 之间
+            
+            # 检查数据范围：如果有值大于1，说明是百分比，需要除以100
+            # 如果所有值都小于等于1，说明已经是小数
+            non_null_values = df['turnover_rate'].dropna()
+            if len(non_null_values) > 0:
+                max_value = non_null_values.max()
+                if max_value > 1.0:
+                    # 有大于1的值，说明是百分比格式，需要除以100
+                    df['turnover_rate'] = (df['turnover_rate'] / 100.0).clip(0, 1)
+                else:
+                    # 已经是小数格式，只需要限制范围
+                    df['turnover_rate'] = df['turnover_rate'].clip(0, 1)
         
         return df
     

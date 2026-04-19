@@ -147,7 +147,8 @@ class VisualizationService:
         days: int = 365,
         indicator_types: Optional[List[str]] = None,
         start_date: Optional[date] = None,
-        force_update: bool = False
+        force_update: bool = False,
+        update_circulating_shares: bool = True
     ) -> Dict[str, Any]:
         """
         获取股票可视化数据（每次都重新获取所有数据）
@@ -157,6 +158,8 @@ class VisualizationService:
             days: 获取天数（如果提供了 start_date，则此参数被忽略）
             indicator_types: 指标类型列表，不填则使用所有可用指标
             start_date: 起始日期（可选）
+            force_update: 是否强制更新，跳过交易时间和已有数据的检查
+            update_circulating_shares: 是否更新流通股本和换手率
 
         Returns:
             包含K线数据和指标数据的字典
@@ -199,7 +202,10 @@ class VisualizationService:
                 'stock_code': stock_code,
                 'stock_name': None,
                 'kline_data': [],
-                'indicators': []
+                'indicators': [],
+                'circulating_shares_updated': False,
+                'circulating_shares': None,
+                'turnover_filled_count': 0
             }
         
         logger.info(f"成功获取 {stock_code} 数据: {len(daily_data)} 条 (来源: {source_name})")
@@ -210,6 +216,33 @@ class VisualizationService:
                 first_date = daily_data['date'].iloc[0]
                 last_date = daily_data['date'].iloc[-1]
                 logger.info(f"{stock_code} 数据日期范围: {first_date} ~ {last_date}")
+        
+        # 更新流通股本（不更新历史换手率，后续实时计算）
+        circulating_shares_updated = False
+        circulating_shares = None
+        if update_circulating_shares:
+            try:
+                logger.info(f"正在更新 {stock_code} 的流通股本...")
+                turnover_service = TurnoverService()
+                stock_name_for_update = fetcher_manager.get_stock_name(stock_code)
+                # fill_historical=False：不更新数据库中的历史换手率，只保存流通股本
+                success, _ = turnover_service.process_akshare_data(
+                    daily_data,
+                    stock_code,
+                    stock_name_for_update,
+                    fill_historical=False
+                )
+                if success:
+                    circulating_shares_updated = True
+                    # 获取更新后的流通股本信息
+                    basic_info = turnover_service.get_stock_basic(stock_code)
+                    if basic_info:
+                        circulating_shares = basic_info.circulating_shares
+                    logger.info(f"{stock_code} 流通股本更新成功: {circulating_shares:.0f} 股，后续将实时计算换手率")
+                else:
+                    logger.warning(f"{stock_code} 流通股本更新失败，数据可能不足")
+            except Exception as e:
+                logger.error(f"更新 {stock_code} 流通股本时出错: {e}", exc_info=True)
         
         # 转换数据格式
         kline_data = []
@@ -431,7 +464,9 @@ class VisualizationService:
             'stock_name': stock_name,
             'kline_data': kline_data,
             'indicators': indicators_data,
-            'chip_distribution': chip_distribution_data
+            'chip_distribution': chip_distribution_data,
+            'circulating_shares_updated': circulating_shares_updated,
+            'circulating_shares': circulating_shares
         }
 
     def _refresh_stock_data(self, stock_code: str, days: int = 3650, start_date: Optional[date] = None):
@@ -996,6 +1031,18 @@ class VisualizationService:
         # 仅从数据库获取数据
         daily_data = None
         
+        # 获取流通股本用于计算换手率
+        from src.services.turnover_service import TurnoverService
+        turnover_service = TurnoverService()
+        stock_basic = turnover_service.get_stock_basic(stock_code)
+        circulating_shares = None
+        
+        if stock_basic and stock_basic.circulating_shares and stock_basic.circulating_shares > 0:
+            circulating_shares = stock_basic.circulating_shares
+            logger.info(f"获取到 {stock_code} 的流通股本: {circulating_shares:.0f} 股")
+        else:
+            logger.warning(f"{stock_code} 没有有效的流通股本数据，将尝试使用数据库中的换手率")
+        
         try:
             from src.repositories.stock_repo import StockRepository
             repo = StockRepository()
@@ -1021,16 +1068,27 @@ class VisualizationService:
                         'amount': record.amount,
                         'pct_chg': record.pct_chg
                     }
-                    # 安全获取turnover_rate
-                    try:
-                        kline_item['turnover_rate'] = getattr(record, 'turnover_rate', None)
-                    except Exception:
-                        kline_item['turnover_rate'] = None
+                    
+                    # 优先用流通股本实时计算换手率（更准确）
+                    if circulating_shares and circulating_shares > 0 and record.volume and record.volume > 0:
+                        # 实时计算：换手率 = 成交量 / 流通股本
+                        turnover_rate = record.volume / circulating_shares
+                        turnover_rate = min(turnover_rate, 1.0)  # 限制在100%以内
+                        kline_item['turnover_rate'] = turnover_rate
+                    else:
+                        # 回退到数据库中存储的换手率
+                        try:
+                            kline_item['turnover_rate'] = getattr(record, 'turnover_rate', None)
+                        except Exception:
+                            kline_item['turnover_rate'] = None
                     
                     kline_data.append(kline_item)
                 
                 daily_data = pd.DataFrame(kline_data)
-                logger.info(f"{stock_code} 从数据库获取了 {len(daily_data)} 条数据")
+                if circulating_shares:
+                    logger.info(f"{stock_code} 从数据库获取了 {len(daily_data)} 条数据，使用流通股本实时计算换手率")
+                else:
+                    logger.info(f"{stock_code} 从数据库获取了 {len(daily_data)} 条数据，使用数据库中的换手率")
             else:
                 logger.warning(f"{stock_code} 数据库中没有找到数据")
         except Exception as e:

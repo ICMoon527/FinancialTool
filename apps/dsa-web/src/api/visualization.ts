@@ -30,14 +30,17 @@ export type IndicatorData = {
 };
 
 export type VisualizationResponse = {
-  stock_code: string;
-  stock_name?: string;
-  kline_data: KLineDataPoint[];
-  indicators: IndicatorData[];
-  chip_distribution?: {
-    latest?: ChipDistributionResponse;
-    history?: Array<{ date: string; data: ChipDistributionResponse }>;
-  };
+    stock_code: string;
+    stock_name?: string;
+    kline_data: KLineDataPoint[];
+    indicators: IndicatorData[];
+    chip_distribution?: {
+        latest?: ChipDistributionResponse;
+        history?: Array<{ date: string; data: ChipDistributionResponse }>;
+    };
+    circulating_shares_updated: boolean;
+    circulating_shares?: number;
+    turnover_filled_count: number;
 };
 
 export type VisualizationSearchHistoryItem = {
@@ -72,28 +75,30 @@ export type VisualizationSearchRequest = {
 };
 
 export const visualizationApi = {
-  async getVisualizationData(
-    stockCode: string,
-    days: number = 3650,
-    indicatorTypes?: string[],
-    startDate?: string
-  ): Promise<VisualizationResponse> {
-    const params: Record<string, any> = {};
-    if (startDate) {
-      params.start_date = startDate;
-    } else {
-      params.days = days;
-    }
-    if (indicatorTypes && indicatorTypes.length > 0) {
-      params.indicator_types = indicatorTypes.join(',');
-    }
+    async getVisualizationData(
+        stockCode: string,
+        days: number = 3650,
+        indicatorTypes?: string[],
+        startDate?: string,
+        updateCirculatingShares: boolean = true
+    ): Promise<VisualizationResponse> {
+        const params: Record<string, any> = {};
+        if (startDate) {
+            params.start_date = startDate;
+        } else {
+            params.days = days;
+        }
+        if (indicatorTypes && indicatorTypes.length > 0) {
+            params.indicator_types = indicatorTypes.join(',');
+        }
+        params.update_circulating_shares = updateCirculatingShares;
 
-    const response = await apiClient.get(`/api/v1/visualization/${encodeURIComponent(stockCode)}`, {
-      params,
-    });
+        const response = await apiClient.get(`/api/v1/visualization/${encodeURIComponent(stockCode)}`, {
+            params,
+        });
 
-    return response.data as VisualizationResponse;
-  },
+        return response.data as VisualizationResponse;
+    },
 
   async getSearchHistory(limit: number = 100): Promise<VisualizationSearchHistoryResponse> {
     const response = await apiClient.get('/api/v1/visualization/history', {

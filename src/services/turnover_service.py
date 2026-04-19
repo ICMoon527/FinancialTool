@@ -68,6 +68,27 @@ class TurnoverService:
             # 尝试使用 turnover_rate 列（已经转换为小数）
             has_valid_turnover = False
             if 'turnover_rate' in df.columns:
+                # 分析换手率数据，判断是否有旧数据（小了100倍）
+                turnover_data = df[df['turnover_rate'].notna()]['turnover_rate']
+                
+                if len(turnover_data) >= 3:
+                    max_turnover = turnover_data.max()
+                    avg_turnover = turnover_data.mean()
+                    
+                    # 检测是否有旧数据特征：最大值 < 0.01 且大部分 < 0.001
+                    small_count = (turnover_data < 0.001).sum()
+                    is_old_data = max_turnover < 0.01 and small_count > len(turnover_data) * 0.5
+                    
+                    if is_old_data:
+                        logger.warning(f"{code} 检测到可能有旧数据（换手率值偏小），尝试修复...")
+                        # 修复：乘以100
+                        df['turnover_rate'] = df['turnover_rate'] * 100.0
+                        # 重新获取修复后的数据
+                        turnover_data = df[df['turnover_rate'].notna()]['turnover_rate']
+                        max_turnover = turnover_data.max()
+                        avg_turnover = turnover_data.mean()
+                        logger.info(f"{code} 数据修复后，换手率范围: {turnover_data.min():.6f} - {max_turnover:.6f}")
+                
                 # 过滤掉换手率为0或异常小的值
                 valid_data = df[
                     (df['turnover_rate'] > 0.0001) &  # 至少 0.01%
@@ -281,19 +302,21 @@ class TurnoverService:
         self, 
         df: pd.DataFrame, 
         code: str,
-        name: Optional[str] = None
+        name: Optional[str] = None,
+        fill_historical: bool = False
     ) -> Tuple[bool, int]:
         """
         处理AKShare数据的完整流程
         
         1. 反推流通股本
         2. 保存流通股本信息
-        3. 填充历史换手率
+        3. (可选) 填充历史换手率
         
         Args:
             df: 包含AKShare数据的DataFrame
             code: 股票代码
             name: 股票名称（可选）
+            fill_historical: 是否填充历史换手率到数据库（默认False，不填充）
             
         Returns:
             (是否成功, 填充的换手率记录数)
@@ -310,13 +333,18 @@ class TurnoverService:
         if not saved:
             return False, 0
         
-        # 填充历史换手率
-        fill_count = self.fill_historical_turnover(
-            code,
-            basic_info['circulating_shares'],
-            basic_info['start_date'],
-            basic_info['end_date']
-        )
+        fill_count = 0
+        
+        # (可选) 填充历史换手率
+        if fill_historical:
+            fill_count = self.fill_historical_turnover(
+                code,
+                basic_info['circulating_shares'],
+                basic_info['start_date'],
+                basic_info['end_date']
+            )
+        else:
+            logger.info(f"跳过填充历史换手率到数据库，后续将通过流通股本实时计算")
         
         return True, fill_count
 

@@ -381,12 +381,17 @@ class AkshareFetcher(BaseFetcher):
 
                 # 映射其他列以匹配 _normalize_data 的期望
                 # _normalize_data 期望：日期, 开盘, 收盘, 最高, 最低, 成交量, 成交额, 换手率
+                # 注意：新浪的 turnover 已经是小数，不需要再除以100
+                # 我们先保存为内部标记列，让 _normalize_data 知道不用再处理
                 rename_map = {
                     'open': '开盘', 'high': '最高', 'low': '最低',
-                    'close': '收盘', 'volume': '成交量', 'amount': '成交额',
-                    'turnover': '换手率'  # 添加换手率映射
+                    'close': '收盘', 'volume': '成交量', 'amount': '成交额'
                 }
                 df = df.rename(columns=rename_map)
+                
+                # 处理新浪的 turnover 列 - 直接赋值，标记为已经是小数
+                if 'turnover' in df.columns:
+                    df['换手率'] = pd.to_numeric(df['turnover'], errors='coerce')
 
                 # 计算涨跌幅（新浪接口可能不返回）
                 if '收盘' in df.columns:
@@ -701,10 +706,21 @@ class AkshareFetcher(BaseFetcher):
         existing_cols = [col for col in keep_cols if col in df.columns]
         df = df[existing_cols]
         
-        # 如果换手率列存在，确保转换为小数形式（AKShare返回的是百分比，如5.2表示5.2%）
+        # 如果换手率列存在，智能判断是否需要除以100
         if 'turnover_rate' in df.columns:
             df['turnover_rate'] = pd.to_numeric(df['turnover_rate'], errors='coerce')
-            df['turnover_rate'] = (df['turnover_rate'] / 100.0).clip(0, 1)  # 转换为小数并限制在0-1之间
+            
+            # 检查数据范围：如果有值大于1，说明是百分比，需要除以100
+            # 如果所有值都小于等于1，说明已经是小数
+            non_null_values = df['turnover_rate'].dropna()
+            if len(non_null_values) > 0:
+                max_value = non_null_values.max()
+                if max_value > 1.0:
+                    # 有大于1的值，说明是百分比格式，需要除以100
+                    df['turnover_rate'] = (df['turnover_rate'] / 100.0).clip(0, 1)
+                else:
+                    # 已经是小数格式，只需要限制范围
+                    df['turnover_rate'] = df['turnover_rate'].clip(0, 1)
         
         return df
     

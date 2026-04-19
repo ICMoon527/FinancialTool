@@ -28,6 +28,9 @@ class VisualizationResponse(BaseModel):
     kline_data: List[Dict[str, Any]] = Field(..., description="K线数据")
     indicators: List[VisualizationIndicatorData] = Field(default_factory=list, description="指标数据列表")
     chip_distribution: Optional[Dict[str, Any]] = Field(None, description="筹码分布数据")
+    circulating_shares_updated: bool = Field(False, description="流通股本是否已更新")
+    circulating_shares: Optional[float] = Field(None, description="最新流通股本")
+    turnover_filled_count: int = Field(0, description="填充的历史换手率记录数")
     
     class Config:
         json_schema_extra = {

@@ -455,11 +455,11 @@ const VisualizationPage: React.FC = () => {
         handlePriceRangeChange();
       }, 100);
       
-      // 监听图表变化以更新价格范围
-      const updatePriceRangeOnChange = () => {
+      // 监听时间范围变化也更新价格范围
+      const updatePriceRangeOnTimeChange = () => {
         handlePriceRangeChange();
       };
-      chart.timeScale().subscribeVisibleTimeRangeChange(updatePriceRangeOnChange);
+      chart.timeScale().subscribeVisibleTimeRangeChange(updatePriceRangeOnTimeChange);
       
       // 订阅十字线移动以更新光标处三线值和信号
       const handleCrosshairMove = (param: any) => {
@@ -487,17 +487,9 @@ const VisualizationPage: React.FC = () => {
           
           // 如果日期与上次相同，不重复请求
           if (lastChipDistributionDateRef.current !== cursorDateStr) {
-            // 清除之前的定时器
-            if (chipDistributionTimerRef.current) {
-              clearTimeout(chipDistributionTimerRef.current);
-            }
-            
-            // 设置新的防抖定时器（100ms，更流畅）
-            chipDistributionTimerRef.current = setTimeout(() => {
-              console.log('更新筹码分布到日期:', cursorDateStr);
-              lastChipDistributionDateRef.current = cursorDateStr;
-              fetchChipDistribution(visualizationDataRef.current.stock_code, cursorDateStr);
-            }, 100);
+            console.log('更新筹码分布到日期:', cursorDateStr);
+            lastChipDistributionDateRef.current = cursorDateStr;
+            fetchChipDistribution(visualizationDataRef.current.stock_code, cursorDateStr);
           }
         }
         
@@ -2406,20 +2398,52 @@ const VisualizationPage: React.FC = () => {
       {/* 右侧：筹码峰图表（只在显示筹码峰时显示） - 独立grid列 */}
       {showChipDistribution && (
         <aside className="hidden md:block md:col-start-6 md:row-start-2 overflow-hidden px-3 md:px-0 md:pr-1 min-w-0">
-          <div className="h-full flex flex-col pt-4">
+          <div className="h-full flex flex-col">
+            {/* 占位区域 - 与左侧股票标题区域对齐 */}
+            <div className="mb-4" style={{ height: '50px' }}></div>
             {/* 主图表区域 - 与K线主Card对齐 */}
             <div className="flex flex-col">
-              {/* 上对齐部分 - 与Card的头部高度匹配 */}
-              <div className="flex-shrink-0" style={{ height: '40px' }}></div>
-              {/* 筹码峰图表 - 固定高度550px */}
-              <div className="flex-shrink-0" style={{ height: '550px' }}>
-                <ChipDistributionChart 
-                  data={chipDistributionData} 
-                  loading={isLoadingChipDistribution} 
-                  priceRange={priceRange}
-                  cursorPrice={cursorPrice}
-                />
-              </div>
+              {/* 筹码峰图表 - 带Card包装 */}
+              <Card variant="default" padding="none" className="mb-4">
+                {/* 筹码峰标题区域 */}
+                <div className="p-2 border-b border-white/5 flex flex-wrap gap-4 items-center" style={{ height: '40px', minHeight: '40px' }}>
+                  <h3 className="text-sm font-medium text-white">筹码分布</h3>
+                  {chipDistributionData?.current_price !== undefined && chipDistributionData?.current_price !== null && (
+                    <div className="flex items-center gap-2">
+                      <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#fbbf24' }} />
+                      <span className="text-xs text-white">现价: <span className="font-mono">{chipDistributionData.current_price.toFixed(2)}</span></span>
+                    </div>
+                  )}
+                  {chipDistributionData?.avg_cost !== undefined && chipDistributionData?.avg_cost !== null && (
+                    <div className="flex items-center gap-2">
+                      <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#ff6b6b' }} />
+                      <span className="text-xs text-white">成本: <span className="font-mono">{chipDistributionData.avg_cost.toFixed(2)}</span></span>
+                    </div>
+                  )}
+                  {chipDistributionData?.max_chip_price !== undefined && chipDistributionData?.max_chip_price !== null && (
+                    <div className="flex items-center gap-2">
+                      <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#3b82f6' }} />
+                      <span className="text-xs text-white">峰价: <span className="font-mono">{chipDistributionData.max_chip_price.toFixed(2)}</span></span>
+                    </div>
+                  )}
+                </div>
+                {/* 筹码峰图表画布 */}
+                <div 
+                  style={{ 
+                    height: '500px', 
+                    width: '100%',
+                    minHeight: '500px',
+                    backgroundColor: '#1a1a2e'
+                  }} 
+                >
+                  <ChipDistributionChart 
+                    data={chipDistributionData} 
+                    loading={isLoadingChipDistribution} 
+                    priceRange={priceRange}
+                    cursorPrice={cursorPrice}
+                  />
+                </div>
+              </Card>
             </div>
           </div>
         </aside>

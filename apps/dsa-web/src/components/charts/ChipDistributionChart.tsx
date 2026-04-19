@@ -1,4 +1,4 @@
-import React, { useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useState } from 'react';
 import ReactECharts from 'echarts-for-react';
 import type { ChipDistributionResponse } from '../../api/visualization';
 
@@ -9,40 +9,97 @@ type ChipDistributionChartProps = {
   cursorPrice?: number | null;
 };
 
-const ChipDistributionChart: React.FC<ChipDistributionChartProps> = ({ data, loading = false, priceRange, cursorPrice }) => {
+const ChipDistributionChart: React.FC<ChipDistributionChartProps> = ({ 
+  data, 
+  loading = false, 
+  priceRange, 
+  cursorPrice 
+}) => {
   const chartRef = useRef<ReactECharts>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
-  
-  // 监听变化，更新图表
+  const yAxisCanvasRef = useRef<HTMLCanvasElement>(null);
+  const [priceBins, setPriceBins] = useState<number[]>([]);
+
+  // 监听变化，更新图表和Y轴
   useEffect(() => {
+    if (data && data.price_bins) {
+      let bins = data.price_bins;
+      
+      // 如果有价格范围限制，筛选在范围内的数据
+      if (priceRange && priceRange.min !== undefined && priceRange.max !== undefined) {
+        bins = bins.filter(p => p >= priceRange.min && p <= priceRange.max);
+      }
+      
+      setPriceBins(bins);
+    }
+    
     if (chartRef.current) {
       chartRef.current.getEchartsInstance()?.setOption(getOption() as any);
     }
   }, [cursorPrice, data, priceRange]);
+
+  // 绘制独立的Y轴
+  useEffect(() => {
+    const canvas = yAxisCanvasRef.current;
+    if (!canvas) return;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    // 设置canvas尺寸
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = 60 * dpr;
+    canvas.height = canvas.offsetHeight * dpr;
+    ctx.scale(dpr, dpr);
+
+    // 清空画布
+    ctx.clearRect(0, 0, 60, canvas.offsetHeight);
+    
+    // 设置样式
+    ctx.fillStyle = '#d1d4dc';
+    ctx.font = '11px monospace';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+
+    const height = canvas.offsetHeight;
+    
+    // 确定要显示的价格范围
+    let displayMin = priceBins[0];
+    let displayMax = priceBins[priceBins.length - 1];
+    
+    if (priceRange && priceRange.min !== undefined && priceRange.max !== undefined) {
+      displayMin = priceRange.min;
+      displayMax = priceRange.max;
+    }
+    
+    // 生成均匀分布的价格标签（约20个标签）
+    const numLabels = Math.min(20, Math.floor(height / 20));
+    const priceStep = (displayMax - displayMin) / numLabels;
+    
+    // 绘制价格标签（从下往上：min在底部，max在顶部）
+    for (let i = 0; i <= numLabels; i++) {
+      const price = displayMin + priceStep * i;
+      
+      // 计算价格在当前显示范围中的位置
+      const normalizedY = (price - displayMin) / (displayMax - displayMin);
+      const y = height - normalizedY * height;  // 反转Y坐标
+      
+      // 只绘制在画布范围内的标签
+      if (y >= 5 && y <= height - 5) {
+        ctx.fillText(price.toFixed(2), 55, y);
+      }
+    }
+    
+  }, [priceBins, priceRange]);
 
   const getOption = () => {
     if (!data || data.price_bins.length === 0) {
       return {};
     }
 
-    let priceBins = data.price_bins;
-    let profitVolumes = data.profit_volumes;
-    let lossVolumes = data.loss_volumes;
-    
-    // 如果有价格范围限制，筛选在范围内的数据
-    if (priceRange && priceRange.min !== undefined && priceRange.max !== undefined) {
-      const filteredIndices = [];
-      for (let i = 0; i < priceBins.length; i++) {
-        if (priceBins[i] >= priceRange.min && priceBins[i] <= priceRange.max) {
-          filteredIndices.push(i);
-        }
-      }
-      if (filteredIndices.length > 0) {
-        priceBins = filteredIndices.map(i => priceBins[i]);
-        profitVolumes = filteredIndices.map(i => profitVolumes[i]);
-        lossVolumes = filteredIndices.map(i => lossVolumes[i]);
-      }
-    }
+    // ECharts 始终使用完整价格数据（不筛选），这样才能与 Canvas 标签范围对齐
+    const priceBins = data.price_bins;
+    const profitVolumes = data.profit_volumes;
+    const lossVolumes = data.loss_volumes;
     
     const totalVolumes = profitVolumes.map((v, i) => (v || 0) + (lossVolumes[i] || 0));
 
@@ -82,8 +139,6 @@ const ChipDistributionChart: React.FC<ChipDistributionChartProps> = ({ data, loa
         }
       });
     }
-
-
 
     // 计算当前价格位置，用于区分颜色
     let currentPriceIndex = -1;
@@ -146,40 +201,12 @@ const ChipDistributionChart: React.FC<ChipDistributionChartProps> = ({ data, loa
           `;
         }
       },
-      graphic: [
-        (data.avg_cost !== null && data.avg_cost !== undefined) ? {
-          type: 'text',
-          left: 'right',
-          top: 10,
-          style: {
-            text: `成本: ${data.avg_cost.toFixed(2)}`,
-            fill: '#ff6b6b',
-            fontWeight: 'bold',
-            fontSize: 12,
-            backgroundColor: 'rgba(0,0,0,0.7)',
-            padding: [2, 5]
-          }
-        } : null,
-        (data.current_price !== null && data.current_price !== undefined) ? {
-          type: 'text',
-          left: 'right',
-          top: 35,
-          style: {
-            text: `现价: ${data.current_price.toFixed(2)}`,
-            fill: '#fbbf24',
-            fontWeight: 'bold',
-            fontSize: 12,
-            backgroundColor: 'rgba(0,0,0,0.7)',
-            padding: [2, 5]
-          }
-        } : null
-      ].filter(Boolean),
       grid: {
-        left: 70,
-        right: 80,
+        left: 0,
+        right: 20,
         top: 10,
         bottom: 10,
-        containLabel: true
+        containLabel: false
       },
       yAxis: {
         type: 'category',
@@ -187,11 +214,7 @@ const ChipDistributionChart: React.FC<ChipDistributionChartProps> = ({ data, loa
         position: 'left',
         axisLine: { show: false },
         axisTick: { show: false },
-        axisLabel: { 
-          color: '#d1d4dc',
-          fontSize: 11,
-          interval: Math.floor(priceBins.length / 20)
-        },
+        axisLabel: { show: false },
         splitLine: { 
           lineStyle: { 
             color: '#2b2b43',
@@ -233,27 +256,54 @@ const ChipDistributionChart: React.FC<ChipDistributionChartProps> = ({ data, loa
           }
         }
       ],
-      animation: true,
-      animationDuration: 800,
-      animationEasing: 'cubicOut'
+      animation: false,
+      // 使用 dataZoom 控制 Y轴显示范围，与主图同步
+      ...(() => {
+        if (!priceRange || priceRange.min === undefined || priceRange.max === undefined) {
+          return {};
+        }
+        
+        // 找到范围对应的索引
+        let startIndex = priceBins.findIndex(p => p >= priceRange.min);
+        if (startIndex === -1) startIndex = 0;
+        
+        let endIndex = priceBins.findIndex(p => p > priceRange.max);
+        if (endIndex === -1) endIndex = priceBins.length - 1;
+        else endIndex = Math.max(0, endIndex - 1);
+        
+        return {
+          dataZoom: [
+            {
+              type: 'inside',
+              yAxisIndex: 0,
+              startValue: startIndex,
+              endValue: endIndex,
+              zoomLock: true  // 锁定缩放，只能通过主图控制
+            }
+          ]
+        };
+      })()
     };
   };
 
-  // const totalProfit = data ? data.profit_volumes.reduce((a, b) => a + b, 0) : 0;
-  // const totalLoss = data ? data.loss_volumes.reduce((a, b) => a + b, 0) : 0;
-  // const total = totalProfit + totalLoss;
-  // const profitPercentage = total > 0 ? (totalProfit / total * 100).toFixed(1) : '0';
-  // const lossPercentage = total > 0 ? (totalLoss / total * 100).toFixed(1) : '0';
-
   return (
-    <div className="w-full h-full flex flex-col bg-[#1a1a2e] rounded-lg border border-[#2b2b43]">
-      <div ref={containerRef} className="flex-1 min-h-0">
+    <div className="w-full h-full flex">
+      {/* 独立的Y轴 Canvas */}
+      <div className="w-[60px] flex-shrink-0 h-full bg-[#1a1a2e] relative">
+        <canvas 
+          ref={yAxisCanvasRef} 
+          className="w-full h-full"
+        />
+      </div>
+      
+      {/* 主图表区域 */}
+      <div className="flex-1 h-full min-w-0">
         {loading ? (
-          <div className="w-full h-full flex items-center justify-center">
+          <div className="w-full h-full flex items-center justify-center bg-[#1a1a2e]">
             <div className="text-gray-500 text-sm">加载中...</div>
           </div>
         ) : !data || data.price_bins.length === 0 ? (
-          <div className="w-full h-full flex items-center justify-center p-4">
+          <div className="w-full h-full flex items-center justify-center p-4 bg-[#1a1a2e]">
             <div className="text-center">
               <div className="text-yellow-500 text-sm mb-2">⚠️ 筹码分布无法计算</div>
               <div className="text-gray-400 text-xs">

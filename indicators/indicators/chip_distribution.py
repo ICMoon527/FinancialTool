@@ -40,7 +40,18 @@ class ChipDistribution(BaseIndicator):
     6. 可选高斯平滑，减少数据锯齿
     """
 
-    def __init__(self, price_bin_size: float = 0.002, decay_factor: float = 0.99, turnover_coeff: float = 0.8, turnover_window_days: int = 60, gaussian_sigma: float = 1.5, enable_smooth: bool = True, max_days: int = 120, grid_min: float = None, grid_max: float = None, grid_num_bins: int = 500, min_volume_threshold: float = 0.001, **kwargs):
+    def __init__(self, 
+                price_bin_size: float = 0.002, 
+                decay_factor: float = 0.99, 
+                turnover_coeff: float = 1.2, 
+                turnover_window_days: int = 60, 
+                gaussian_sigma: float = 1.5, 
+                enable_smooth: bool = True, 
+                max_days: int = 120, 
+                grid_min: float = None, 
+                grid_max: float = None, 
+                grid_num_bins: int = 500, 
+                min_volume_threshold: float = 0.001, **kwargs):
         """
         初始化筹码分布指标
 
@@ -210,7 +221,21 @@ class ChipDistribution(BaseIndicator):
                 logger.debug("[筹码分布] 使用真实换手率计算（来自历史数据中的换手率列）")
             elif 'turnover_rate' in df.columns:
                 # 如果列名是英文的
-                df['real_turnover'] = df['turnover_rate'].clip(0, 1)
+                turnover_data = df['turnover_rate'].copy()
+                
+                # 检测并修复旧数据：如果所有值都小于0.01，说明是旧的错误数据（除以了100两次）
+                # 旧数据特征：最大值小于0.01，且大部分值小于0.001
+                non_null_turnover = turnover_data.dropna()
+                if len(non_null_turnover) > 0:
+                    max_val = non_null_turnover.max()
+                    small_count = (non_null_turnover < 0.001).sum()
+                    if max_val < 0.01 and small_count > len(non_null_turnover) * 0.5:
+                        # 检测到旧数据，需要乘以100进行修复
+                        logger.warning("[筹码分布] 检测到旧版错误换手率数据，正在修复...")
+                        turnover_data = turnover_data * 100.0
+                        logger.info(f"[筹码分布] 数据修复完成，修复前最大值: {max_val:.8f}，修复后最大值: {turnover_data.max():.8f}")
+                
+                df['real_turnover'] = turnover_data.clip(0, 1)
                 has_real_turnover = True
                 logger.debug("[筹码分布] 使用真实换手率计算（来自历史数据中的turnover_rate列）")
         
