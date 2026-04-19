@@ -67,13 +67,7 @@ const ChipDistributionChart: React.FC<ChipDistributionChartProps> = ({ data, loa
         yAxis: findClosestIndex(data.avg_cost),
         lineStyle: { color: '#ff6b6b', type: 'dashed', width: 1.5 },
         label: {
-          show: true,
-          position: 'end',
-          formatter: `成本: ${data.avg_cost.toFixed(2)}`,
-          color: '#ff6b6b',
-          fontWeight: 'bold',
-          backgroundColor: 'rgba(0,0,0,0.7)',
-          padding: [2, 5]
+          show: false
         }
       });
     }
@@ -82,15 +76,9 @@ const ChipDistributionChart: React.FC<ChipDistributionChartProps> = ({ data, loa
     if (data.current_price !== null && data.current_price !== undefined) {
       markLines.push({
         yAxis: findClosestIndex(data.current_price),
-        lineStyle: { color: '#fbbf24', type: 'solid', width: 2 },
+        lineStyle: { color: '#fbbf24', type: 'dashed', width: 1 },
         label: {
-          show: true,
-          position: 'end',
-          formatter: `现价: ${data.current_price.toFixed(2)}`,
-          color: '#fbbf24',
-          fontWeight: 'bold',
-          backgroundColor: 'rgba(0,0,0,0.7)',
-          padding: [2, 5]
+          show: false
         }
       });
     }
@@ -137,7 +125,7 @@ const ChipDistributionChart: React.FC<ChipDistributionChartProps> = ({ data, loa
     });
 
     return {
-      backgroundColor: '#0a0e27',
+      backgroundColor: '#1a1a2e',
       tooltip: {
         trigger: 'axis',
         axisPointer: { type: 'shadow' },
@@ -158,9 +146,37 @@ const ChipDistributionChart: React.FC<ChipDistributionChartProps> = ({ data, loa
           `;
         }
       },
+      graphic: [
+        (data.avg_cost !== null && data.avg_cost !== undefined) ? {
+          type: 'text',
+          left: 'right',
+          top: 10,
+          style: {
+            text: `成本: ${data.avg_cost.toFixed(2)}`,
+            fill: '#ff6b6b',
+            fontWeight: 'bold',
+            fontSize: 12,
+            backgroundColor: 'rgba(0,0,0,0.7)',
+            padding: [2, 5]
+          }
+        } : null,
+        (data.current_price !== null && data.current_price !== undefined) ? {
+          type: 'text',
+          left: 'right',
+          top: 35,
+          style: {
+            text: `现价: ${data.current_price.toFixed(2)}`,
+            fill: '#fbbf24',
+            fontWeight: 'bold',
+            fontSize: 12,
+            backgroundColor: 'rgba(0,0,0,0.7)',
+            padding: [2, 5]
+          }
+        } : null
+      ].filter(Boolean),
       grid: {
         left: 70,
-        right: 20,
+        right: 80,
         top: 10,
         bottom: 10,
         containLabel: true
@@ -172,13 +188,13 @@ const ChipDistributionChart: React.FC<ChipDistributionChartProps> = ({ data, loa
         axisLine: { show: false },
         axisTick: { show: false },
         axisLabel: { 
-          color: '#d1d5db',
+          color: '#d1d4dc',
           fontSize: 11,
           interval: Math.floor(priceBins.length / 20)
         },
         splitLine: { 
           lineStyle: { 
-            color: '#1a1e37',
+            color: '#2b2b43',
             type: 'dashed'
           } 
         }
@@ -191,7 +207,7 @@ const ChipDistributionChart: React.FC<ChipDistributionChartProps> = ({ data, loa
         axisLabel: { show: false },
         splitLine: { 
           lineStyle: { 
-            color: '#1a1e37',
+            color: '#2b2b43',
             type: 'dashed'
           } 
         }
@@ -230,7 +246,7 @@ const ChipDistributionChart: React.FC<ChipDistributionChartProps> = ({ data, loa
   // const lossPercentage = total > 0 ? (totalLoss / total * 100).toFixed(1) : '0';
 
   return (
-    <div className="w-full h-full flex flex-col bg-[#0a0e27] rounded-lg border border-[#1a1e37]">
+    <div className="w-full h-full flex flex-col bg-[#1a1a2e] rounded-lg border border-[#2b2b43]">
       <div ref={containerRef} className="flex-1 min-h-0">
         {loading ? (
           <div className="w-full h-full flex items-center justify-center">
