@@ -184,7 +184,7 @@ class AkshareFetcher(BaseFetcher):
     """
     
     name = "AkshareFetcher"
-    priority = int(os.getenv("AKSHARE_PRIORITY", "1"))
+    priority = int(os.getenv("AKSHARE_PRIORITY", "-2"))  # 优先级最高，包含换手率数据，支持筹码分布计算
     
     def __init__(self, sleep_min: float = 2.0, sleep_max: float = 5.0):
         """
@@ -280,34 +280,32 @@ class AkshareFetcher(BaseFetcher):
         获取普通 A 股历史数据
 
         策略：
-        1. 优先尝试东方财富接口 (ak.stock_zh_a_hist)
-        2. 失败后尝试新浪财经接口 (ak.stock_zh_a_daily)
-        3. 最后尝试腾讯财经接口 (ak.stock_zh_a_hist_tx)
+        1. 使用新浪财经接口 (ak.stock_zh_a_daily) - 包含换手率数据
+        2. 禁用东方财富数据源（连接不稳定）
         """
-        # 尝试列表
-        methods = [
-            (self._fetch_stock_data_em, "东方财富"),
-            (self._fetch_stock_data_sina, "新浪财经"),
-            (self._fetch_stock_data_tx, "腾讯财经"),
-        ]
+        # 只使用新浪财经
+        try:
+            logger.info(f"[数据源] 尝试使用 新浪财经 获取 {stock_code}...")
+            df = self._fetch_stock_data_sina(stock_code, start_date, end_date)
 
-        last_error = None
-
-        for fetch_method, source_name in methods:
+            if df is not None and not df.empty:
+                logger.info(f"[数据源] 新浪财经 获取成功")
+                return df
+            else:
+                logger.warning(f"[数据源] 新浪财经 返回空数据")
+                raise DataFetchError(f"新浪财经返回空数据")
+        except Exception as e:
+            logger.warning(f"[数据源] 新浪财经 获取失败: {e}")
+            # 只有新浪财经失败时才尝试腾讯财经
             try:
-                logger.info(f"[数据源] 尝试使用 {source_name} 获取 {stock_code}...")
-                df = fetch_method(stock_code, start_date, end_date)
-
+                logger.info(f"[数据源] 尝试使用 腾讯财经 获取 {stock_code}...")
+                df = self._fetch_stock_data_tx(stock_code, start_date, end_date)
                 if df is not None and not df.empty:
-                    logger.info(f"[数据源] {source_name} 获取成功")
+                    logger.info(f"[数据源] 腾讯财经 获取成功")
                     return df
-            except Exception as e:
-                last_error = e
-                logger.warning(f"[数据源] {source_name} 获取失败: {e}")
-                # 继续尝试下一个
-
-        # 所有都失败
-        raise DataFetchError(f"Akshare 所有渠道获取失败: {last_error}")
+            except Exception as e2:
+                logger.warning(f"[数据源] 腾讯财经 获取失败: {e2}")
+                raise DataFetchError(f"Akshare 数据源获取失败: {e}")
 
     def _fetch_stock_data_em(self, stock_code: str, start_date: str, end_date: str) -> pd.DataFrame:
         """
@@ -382,10 +380,11 @@ class AkshareFetcher(BaseFetcher):
                     df = df.rename(columns={'date': '日期'})
 
                 # 映射其他列以匹配 _normalize_data 的期望
-                # _normalize_data 期望：日期, 开盘, 收盘, 最高, 最低, 成交量, 成交额
+                # _normalize_data 期望：日期, 开盘, 收盘, 最高, 最低, 成交量, 成交额, 换手率
                 rename_map = {
                     'open': '开盘', 'high': '最高', 'low': '最低',
-                    'close': '收盘', 'volume': '成交量', 'amount': '成交额'
+                    'close': '收盘', 'volume': '成交量', 'amount': '成交额',
+                    'turnover': '换手率'  # 添加换手率映射
                 }
                 df = df.rename(columns=rename_map)
 
@@ -674,7 +673,7 @@ class AkshareFetcher(BaseFetcher):
         日期, 开盘, 收盘, 最高, 最低, 成交量, 成交额, 振幅, 涨跌幅, 涨跌额, 换手率
         
         需要映射到标准列名：
-        date, open, high, low, close, volume, amount, pct_chg
+        date, open, high, low, close, volume, amount, pct_chg, turnover_rate
         """
         df = df.copy()
         
@@ -688,6 +687,7 @@ class AkshareFetcher(BaseFetcher):
             '成交量': 'volume',
             '成交额': 'amount',
             '涨跌幅': 'pct_chg',
+            '换手率': 'turnover_rate',
         }
         
         # 重命名列
@@ -700,6 +700,11 @@ class AkshareFetcher(BaseFetcher):
         keep_cols = ['code'] + STANDARD_COLUMNS
         existing_cols = [col for col in keep_cols if col in df.columns]
         df = df[existing_cols]
+        
+        # 如果换手率列存在，确保转换为小数形式（AKShare返回的是百分比，如5.2表示5.2%）
+        if 'turnover_rate' in df.columns:
+            df['turnover_rate'] = pd.to_numeric(df['turnover_rate'], errors='coerce')
+            df['turnover_rate'] = (df['turnover_rate'] / 100.0).clip(0, 1)  # 转换为小数并限制在0-1之间
         
         return df
     
@@ -1320,6 +1325,73 @@ class AkshareFetcher(BaseFetcher):
         
         return result
 
+    def get_circulating_shares(self, stock_code: str) -> Optional[pd.DataFrame]:
+        """
+        获取股票历史流通股本数据
+        
+        数据来源：ak.stock_zh_a_gbjg_em()
+        包含：总股本、流通股本的历史变动数据
+        
+        Args:
+            stock_code: 股票代码，如 '600519'
+            
+        Returns:
+            包含历史流通股本数据的DataFrame，列包括：
+            - date: 日期
+            - total_shares: 总股本
+            - circulating_shares: 流通股本
+            获取失败返回None
+        """
+        import akshare as ak
+        
+        if _is_us_code(stock_code) or _is_hk_code(stock_code) or _is_etf_code(stock_code):
+            logger.debug(f"[API跳过] {stock_code} 不是A股，无流通股本数据")
+            return None
+        
+        try:
+            self._set_random_user_agent()
+            self._enforce_rate_limit()
+            
+            logger.info(f"[API调用] ak.stock_zh_a_gbjg_em(symbol={stock_code}) 获取流通股本...")
+            import time as _time
+            api_start = _time.time()
+            
+            df = ak.stock_zh_a_gbjg_em(symbol=stock_code)
+            
+            api_elapsed = _time.time() - api_start
+            
+            if df is None or df.empty:
+                logger.warning(f"[API返回] ak.stock_zh_a_gbjg_em 返回空数据, 耗时 {api_elapsed:.2f}s")
+                return None
+            
+            logger.info(f"[API返回] ak.stock_zh_a_gbjg_em 成功: 返回 {len(df)} 条数据, 耗时 {api_elapsed:.2f}s")
+            logger.debug(f"[API返回] 流通股本数据列名: {list(df.columns)}")
+            
+            # 标准化列名
+            column_mapping = {
+                '日期': 'date',
+                '总股本': 'total_shares',
+                '流通股本': 'circulating_shares',
+            }
+            
+            df = df.rename(columns=column_mapping)
+            
+            # 确保日期格式正确
+            if 'date' in df.columns:
+                df['date'] = pd.to_datetime(df['date']).dt.date
+            
+            # 按日期排序
+            df = df.sort_values('date').reset_index(drop=True)
+            
+            return df
+            
+        except Exception as e:
+            error_msg = str(e).lower()
+            if any(keyword in error_msg for keyword in ['banned', 'blocked', '频率', 'rate', '限制']):
+                raise RateLimitError(f"Akshare 流通股本数据可能被限流: {e}") from e
+            logger.error(f"[API错误] 获取 {stock_code} 流通股本数据失败: {e}")
+            return None
+    
     def get_main_indices(self, region: str = "cn") -> Optional[List[Dict[str, Any]]]:
         """
         获取主要指数实时行情 (新浪接口)，仅支持 A 股

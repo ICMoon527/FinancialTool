@@ -171,7 +171,7 @@ class EfinanceFetcher(BaseFetcher):
     """
     
     name = "EfinanceFetcher"
-    priority = int(os.getenv("EFINANCE_PRIORITY", "0"))  # 最高优先级，排在 AkshareFetcher 之前
+    priority = int(os.getenv("EFINANCE_PRIORITY", "-1"))  # 高优先级，包含换手率数据，仅次于 AkshareFetcher
     
     def __init__(self, sleep_min: float = 1.5, sleep_max: float = 3.0):
         """
@@ -419,6 +419,7 @@ class EfinanceFetcher(BaseFetcher):
             '涨跌幅': 'pct_chg',
             '股票代码': 'code',
             '股票名称': 'name',
+            '换手率': 'turnover_rate',  # 添加换手率映射
             # ETF 基金可能的列名
             '基金代码': 'code',
             '基金名称': 'name',
@@ -450,6 +451,11 @@ class EfinanceFetcher(BaseFetcher):
         keep_cols = ['code'] + STANDARD_COLUMNS
         existing_cols = [col for col in keep_cols if col in df.columns]
         df = df[existing_cols]
+        
+        # 如果换手率列存在，确保转换为小数形式（efinance 返回的是百分比，如 5.2 表示 5.2%）
+        if 'turnover_rate' in df.columns:
+            df['turnover_rate'] = pd.to_numeric(df['turnover_rate'], errors='coerce')
+            df['turnover_rate'] = (df['turnover_rate'] / 100.0).clip(0, 1)  # 转换为小数并限制在 0-1 之间
         
         return df
     

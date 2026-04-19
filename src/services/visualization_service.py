@@ -26,8 +26,10 @@ from indicators.indicators.main_trading import MainTrading
 from indicators.indicators.momentum_2 import Momentum2
 from indicators.indicators.strong_detonation import StrongDetonation
 from indicators.indicators.resonance_chase import ResonanceChase
+from indicators.indicators.chip_distribution import ChipDistribution
 from src.storage import DatabaseManager, get_db
 from src.core.trading_calendar import get_start_date_by_trading_days, get_market_for_stock
+from src.services.turnover_service import TurnoverService
 
 logger = logging.getLogger(__name__)
 
@@ -220,7 +222,7 @@ class VisualizationService:
             else:
                 date_str = str(row['date']).split('T')[0]
             
-            kline_data.append({
+            kline_item = {
                 'date': date_str,
                 'open': float(row['open']),
                 'high': float(row['high']),
@@ -229,7 +231,16 @@ class VisualizationService:
                 'volume': float(row['volume']) if pd.notna(row['volume']) else 0,
                 'amount': float(row['amount']) if pd.notna(row['amount']) else 0,
                 'pct_chg': float(row['pct_chg']) if pd.notna(row['pct_chg']) else 0
-            })
+            }
+            
+            # 添加换手率信息（如果有）
+            if 'turnover_rate' in row and pd.notna(row['turnover_rate']):
+                kline_item['turnover_rate'] = float(row['turnover_rate'])
+            elif '换手率' in row and pd.notna(row['换手率']):
+                # 如果是百分比格式，转换为小数
+                kline_item['turnover_rate'] = float(row['换手率']) / 100.0
+            
+            kline_data.append(kline_item)
         
         # 打印转换后 kline_data 的日期范围，便于调试
         if kline_data:
@@ -391,11 +402,36 @@ class VisualizationService:
                 except Exception as e:
                     logger.warning(f"计算 {stock_code} {indicator_type} 指标失败: {e}")
         
+        # 预计算最新日期的筹码分布数据
+        chip_distribution_data = None
+        try:
+            # 检查是否有换手率数据（必须要有真实换手率才能计算）
+            has_turnover = False
+            if daily_data is not None and 'turnover_rate' in daily_data.columns:
+                has_turnover = daily_data['turnover_rate'].notna().any()
+            elif kline_data:
+                # 检查kline_data中是否有turnover_rate字段
+                has_turnover = any('turnover_rate' in item for item in kline_data)
+            
+            if has_turnover:
+                logger.info(f"开始预计算 {stock_code} 的筹码分布数据...")
+                chip_distribution_data = self._precompute_chip_distribution(
+                    daily_data,
+                    kline_data,
+                    stock_code
+                )
+                logger.info(f"{stock_code} 筹码分布预计算完成")
+            else:
+                logger.warning(f"{stock_code} 没有真实换手率数据，跳过筹码分布预计算")
+        except Exception as e:
+            logger.warning(f"预计算 {stock_code} 筹码分布失败: {e}")
+        
         return {
             'stock_code': stock_code,
             'stock_name': stock_name,
             'kline_data': kline_data,
-            'indicators': indicators_data
+            'indicators': indicators_data,
+            'chip_distribution': chip_distribution_data
         }
 
     def _refresh_stock_data(self, stock_code: str, days: int = 3650, start_date: Optional[date] = None):
@@ -452,6 +488,21 @@ class VisualizationService:
                     if daily_data is not None and not daily_data.empty:
                         saved_count = self.db.save_daily_data(daily_data, stock_code, 'VisualizationService')
                         logger.info(f"{stock_code} 更新了 {saved_count} 条日线数据 (来源: {source_name})")
+                        
+                        # 处理流通股本和换手率
+                        try:
+                            turnover_service = TurnoverService()
+                            stock_name = fetcher_manager.get_stock_name(stock_code)
+                            success, fill_count = turnover_service.process_akshare_data(
+                                daily_data, 
+                                stock_code, 
+                                stock_name
+                            )
+                            if success:
+                                logger.info(f"{stock_code} 成功处理流通股本和换手率，填充了 {fill_count} 条历史换手率")
+                        except Exception as e:
+                            logger.warning(f"{stock_code} 处理流通股本和换手率失败: {e}")
+                        
                         found = True
                         break
                     
@@ -492,6 +543,21 @@ class VisualizationService:
                     if daily_data is not None and not daily_data.empty:
                         saved_count = self.db.save_daily_data(daily_data, stock_code, 'VisualizationService')
                         logger.info(f"{stock_code} 更新了 {saved_count} 条日线数据 (来源: {source_name})")
+                        
+                        # 处理流通股本和换手率
+                        try:
+                            turnover_service = TurnoverService()
+                            stock_name = fetcher_manager.get_stock_name(stock_code)
+                            success, fill_count = turnover_service.process_akshare_data(
+                                daily_data, 
+                                stock_code, 
+                                stock_name
+                            )
+                            if success:
+                                logger.info(f"{stock_code} 成功处理流通股本和换手率，填充了 {fill_count} 条历史换手率")
+                        except Exception as e:
+                            logger.warning(f"{stock_code} 处理流通股本和换手率失败: {e}")
+                        
                         found = True
                         break
                     
@@ -824,3 +890,225 @@ class VisualizationService:
             是否成功删除
         """
         return self.db.delete_visualization_search_history(record_id)
+    
+    def _precompute_chip_distribution(
+        self,
+        daily_data: Optional[pd.DataFrame],
+        kline_data: List[Dict[str, Any]],
+        stock_code: str
+    ) -> Optional[Dict[str, Any]]:
+        """
+        预计算最新日期的筹码分布数据
+
+        Args:
+            daily_data: 从API获取的原始数据DataFrame
+            kline_data: 转换后的K线数据列表
+            stock_code: 股票代码
+
+        Returns:
+            预计算的筹码分布数据，失败返回None
+        """
+        try:
+            # 准备数据
+            df = None
+            if daily_data is not None and not daily_data.empty:
+                df = daily_data.copy()
+            elif kline_data:
+                df = pd.DataFrame(kline_data)
+            
+            if df is None or df.empty:
+                logger.warning("没有数据用于预计算筹码分布")
+                return None
+            
+            # 确保date列是datetime类型
+            if 'date' in df.columns:
+                df['date'] = pd.to_datetime(df['date'])
+                df = df.sort_values('date').reset_index(drop=True)
+            
+            # 指标计算器需要首字母大写的列名
+            rename_map = {
+                'open': 'Open',
+                'high': 'High',
+                'low': 'Low',
+                'close': 'Close',
+                'volume': 'Volume'
+            }
+            # 只重命名存在的列
+            for old_col, new_col in rename_map.items():
+                if old_col in df.columns:
+                    df = df.rename(columns={old_col: new_col})
+            
+            # 只计算最新日期的筹码分布
+            calculator = ChipDistribution()
+            result = calculator.calculate(df)
+            # 确保结果包含 stock_code 字段
+            if result:
+                result['stock_code'] = stock_code
+            
+            logger.info(f"仅预计算了最新日期的筹码分布")
+            
+            # 返回结果 - 只返回最新数据，不预计算历史
+            return {
+                'latest': result,
+                'history': []  # 历史数据留空，十字线移动时直接调用API
+            }
+        except Exception as e:
+            logger.warning(f"预计算筹码分布失败: {e}")
+            return None
+
+    def get_chip_distribution(
+        self,
+        stock_code: str,
+        days: int = 365,
+        start_date: Optional[date] = None,
+        end_date_idx: Optional[int] = None,
+        end_date: Optional[date] = None
+    ) -> Dict[str, Any]:
+        """
+        获取股票筹码分布数据（仅从数据库获取，禁止使用API和模拟换手率）
+
+        Args:
+            stock_code: 股票代码
+            days: 获取天数（如果提供了 start_date，则此参数被忽略）
+            start_date: 起始日期（可选）
+            end_date_idx: 截止日期索引（用于移动成本分布，可选）
+            end_date: 截止日期（可选，如果提供会根据此日期计算end_date_idx）
+
+        Returns:
+            包含筹码分布数据的字典
+        """
+        today = date.today()
+        logger.info(f"开始获取 {stock_code} 的筹码分布数据，日期: {end_date if end_date else '最新'}")
+
+        # 确定查询范围
+        if start_date:
+            query_start_date = start_date
+        else:
+            market = get_market_for_stock(stock_code) or "cn"
+            query_start_date = get_start_date_by_trading_days(today, days, market)
+
+        # 如果提供了end_date，查询数据时需要包含到end_date
+        if end_date:
+            end_date_for_query = end_date + timedelta(days=1)
+        else:
+            end_date_for_query = today + timedelta(days=1)
+        
+        # 仅从数据库获取数据
+        daily_data = None
+        
+        try:
+            from src.repositories.stock_repo import StockRepository
+            repo = StockRepository()
+            
+            # 从数据库获取数据
+            db_records = repo.get_range(
+                stock_code, 
+                query_start_date, 
+                end_date_for_query
+            )
+            
+            if db_records and len(db_records) > 0:
+                # 将数据库记录转换为 DataFrame，安全获取字段
+                kline_data = []
+                for record in db_records:
+                    kline_item = {
+                        'date': record.date,
+                        'open': record.open,
+                        'high': record.high,
+                        'low': record.low,
+                        'close': record.close,
+                        'volume': record.volume,
+                        'amount': record.amount,
+                        'pct_chg': record.pct_chg
+                    }
+                    # 安全获取turnover_rate
+                    try:
+                        kline_item['turnover_rate'] = getattr(record, 'turnover_rate', None)
+                    except Exception:
+                        kline_item['turnover_rate'] = None
+                    
+                    kline_data.append(kline_item)
+                
+                daily_data = pd.DataFrame(kline_data)
+                logger.info(f"{stock_code} 从数据库获取了 {len(daily_data)} 条数据")
+            else:
+                logger.warning(f"{stock_code} 数据库中没有找到数据")
+        except Exception as e:
+            logger.error(f"{stock_code} 从数据库获取数据失败: {e}")
+
+        if daily_data is None or daily_data.empty:
+            logger.warning(f"未获取到 {stock_code} 的数据")
+            return {
+                'stock_code': stock_code,
+                'price_bins': [],
+                'chip_volumes': [],
+                'profit_volumes': [],
+                'loss_volumes': [],
+                'avg_cost': None,
+                'max_chip_price': None,
+                'current_price': None
+            }
+
+        # 检查是否有真实换手率数据
+        has_real_turnover = False
+        if 'turnover_rate' in daily_data.columns:
+            has_real_turnover = daily_data['turnover_rate'].notna().any()
+        
+        if not has_real_turnover:
+            logger.warning(f"{stock_code} 数据库中没有真实换手率数据，无法计算筹码分布")
+            return {
+                'stock_code': stock_code,
+                'price_bins': [],
+                'chip_volumes': [],
+                'profit_volumes': [],
+                'loss_volumes': [],
+                'avg_cost': None,
+                'max_chip_price': None,
+                'current_price': None
+            }
+
+        # 转换为筹码分布计算需要的格式
+        kline_data = []
+        for _, row in daily_data.iterrows():
+            if hasattr(row['date'], 'strftime'):
+                date_str = row['date'].strftime('%Y-%m-%d')
+            elif hasattr(row['date'], 'date'):
+                date_str = row['date'].date().strftime('%Y-%m-%d')
+            elif pd.notna(row['date']):
+                date_str = str(row['date']).split('T')[0]
+            else:
+                continue
+
+            kline_data.append({
+                'date': date_str,
+                'Open': float(row['open']),
+                'High': float(row['high']),
+                'Low': float(row['low']),
+                'Close': float(row['close']),
+                'Volume': float(row['volume']) if pd.notna(row['volume']) else 0
+            })
+            
+            # 添加换手率（如果有）
+            if 'turnover_rate' in row and pd.notna(row['turnover_rate']):
+                kline_data[-1]['turnover_rate'] = float(row['turnover_rate'])
+
+        df = pd.DataFrame(kline_data)
+        df['date'] = pd.to_datetime(df['date'])
+        df = df.sort_values('date').reset_index(drop=True)
+
+        # 如果提供了end_date但没有提供end_date_idx，根据end_date计算idx
+        calculated_end_date_idx = end_date_idx
+        if end_date is not None and end_date_idx is None:
+            # 找到与end_date最接近的数据点的索引
+            end_date_ts = pd.Timestamp(end_date)
+            date_diffs = (df['date'] - end_date_ts).abs()
+            calculated_end_date_idx = date_diffs.idxmin()
+            logger.info(f"根据end_date={end_date}计算出end_date_idx={calculated_end_date_idx}")
+
+        # 使用真实换手率计算筹码分布，禁止使用模拟换手率
+        calculator = ChipDistribution()
+        result = calculator.calculate(df, calculated_end_date_idx)
+        result['stock_code'] = stock_code
+
+        logger.info(f"{stock_code} 筹码分布计算完成")
+        return result

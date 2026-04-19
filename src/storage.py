@@ -90,6 +90,7 @@ class StockDaily(Base):
     volume = Column(Float)  # 成交量（股）
     amount = Column(Float)  # 成交额（元）
     pct_chg = Column(Float)  # 涨跌幅（%）
+    turnover_rate = Column(Float)  # 换手率（小数，如 0.05 表示 5%）
 
     # 技术指标
     ma5 = Column(Float)
@@ -125,10 +126,69 @@ class StockDaily(Base):
             "volume": self.volume,
             "amount": self.amount,
             "pct_chg": self.pct_chg,
+            "turnover_rate": self.turnover_rate,
             "ma5": self.ma5,
             "ma10": self.ma10,
             "ma20": self.ma20,
             "volume_ratio": self.volume_ratio,
+            "data_source": self.data_source,
+        }
+
+
+class StockBasic(Base):
+    """
+    股票基础信息模型
+    
+    存储股票的流通股本等基础信息，用于计算换手率
+    """
+    __tablename__ = "stock_basic"
+    
+    # 主键
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    
+    # 股票代码（如 600519, 000001）
+    code = Column(String(10), nullable=False, index=True)
+    
+    # 股票名称
+    name = Column(String(50))
+    
+    # 流通股本（股）
+    circulating_shares = Column(Float)
+    
+    # 总股本（股）
+    total_shares = Column(Float)
+    
+    # 数据有效起始日期
+    start_date = Column(Date)
+    
+    # 数据有效结束日期
+    end_date = Column(Date)
+    
+    # 数据来源
+    data_source = Column(String(50))
+    
+    # 更新时间
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    
+    # 唯一约束：同一股票在同一日期范围只能有一条记录
+    __table_args__ = (
+        UniqueConstraint("code", "start_date", "end_date", name="uix_code_date_range"),
+        Index("ix_code_date_range", "code", "start_date", "end_date"),
+    )
+    
+    def __repr__(self):
+        return f"<StockBasic(code={self.code}, name={self.name}, circulating_shares={self.circulating_shares})>"
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典"""
+        return {
+            "code": self.code,
+            "name": self.name,
+            "circulating_shares": self.circulating_shares,
+            "total_shares": self.total_shares,
+            "start_date": self.start_date,
+            "end_date": self.end_date,
             "data_source": self.data_source,
         }
 
@@ -1400,6 +1460,7 @@ class DatabaseManager:
                             volume=row.get("volume"),
                             amount=row.get("amount"),
                             pct_chg=row.get("pct_chg"),
+                            turnover_rate=row.get("turnover_rate"),
                             ma5=row.get("ma5"),
                             ma10=row.get("ma10"),
                             ma20=row.get("ma20"),
@@ -1420,6 +1481,7 @@ class DatabaseManager:
                         existing_record.volume = row.get("volume")
                         existing_record.amount = row.get("amount")
                         existing_record.pct_chg = row.get("pct_chg")
+                        existing_record.turnover_rate = row.get("turnover_rate")
                         existing_record.ma5 = row.get("ma5")
                         existing_record.ma10 = row.get("ma10")
                         existing_record.ma20 = row.get("ma20")
@@ -1562,6 +1624,7 @@ class DatabaseManager:
                         existing.volume = row.get("volume")
                         existing.amount = row.get("amount")
                         existing.pct_chg = row.get("pct_chg")
+                        existing.turnover_rate = row.get("turnover_rate")
                         existing.ma5 = row.get("ma5")
                         existing.ma10 = row.get("ma10")
                         existing.ma20 = row.get("ma20")
@@ -1581,6 +1644,7 @@ class DatabaseManager:
                             volume=row.get("volume"),
                             amount=row.get("amount"),
                             pct_chg=row.get("pct_chg"),
+                            turnover_rate=row.get("turnover_rate"),
                             ma5=row.get("ma5"),
                             ma10=row.get("ma10"),
                             ma20=row.get("ma20"),

@@ -34,6 +34,10 @@ export type VisualizationResponse = {
   stock_name?: string;
   kline_data: KLineDataPoint[];
   indicators: IndicatorData[];
+  chip_distribution?: {
+    latest?: ChipDistributionResponse;
+    history?: Array<{ date: string; data: ChipDistributionResponse }>;
+  };
 };
 
 export type VisualizationSearchHistoryItem = {
@@ -47,6 +51,17 @@ export type VisualizationSearchHistoryItem = {
 
 export type VisualizationSearchHistoryResponse = {
   items: VisualizationSearchHistoryItem[];
+};
+
+export type ChipDistributionResponse = {
+  stock_code: string;
+  price_bins: number[];
+  chip_volumes: number[];
+  profit_volumes: number[];
+  loss_volumes: number[];
+  avg_cost?: number;
+  max_chip_price?: number;
+  current_price?: number;
 };
 
 export type VisualizationSearchRequest = {
@@ -101,5 +116,30 @@ export const visualizationApi = {
   async updateSearchHistoryTimestamp(recordId: number): Promise<VisualizationSearchHistoryItem> {
     const response = await apiClient.patch(`/api/v1/visualization/history/${recordId}/timestamp`);
     return response.data as VisualizationSearchHistoryItem;
+  },
+
+  async getChipDistribution(
+    stockCode: string,
+    days: number = 365,
+    startDate?: string,
+    endDate?: string,
+    endDateIdx?: number
+  ): Promise<ChipDistributionResponse> {
+    const params: Record<string, any> = { days };
+    if (startDate) {
+      params.start_date = startDate;
+    }
+    if (endDate) {
+      params.end_date = endDate;
+    }
+    if (endDateIdx !== undefined) {
+      params.end_date_idx = endDateIdx;
+    }
+
+    const response = await apiClient.get(`/api/v1/visualization/chip-distribution/${encodeURIComponent(stockCode)}`, {
+      params,
+    });
+
+    return response.data as ChipDistributionResponse;
   },
 };

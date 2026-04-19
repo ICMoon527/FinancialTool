@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 
 # === 标准化列名定义 ===
-STANDARD_COLUMNS = ['date', 'open', 'high', 'low', 'close', 'volume', 'amount', 'pct_chg']
+STANDARD_COLUMNS = ['date', 'open', 'high', 'low', 'close', 'volume', 'amount', 'pct_chg', 'turnover_rate']
 
 
 def normalize_stock_code(stock_code: str) -> str:
@@ -378,10 +378,11 @@ class DataFetcherManager:
         初始化默认数据源列表
 
         优先级动态调整逻辑：
-        - 如果配置了 TUSHARE_TOKEN：Tushare 优先级提升为 0（最高）
-        - 否则按默认优先级：
-          0. EfinanceFetcher (Priority 0) - 最高优先级
-          1. AkshareFetcher (Priority 1)
+        - 为支持筹码分布计算，优先使用包含换手率数据的数据源：
+          - AkshareFetcher (Priority -2) - 最高优先级，包含换手率数据
+          - EfinanceFetcher (Priority -1) - 高优先级，包含换手率数据
+        - 如果配置了 TUSHARE_TOKEN：Tushare 优先级为 -1 或 2
+        - 其他优先级：
           2. PytdxFetcher (Priority 2) - 通达信
           2. TushareFetcher (Priority 2)
           3. BaostockFetcher (Priority 3)

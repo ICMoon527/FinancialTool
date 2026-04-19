@@ -21,7 +21,8 @@ from api.v1.schemas.visualization import (
     VisualizationResponse,
     VisualizationSearchHistoryResponse,
     VisualizationSearchHistoryItem,
-    VisualizationSearchRequest
+    VisualizationSearchRequest,
+    ChipDistributionResponse
 )
 from api.v1.schemas.common import ErrorResponse
 from src.storage import DatabaseManager
@@ -324,7 +325,8 @@ def get_visualization_data(
             stock_code=result['stock_code'],
             stock_name=result.get('stock_name'),
             kline_data=result['kline_data'],
-            indicators=result['indicators']
+            indicators=result['indicators'],
+            chip_distribution=result.get('chip_distribution')
         )
 
     except HTTPException:
@@ -336,5 +338,87 @@ def get_visualization_data(
             detail={
                 "error": "internal_error",
                 "message": f"获取可视化数据失败: {str(e)}"
+            }
+        )
+
+
+@router.get(
+    "/chip-distribution/{stock_code}",
+    response_model=ChipDistributionResponse,
+    responses={
+        200: {"description": "筹码分布数据"},
+        404: {"description": "股票不存在"},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="获取筹码分布数据",
+    description="获取指定股票的筹码分布数据，包括获利盘、套牢盘、平均成本等"
+)
+def get_chip_distribution(
+    stock_code: str,
+    days: int = Query(365, ge=1, le=3650, description="获取天数"),
+    start_date: Optional[str] = Query(None, description="起始日期，格式为 YYYY-MM-DD"),
+    end_date: Optional[str] = Query(None, description="截止日期，格式为 YYYY-MM-DD"),
+    end_date_idx: Optional[int] = Query(None, description="截止日期索引"),
+    db_manager: DatabaseManager = Depends(get_database_manager)
+) -> ChipDistributionResponse:
+    """
+    获取筹码分布数据
+
+    Args:
+        stock_code: 股票代码
+        days: 获取天数
+        start_date: 起始日期
+        end_date: 截止日期
+        end_date_idx: 截止日期索引
+        db_manager: 数据库管理器依赖
+
+    Returns:
+        筹码分布响应
+    """
+    try:
+        service = VisualizationService(db_manager)
+        
+        start_date_obj = None
+        if start_date:
+            try:
+                start_date_obj = datetime.strptime(start_date, '%Y-%m-%d').date()
+            except ValueError:
+                logger.warning(f"无效的起始日期格式: {start_date}，使用默认天数")
+        
+        end_date_obj = None
+        if end_date:
+            try:
+                end_date_obj = datetime.strptime(end_date, '%Y-%m-%d').date()
+            except ValueError:
+                logger.warning(f"无效的截止日期格式: {end_date}")
+        
+        result = service.get_chip_distribution(
+            stock_code=stock_code,
+            days=days,
+            start_date=start_date_obj,
+            end_date_idx=end_date_idx,
+            end_date=end_date_obj
+        )
+        
+        return ChipDistributionResponse(
+            stock_code=result['stock_code'],
+            price_bins=result['price_bins'],
+            chip_volumes=result['chip_volumes'],
+            profit_volumes=result['profit_volumes'],
+            loss_volumes=result['loss_volumes'],
+            avg_cost=result['avg_cost'],
+            max_chip_price=result['max_chip_price'],
+            current_price=result['current_price']
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"获取筹码分布数据失败: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "internal_error",
+                "message": f"获取筹码分布数据失败: {str(e)}"
             }
         )

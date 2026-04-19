@@ -2,10 +2,11 @@ import type React from 'react';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import * as lightweightCharts from 'lightweight-charts';
 
-import { visualizationApi, type VisualizationResponse, type VisualizationSearchHistoryItem } from '../api/visualization';
+import { visualizationApi, type VisualizationResponse, type VisualizationSearchHistoryItem, type ChipDistributionResponse } from '../api/visualization';
 import { validateStockCode } from '../utils/validation';
 import { Card } from '../components/common';
 import { useStockPriceHistory } from '../hooks';
+import ChipDistributionChart from '../components/charts/ChipDistributionChart';
 
 // 定义指标配置
 const INDICATOR_OPTIONS = [
@@ -61,6 +62,13 @@ const VisualizationPage: React.FC = () => {
   );
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [selectedDateRange, setSelectedDateRange] = useState('1y');
+  const [chipDistributionData, setChipDistributionData] = useState<ChipDistributionResponse | null>(null);
+  const [isLoadingChipDistribution, setIsLoadingChipDistribution] = useState(false);
+  const [showChipDistribution, setShowChipDistribution] = useState(false);
+  const [priceRange, setPriceRange] = useState<{ min: number; max: number } | null>(null);
+  const [cursorPrice, setCursorPrice] = useState<number | null>(null);
+  const chipDistributionTimerRef = useRef<number | null>(null); // 防抖定时器
+  const lastChipDistributionDateRef = useRef<string | null>(null); // 记录上次请求的日期，避免重复请求
   const [cursorValues, setCursorValues] = useState<{
     attackLine?: number;
     tradingLine?: number;
@@ -111,6 +119,75 @@ const VisualizationPage: React.FC = () => {
   
   // 存储所有指标数据用于十字线值查找
   const indicatorsDataRef = useRef<{ [key: string]: any }>({});
+  // 存储预计算的筹码分布数据
+  const precomputedChipDistributionRef = useRef<{
+    latest?: ChipDistributionResponse;
+    history?: Array<{ date: string; data: ChipDistributionResponse }>;
+  } | null>(null);
+  
+  // 保存最新的visualizationData到ref中，确保handleCrosshairMove能获取到最新数据
+  const visualizationDataRef = useRef<any>(null);
+  // 保存showChipDistribution的最新状态到ref
+  const showChipDistributionRef = useRef(false);
+
+  // 获取筹码峰数据
+  const fetchChipDistribution = useCallback(async (stockCode: string, endDate?: string) => {
+    if (!stockCode) return;
+    
+    console.log('开始获取筹码分布，股票代码:', stockCode, '日期:', endDate);
+    
+    // 直接从API获取，不使用预计算数据
+    setIsLoadingChipDistribution(true);
+    try {
+      const dateRangeOption = DATE_RANGE_OPTIONS.find(opt => opt.id === selectedDateRange);
+      let startDateStr: string | undefined;
+      let days = 365; // 默认天数
+      
+      // 如果有endDate，从endDate往前推；否则从今天往前推
+      const baseDate = endDate ? new Date(endDate) : new Date();
+      
+      if (dateRangeOption?.getStartDate) {
+        const startDate = dateRangeOption.getStartDate();
+        
+        // 计算时间跨度（毫秒）
+        const today = new Date();
+        const timeSpan = today.getTime() - startDate.getTime();
+        
+        // 从baseDate往前推相同的时间跨度
+        const calculatedStartDate = new Date(baseDate.getTime() - timeSpan);
+        startDateStr = calculatedStartDate.toISOString().split('T')[0];
+        
+        // 计算天数
+        days = Math.ceil(timeSpan / (1000 * 60 * 60 * 24));
+      } else {
+        // 全部数据，不传startDate，后端会使用默认逻辑
+        startDateStr = undefined;
+        days = 3650; // 10年
+      }
+      
+      const response = await visualizationApi.getChipDistribution(
+        stockCode,
+        days,
+        startDateStr,
+        endDate // 传入endDate，后端会根据日期计算end_date_idx
+      );
+      setChipDistributionData(response);
+    } catch (err) {
+      console.error('Failed to load chip distribution data:', err);
+      setChipDistributionData(null);
+    } finally {
+      setIsLoadingChipDistribution(false);
+    }
+  }, [selectedDateRange]);
+
+  // 清理防抖定时器
+  useEffect(() => {
+    return () => {
+      if (chipDistributionTimerRef.current) {
+        clearTimeout(chipDistributionTimerRef.current);
+      }
+    };
+  }, []);
 
   // 加载搜索历史
   const loadSearchHistory = useCallback(async () => {
@@ -129,6 +206,29 @@ const VisualizationPage: React.FC = () => {
   useEffect(() => {
     loadSearchHistory();
   }, [loadSearchHistory]);
+  
+  // 确保visualizationDataRef始终与最新状态同步
+  useEffect(() => {
+    if (visualizationData) {
+      visualizationDataRef.current = visualizationData;
+      console.log('visualizationDataRef已更新:', visualizationData);
+    }
+  }, [visualizationData]);
+  
+  // 确保showChipDistributionRef始终与最新状态同步
+  useEffect(() => {
+    showChipDistributionRef.current = showChipDistribution;
+    console.log('showChipDistributionRef已更新:', showChipDistribution);
+  }, [showChipDistribution]);
+  
+  // 当显示筹码峰且有股票数据时,自动获取筹码峰数据
+  useEffect(() => {
+    if (showChipDistribution && visualizationData?.stock_code) {
+      console.log('显示筹码峰时调用API获取数据');
+      // 直接调用API，不使用预计算数据
+      fetchChipDistribution(visualizationData.stock_code);
+    }
+  }, [showChipDistribution, visualizationData?.stock_code]);
 
   // 通用函数：获取指定指标在指定时间的数据项
   const getIndicatorDataItem = (indicatorId: string, time: any) => {
@@ -335,8 +435,72 @@ const VisualizationPage: React.FC = () => {
       chart.timeScale().subscribeVisibleTimeRangeChange(handleTimeScaleChange);
       timeSyncSubscription.current = handleTimeScaleChange;
       
+      // 订阅主图价格范围变化，同步到筹码分布图
+      const handlePriceRangeChange = () => {
+        if (!mainChartRef.current || !candlestickSeriesRef.current) return;
+        try {
+          // 获取价格范围
+          const priceScale = mainChartRef.current.priceScale('right');
+          const visibleRange = priceScale.getVisibleRange();
+          if (visibleRange) {
+            setPriceRange({ min: visibleRange.from, max: visibleRange.to });
+          }
+        } catch (e) {
+          console.warn('Failed to get price range from main chart:', e);
+        }
+      };
+      
+      // 初始获取价格范围
+      setTimeout(() => {
+        handlePriceRangeChange();
+      }, 100);
+      
+      // 监听图表变化以更新价格范围
+      const updatePriceRangeOnChange = () => {
+        handlePriceRangeChange();
+      };
+      chart.timeScale().subscribeVisibleTimeRangeChange(updatePriceRangeOnChange);
+      
       // 订阅十字线移动以更新光标处三线值和信号
       const handleCrosshairMove = (param: any) => {
+        console.log('handleCrosshairMove被调用！param:', param);
+        console.log('showChipDistributionRef:', showChipDistributionRef.current, 'visualizationDataRef?:', visualizationDataRef.current);
+        
+        // 先处理筹码分布更新（不受防止循环更新的限制）
+        if (showChipDistributionRef.current && visualizationDataRef.current?.stock_code && param.time) {
+          // 将时间转换为日期字符串
+          let cursorDateStr: string;
+          
+          console.log('param.time类型:', typeof param.time, '值:', param.time);
+          
+          if (typeof param.time === 'string') {
+            cursorDateStr = param.time;
+          } else {
+            const date = new Date(param.time * 1000);
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            cursorDateStr = `${year}-${month}-${day}`;
+          }
+          
+          console.log('十字线移动，当前日期:', cursorDateStr, '上次更新日期:', lastChipDistributionDateRef.current);
+          
+          // 如果日期与上次相同，不重复请求
+          if (lastChipDistributionDateRef.current !== cursorDateStr) {
+            // 清除之前的定时器
+            if (chipDistributionTimerRef.current) {
+              clearTimeout(chipDistributionTimerRef.current);
+            }
+            
+            // 设置新的防抖定时器（100ms，更流畅）
+            chipDistributionTimerRef.current = setTimeout(() => {
+              console.log('更新筹码分布到日期:', cursorDateStr);
+              lastChipDistributionDateRef.current = cursorDateStr;
+              fetchChipDistribution(visualizationDataRef.current.stock_code, cursorDateStr);
+            }, 100);
+          }
+        }
+        
         // 防止循环更新
         if (isCrosshairUpdatingRef.current) {
           return;
@@ -346,6 +510,27 @@ const VisualizationPage: React.FC = () => {
         
         try {
           currentCrosshairTimeRef.current = param.time;
+          
+          // 更新光标价格用于筹码图十字线同步
+          let targetPrice: number | undefined;
+          
+          if (param.price !== undefined) {
+            targetPrice = param.price;
+          } else if (param.point && param.point.price !== undefined) {
+            targetPrice = param.point.price;
+          }
+          
+          // 如果没有直接价格，或者即使有，也始终用 K 线收盘价（更稳定）
+          if (param.time) {
+            const klinePoint = klineDataRef.current?.find((item: any) => item.time === param.time);
+            if (klinePoint) {
+              targetPrice = klinePoint.close; // 优先使用 K 线收盘价
+            }
+          }
+          
+          if (targetPrice !== undefined) {
+            setCursorPrice(targetPrice);
+          }
           
           // 同步十字线到所有子图 - 更新光标值显示和十字线位置
           if (param.time) {
@@ -555,6 +740,20 @@ const VisualizationPage: React.FC = () => {
       if (klineData.length > 0) {
         earliestDateRef.current = klineData[0].time;
         latestDateRef.current = klineData[klineData.length - 1].time;
+        
+        // 计算价格范围
+        let minPrice = Infinity;
+        let maxPrice = -Infinity;
+        klineData.forEach(item => {
+          minPrice = Math.min(minPrice, item.low);
+          maxPrice = Math.max(maxPrice, item.high);
+        });
+        // 给价格范围加一点padding
+        const padding = (maxPrice - minPrice) * 0.1;
+        setPriceRange({
+          min: minPrice - padding,
+          max: maxPrice + padding
+        });
       }
 
       candlestickSeriesRef.current.setData(klineData);
@@ -1562,10 +1761,22 @@ const VisualizationPage: React.FC = () => {
       );
 
       console.log('Visualization data received:', response);
+      console.log('Response中的筹码分布数据:', response.chip_distribution);
       // 创建全新对象，确保React能检测到变化
       const freshData = JSON.parse(JSON.stringify(response));
       setVisualizationData(freshData);
+      visualizationDataRef.current = freshData;
       setRefreshKey(prev => prev + 1);
+      
+      // 保存预计算的筹码分布数据
+      if (freshData.chip_distribution) {
+        console.log('保存预计算的筹码分布数据:', freshData.chip_distribution);
+        console.log('预计算历史数据数量:', freshData.chip_distribution.history?.length || 0);
+        if (freshData.chip_distribution.history?.length > 0) {
+          console.log('前几个日期:', freshData.chip_distribution.history.slice(0, 5).map((h: any) => h.date));
+        }
+        precomputedChipDistributionRef.current = freshData.chip_distribution;
+      }
 
       // 记录股价（如果有K线数据，记录最新的收盘价）
       if (freshData.kline_data && freshData.kline_data.length > 0) {
@@ -1585,6 +1796,16 @@ const VisualizationPage: React.FC = () => {
 
       // 刷新搜索历史
       await loadSearchHistory();
+      
+      // 如果显示筹码峰,尝试使用预计算数据
+      if (showChipDistribution) {
+        if (freshData.chip_distribution?.latest) {
+          console.log('直接使用预计算的最新筹码分布数据');
+          setChipDistributionData(freshData.chip_distribution.latest);
+        } else {
+          await fetchChipDistribution(normalized);
+        }
+      }
     } catch (err) {
       console.error('Failed to load visualization data:', err);
       setInputError('加载数据失败，请重试');
@@ -1622,6 +1843,12 @@ const VisualizationPage: React.FC = () => {
       const freshData = JSON.parse(JSON.stringify(response));
       setVisualizationData(freshData);
       setRefreshKey(prev => prev + 1);
+      
+      // 保存预计算的筹码分布数据
+      if (freshData.chip_distribution) {
+        console.log('保存预计算的筹码分布数据:', freshData.chip_distribution);
+        precomputedChipDistributionRef.current = freshData.chip_distribution;
+      }
 
       // 记录股价（如果有K线数据，记录最新的收盘价）
       if (freshData.kline_data && freshData.kline_data.length > 0) {
@@ -1639,6 +1866,16 @@ const VisualizationPage: React.FC = () => {
       } catch (err) {
         console.error('Failed to update search history timestamp:', err);
         // 即使更新失败也不影响用户使用数据
+      }
+      
+      // 如果显示筹码峰,尝试使用预计算数据
+      if (showChipDistribution) {
+        if (freshData.chip_distribution?.latest) {
+          console.log('直接使用预计算的最新筹码分布数据');
+          setChipDistributionData(freshData.chip_distribution.latest);
+        } else {
+          await fetchChipDistribution(item.stock_code);
+        }
       }
     } catch (err) {
       console.error('Failed to load visualization data:', err);
@@ -1754,11 +1991,18 @@ const VisualizationPage: React.FC = () => {
   return (
     <div
       className="min-h-screen flex flex-col md:grid overflow-hidden w-full"
-      style={{ gridTemplateColumns: 'minmax(12px, 1fr) 256px 24px minmax(auto, 896px) minmax(12px, 1fr)', gridTemplateRows: 'auto 1fr auto' }}
+      style={{ 
+        gridTemplateColumns: showChipDistribution 
+          ? 'minmax(12px, 1fr) 256px 24px minmax(auto, 896px) 24px 400px minmax(12px, 1fr)' 
+          : 'minmax(12px, 1fr) 256px 24px minmax(auto, 896px) minmax(12px, 1fr)', 
+        gridTemplateRows: 'auto 1fr auto' 
+      }}
     >
       {/* 顶部搜索栏 */}
       <header
-        className="md:col-start-2 md:col-end-5 md:row-start-1 py-3 px-3 md:px-0 border-b border-white/5 flex-shrink-0 flex items-center min-w-0 overflow-hidden"
+        className={`py-3 px-3 md:px-0 border-b border-white/5 flex-shrink-0 flex items-center min-w-0 overflow-hidden ${
+          showChipDistribution ? 'md:col-start-2 md:col-end-6 md:row-start-1' : 'md:col-start-2 md:col-end-5 md:row-start-1'
+        }`}
       >
         <div className="flex items-center gap-2 w-full min-w-0 flex-1" style={{ maxWidth: 'min(100%, 1168px)' }}>
           {/* Mobile hamburger */}
@@ -1845,15 +2089,45 @@ const VisualizationPage: React.FC = () => {
       )}
 
       {/* 中央图表区域 - 容器始终渲染 */}
-      <section className="md:col-start-4 md:row-start-2 flex-1 overflow-y-auto overflow-x-auto px-3 md:px-0 md:pl-1 min-w-0 min-h-0">
+      <section className={`flex-1 overflow-y-auto overflow-x-auto px-3 md:px-0 md:pl-1 min-w-0 min-h-0 ${
+        showChipDistribution ? 'md:col-start-4 md:row-start-2' : 'md:col-start-4 md:row-start-2'
+      }`}>
         {/* 图表容器始终存在 */}
         <div className="max-w-6xl">
           {/* 标题 - 只在有数据时显示 */}
           {visualizationData && (
             <div className="mb-4">
-              <h2 className="text-xl font-bold text-white">
-                {visualizationData.stock_name ? `${visualizationData.stock_name} (${visualizationData.stock_code})` : visualizationData.stock_code}
-              </h2>
+              <div className="flex items-center justify-between">
+                <h2 className="text-xl font-bold text-white">
+                  {visualizationData.stock_name ? `${visualizationData.stock_name} (${visualizationData.stock_code})` : visualizationData.stock_code}
+                </h2>
+                {/* 筹码峰切换按钮 */}
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const newShow = !showChipDistribution;
+                    setShowChipDistribution(newShow);
+                    if (newShow && visualizationData?.stock_code) {
+                      await fetchChipDistribution(visualizationData.stock_code);
+                    }
+                  }}
+                  className={`
+                    px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 border cursor-pointer
+                    ${showChipDistribution
+                      ? 'border-purple-500/40 bg-purple-500/10 text-purple-400 shadow-[0_0_8px_rgba(168,85,247,0.15)]'
+                      : 'border-white/10 bg-transparent text-muted hover:border-white/20 hover:text-secondary'
+                    }
+                  `}
+                >
+                  <div className="flex items-center gap-1.5">
+                    <div
+                      className="w-2 h-2 rounded-full"
+                      style={{ backgroundColor: showChipDistribution ? '#a855f7' : '#666666' }}
+                    />
+                    筹码峰
+                  </div>
+                </button>
+              </div>
               <div className="flex flex-wrap items-center gap-3 mt-1">
                 <div className="text-xs text-muted">
                   K线数据: {visualizationData.kline_data?.length || 0} 条
@@ -1896,218 +2170,221 @@ const VisualizationPage: React.FC = () => {
             </div>
           )}
           
-          {/* 主图表 - K线（始终渲染） */}
-          <Card variant="default" padding="none" className="mb-4">
-            {/* 光标值显示标签 */}
-            <div className="p-2 border-b border-white/5 flex flex-wrap gap-4 items-center">
-              {/* 显示跟随光标的时间 */}
-              {currentCrosshairTimeRef.current !== undefined && currentCrosshairTimeRef.current !== null && (
-                <span className="text-xs text-cyan font-mono">
-                  {(() => {
-                    let date: Date;
-                    const timeValue = currentCrosshairTimeRef.current;
-                    if (typeof timeValue === 'string') {
-                      if (timeValue.includes('-')) {
-                        date = new Date(timeValue);
-                      } else {
-                        date = new Date(parseInt(timeValue) * 1000);
-                      }
-                    } else {
-                      date = new Date(timeValue * 1000);
-                    }
-                    const year = date.getFullYear();
-                    const month = String(date.getMonth() + 1).padStart(2, '0');
-                    const day = String(date.getDate()).padStart(2, '0');
-                    return `${year}-${month}-${day}`;
-                  })()}
-                </span>
-              )}
-              {selectedIndicators.includes('main_trading') && (
-                <>
-                  <h3 className="text-sm font-medium text-white">主力操盘</h3>
-                  {cursorValues.attackLine !== undefined && cursorValues.attackLine !== null && !isNaN(cursorValues.attackLine) && (
-                    <div className="flex items-center gap-2">
-                      <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#FF4444' }} />
-                      <span className="text-xs text-white">攻击线: <span className="font-mono">{cursorValues.attackLine.toFixed(2)}</span></span>
-                    </div>
+          {/* 图表区域：主图表和指标子图 */}
+          <div className="w-full">
+              {/* 主图表 - K线（始终渲染） */}
+              <Card variant="default" padding="none" className="mb-4">
+                {/* 光标值显示标签 */}
+                <div className="p-2 border-b border-white/5 flex flex-wrap gap-4 items-center">
+                  {/* 显示跟随光标的时间 */}
+                  {currentCrosshairTimeRef.current !== undefined && currentCrosshairTimeRef.current !== null && (
+                    <span className="text-xs text-cyan font-mono">
+                      {(() => {
+                        let date: Date;
+                        const timeValue = currentCrosshairTimeRef.current;
+                        if (typeof timeValue === 'string') {
+                          if (timeValue.includes('-')) {
+                            date = new Date(timeValue);
+                          } else {
+                            date = new Date(parseInt(timeValue) * 1000);
+                          }
+                        } else {
+                          date = new Date(timeValue * 1000);
+                        }
+                        const year = date.getFullYear();
+                        const month = String(date.getMonth() + 1).padStart(2, '0');
+                        const day = String(date.getDate()).padStart(2, '0');
+                        return `${year}-${month}-${day}`;
+                      })()}
+                    </span>
                   )}
-                  {cursorValues.tradingLine !== undefined && cursorValues.tradingLine !== null && !isNaN(cursorValues.tradingLine) && (
-                    <div className="flex items-center gap-2">
-                      <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#FFAA00' }} />
-                      <span className="text-xs text-white">操盘线: <span className="font-mono">{cursorValues.tradingLine.toFixed(2)}</span></span>
-                    </div>
-                  )}
-                  {cursorValues.defenseLine !== undefined && cursorValues.defenseLine !== null && !isNaN(cursorValues.defenseLine) && (
-                    <div className="flex items-center gap-2">
-                      <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#44AA44' }} />
-                      <span className="text-xs text-white">防守线: <span className="font-mono">{cursorValues.defenseLine.toFixed(2)}</span></span>
-                      {cursorValues.signal === 'buy' && (
-                        <span className="text-xs font-bold" style={{ color: '#FF0000' }}>买入</span>
+                  {selectedIndicators.includes('main_trading') && (
+                    <>
+                      <h3 className="text-sm font-medium text-white">主力操盘</h3>
+                      {cursorValues.attackLine !== undefined && cursorValues.attackLine !== null && !isNaN(cursorValues.attackLine) && (
+                        <div className="flex items-center gap-2">
+                          <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#FF4444' }} />
+                          <span className="text-xs text-white">攻击线: <span className="font-mono">{cursorValues.attackLine.toFixed(2)}</span></span>
+                        </div>
                       )}
-                      {cursorValues.signal === 'sell' && (
-                        <span className="text-xs font-bold" style={{ color: '#00FF00' }}>卖出</span>
+                      {cursorValues.tradingLine !== undefined && cursorValues.tradingLine !== null && !isNaN(cursorValues.tradingLine) && (
+                        <div className="flex items-center gap-2">
+                          <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#FFAA00' }} />
+                          <span className="text-xs text-white">操盘线: <span className="font-mono">{cursorValues.tradingLine.toFixed(2)}</span></span>
+                        </div>
                       )}
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
-            <div 
-              ref={mainChartContainerRef} 
-              style={{ 
-                height: '500px', 
-                width: '100%',
-                minHeight: '500px',
-                backgroundColor: '#1a1a2e'
-              }} 
-            />
-          </Card>
-
-          {/* 指标子图 - 只在有数据时显示（跳过主力操盘，它在主图显示） */}
-          {visualizationData && selectedIndicators.map(indicatorId => {
-            if (indicatorId === 'main_trading') return null;
-            
-            const indicatorData = indicatorId !== 'volume' 
-              ? visualizationData.indicators.find(ind => ind.indicator_type === indicatorId)
-              : { data: [] };
-            const indicatorOption = INDICATOR_OPTIONS.find(opt => opt.id === indicatorId);
-            
-            if (!indicatorOption) return null;
-            if (indicatorId !== 'volume' && (!indicatorData || !indicatorData.data || indicatorData.data.length === 0)) return null;
-
-            return (
-              <Card key={indicatorId} variant="default" padding="none" className="mb-4">
-                <div className="p-2 border-b border-white/5 flex items-center justify-between">
-                  <h3 className="text-sm font-medium text-white flex items-center gap-2">
-                    {/* 所有指标都显示圆点和名称 */}
-                    <div 
-                      className="w-2 h-2 rounded-full"
-                      style={{ backgroundColor: indicatorOption.color }}
-                    />
-                    {indicatorOption.name}
-                    {/* 主力成本指标显示资金流向数据 */}
-                    {indicatorId === 'main_cost' && indicatorData && (
-                      <span className="text-xs text-muted/80 ml-2">
-                        {(() => {
-                          console.log('main_cost indicatorData:', indicatorData);
-                          console.log('main_cost metadata:', (indicatorData as any).metadata);
-                          const metadata = (indicatorData as any).metadata;
-                          if (!metadata) {
-                            return null;
-                          }
-                          const formatAmount = (amount: number) => {
-                            if (Math.abs(amount) >= 10000) {
-                              return `${(amount / 10000).toFixed(2)}万`;
-                            }
-                            return amount.toFixed(2);
-                          };
-                          const mainNetInflow = metadata.main_net_inflow || 0;
-                          const color = mainNetInflow > 0 ? '#FF4444' : mainNetInflow < 0 ? '#44AA44' : '#666666';
-                          return (
-                            <span style={{ color }}>
-                              主力: {formatAmount(mainNetInflow)}
-                            </span>
-                          );
-                        })()}
-                      </span>
-                    )}
-                    {/* 强势起爆指标显示连续紫色箱体数量 */}
-                    {indicatorId === 'strong_detonation' && indicatorData && (
-                      <span className="text-xs text-muted/80 ml-2">
-                        {(() => {
-                          const data = indicatorData.data;
-                          if (!data || data.length === 0) return null;
-                          
-                          let consecutivePurple = 0;
-                          for (let i = data.length - 1; i >= 0; i--) {
-                            const item = data[i];
-                            if (item.purple_box_open !== null && item.purple_box_open !== undefined && !isNaN(item.purple_box_open)) {
-                              consecutivePurple++;
-                            } else {
-                              break;
-                            }
-                          }
-                          if (consecutivePurple > 0) {
-                            return (
-                              <span style={{ color: '#AA44FF' }}>
-                                连紫: {consecutivePurple}
-                              </span>
-                            );
-                          }
-                          return null;
-                        })()}
-                      </span>
-                    )}
-                    {/* 共振追涨指标显示最新共振柱顶部高度 */}
-                    {indicatorId === 'resonance_chase' && indicatorData && (
-                      <span className="text-xs text-muted/80 ml-2">
-                        {(() => {
-                          const data = indicatorData.data;
-                          if (!data || data.length === 0) return null;
-                          
-                          const lastItem = data[data.length - 1];
-                          if (!lastItem) return null;
-                          
-                          if (lastItem.resonance) {
-                            const originalHeight = Math.abs(lastItem.OUT1 || 0);
-                            const topValue = originalHeight - 0.5;
-                            if (topValue > 0) {
-                              return (
-                                <span style={{ color: '#AA44FF' }}>
-                                  高度: {Math.floor(topValue)}
-                                </span>
-                              );
-                            }
-                          }
-                          return null;
-                        })()}
-                      </span>
-                    )}
-                  </h3>
-                  {/* 显示光标处的指标值 */}
-                  {indicatorId === 'banker_control' && cursorValues.bankerControl !== undefined && cursorValues.bankerControl !== null && !isNaN(cursorValues.bankerControl) && (
-                    <span className="text-xs font-mono text-cyan">
-                      {cursorValues.bankerControl.toFixed(2)}
-                    </span>
-                  )}
-                  {indicatorId === 'main_capital_absorption' && cursorValues.mainCapitalAbsorption !== undefined && cursorValues.mainCapitalAbsorption !== null && !isNaN(cursorValues.mainCapitalAbsorption) && (
-                    <span className="text-xs font-mono text-cyan">
-                      {cursorValues.mainCapitalAbsorption.toFixed(2)}
-                    </span>
-                  )}
-                  {indicatorId === 'main_cost' && cursorValues.mainCost !== undefined && cursorValues.mainCost !== null && !isNaN(cursorValues.mainCost) && cursorValues.closePrice !== undefined && cursorValues.closePrice !== null && !isNaN(cursorValues.closePrice) && (
-                    <span className="flex items-center gap-2">
-                      <span className="text-xs font-mono text-cyan">
-                        {cursorValues.mainCost.toFixed(2)}
-                      </span>
-                      <span className={`text-xs font-mono ${((cursorValues.closePrice - cursorValues.mainCost) / cursorValues.mainCost * 100) >= 0 ? 'text-[#FF4444]' : 'text-[#44AA44]'}`}>
-                        {((cursorValues.closePrice - cursorValues.mainCost) / cursorValues.mainCost * 100).toFixed(2)}%
-                      </span>
-                    </span>
-                  )}
-                  {indicatorId === 'main_cost' && cursorValues.mainCost !== undefined && cursorValues.mainCost !== null && !isNaN(cursorValues.mainCost) && (cursorValues.closePrice === undefined || cursorValues.closePrice === null || isNaN(cursorValues.closePrice)) && (
-                    <span className="text-xs font-mono text-cyan">
-                      {cursorValues.mainCost.toFixed(2)}
-                    </span>
-                  )}
-                  {indicatorId === 'resonance_chase' && cursorValues.resonanceChase !== undefined && cursorValues.resonanceChase !== null && !isNaN(cursorValues.resonanceChase) && (
-                    <span className="text-xs font-mono text-cyan">
-                      {Math.floor(cursorValues.resonanceChase)}
-                    </span>
+                      {cursorValues.defenseLine !== undefined && cursorValues.defenseLine !== null && !isNaN(cursorValues.defenseLine) && (
+                        <div className="flex items-center gap-2">
+                          <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#44AA44' }} />
+                          <span className="text-xs text-white">防守线: <span className="font-mono">{cursorValues.defenseLine.toFixed(2)}</span></span>
+                          {cursorValues.signal === 'buy' && (
+                            <span className="text-xs font-bold" style={{ color: '#FF0000' }}>买入</span>
+                          )}
+                          {cursorValues.signal === 'sell' && (
+                            <span className="text-xs font-bold" style={{ color: '#00FF00' }}>卖出</span>
+                          )}
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
                 <div 
-                  ref={(el) => { subChartContainerRefs.current[indicatorId] = el; }}
+                  ref={mainChartContainerRef} 
                   style={{ 
-                    height: `${SUBCHART_HEIGHT}px`, 
+                    height: '500px', 
                     width: '100%',
-                    minHeight: `${SUBCHART_HEIGHT}px`,
+                    minHeight: '500px',
                     backgroundColor: '#1a1a2e'
                   }} 
                 />
               </Card>
-            );
-          })}
+
+              {/* 指标子图 - 只在有数据时显示（跳过主力操盘，它在主图显示） */}
+              {visualizationData && selectedIndicators.map(indicatorId => {
+                if (indicatorId === 'main_trading') return null;
+                
+                const indicatorData = indicatorId !== 'volume' 
+                  ? visualizationData.indicators.find(ind => ind.indicator_type === indicatorId)
+                  : { data: [] };
+                const indicatorOption = INDICATOR_OPTIONS.find(opt => opt.id === indicatorId);
+                
+                if (!indicatorOption) return null;
+                if (indicatorId !== 'volume' && (!indicatorData || !indicatorData.data || indicatorData.data.length === 0)) return null;
+
+                return (
+                  <Card key={indicatorId} variant="default" padding="none" className="mb-4">
+                    <div className="p-2 border-b border-white/5 flex items-center justify-between">
+                      <h3 className="text-sm font-medium text-white flex items-center gap-2">
+                        {/* 所有指标都显示圆点和名称 */}
+                        <div 
+                          className="w-2 h-2 rounded-full"
+                          style={{ backgroundColor: indicatorOption.color }}
+                        />
+                        {indicatorOption.name}
+                        {/* 主力成本指标显示资金流向数据 */}
+                        {indicatorId === 'main_cost' && indicatorData && (
+                          <span className="text-xs text-muted/80 ml-2">
+                            {(() => {
+                              console.log('main_cost indicatorData:', indicatorData);
+                              console.log('main_cost metadata:', (indicatorData as any).metadata);
+                              const metadata = (indicatorData as any).metadata;
+                              if (!metadata) {
+                                return null;
+                              }
+                              const formatAmount = (amount: number) => {
+                                if (Math.abs(amount) >= 10000) {
+                                  return `${(amount / 10000).toFixed(2)}万`;
+                                }
+                                return amount.toFixed(2);
+                              };
+                              const mainNetInflow = metadata.main_net_inflow || 0;
+                              const color = mainNetInflow > 0 ? '#FF4444' : mainNetInflow < 0 ? '#44AA44' : '#666666';
+                              return (
+                                <span style={{ color }}>
+                                  主力: {formatAmount(mainNetInflow)}
+                                </span>
+                              );
+                            })()}
+                          </span>
+                        )}
+                        {/* 强势起爆指标显示连续紫色箱体数量 */}
+                        {indicatorId === 'strong_detonation' && indicatorData && (
+                          <span className="text-xs text-muted/80 ml-2">
+                            {(() => {
+                              const data = indicatorData.data;
+                              if (!data || data.length === 0) return null;
+                              
+                              let consecutivePurple = 0;
+                              for (let i = data.length - 1; i >= 0; i--) {
+                                const item = data[i];
+                                if (item.purple_box_open !== null && item.purple_box_open !== undefined && !isNaN(item.purple_box_open)) {
+                                  consecutivePurple++;
+                                } else {
+                                  break;
+                                }
+                              }
+                              if (consecutivePurple > 0) {
+                                return (
+                                  <span style={{ color: '#AA44FF' }}>
+                                    连紫: {consecutivePurple}
+                                  </span>
+                                );
+                              }
+                              return null;
+                            })()}
+                          </span>
+                        )}
+                        {/* 共振追涨指标显示最新共振柱顶部高度 */}
+                        {indicatorId === 'resonance_chase' && indicatorData && (
+                          <span className="text-xs text-muted/80 ml-2">
+                            {(() => {
+                              const data = indicatorData.data;
+                              if (!data || data.length === 0) return null;
+                              
+                              const lastItem = data[data.length - 1];
+                              if (!lastItem) return null;
+                              
+                              if (lastItem.resonance) {
+                                const originalHeight = Math.abs(lastItem.OUT1 || 0);
+                                const topValue = originalHeight - 0.5;
+                                if (topValue > 0) {
+                                  return (
+                                    <span style={{ color: '#AA44FF' }}>
+                                      高度: {Math.floor(topValue)}
+                                    </span>
+                                  );
+                                }
+                              }
+                              return null;
+                            })()}
+                          </span>
+                        )}
+                      </h3>
+                      {/* 显示光标处的指标值 */}
+                      {indicatorId === 'banker_control' && cursorValues.bankerControl !== undefined && cursorValues.bankerControl !== null && !isNaN(cursorValues.bankerControl) && (
+                        <span className="text-xs font-mono text-cyan">
+                          {cursorValues.bankerControl.toFixed(2)}
+                        </span>
+                      )}
+                      {indicatorId === 'main_capital_absorption' && cursorValues.mainCapitalAbsorption !== undefined && cursorValues.mainCapitalAbsorption !== null && !isNaN(cursorValues.mainCapitalAbsorption) && (
+                        <span className="text-xs font-mono text-cyan">
+                          {cursorValues.mainCapitalAbsorption.toFixed(2)}
+                        </span>
+                      )}
+                      {indicatorId === 'main_cost' && cursorValues.mainCost !== undefined && cursorValues.mainCost !== null && !isNaN(cursorValues.mainCost) && cursorValues.closePrice !== undefined && cursorValues.closePrice !== null && !isNaN(cursorValues.closePrice) && (
+                        <span className="flex items-center gap-2">
+                          <span className="text-xs font-mono text-cyan">
+                            {cursorValues.mainCost.toFixed(2)}
+                          </span>
+                          <span className={`text-xs font-mono ${((cursorValues.closePrice - cursorValues.mainCost) / cursorValues.mainCost * 100) >= 0 ? 'text-[#FF4444]' : 'text-[#44AA44]'}`}>
+                            {((cursorValues.closePrice - cursorValues.mainCost) / cursorValues.mainCost * 100).toFixed(2)}%
+                          </span>
+                        </span>
+                      )}
+                      {indicatorId === 'main_cost' && cursorValues.mainCost !== undefined && cursorValues.mainCost !== null && !isNaN(cursorValues.mainCost) && (cursorValues.closePrice === undefined || cursorValues.closePrice === null || isNaN(cursorValues.closePrice)) && (
+                        <span className="text-xs font-mono text-cyan">
+                          {cursorValues.mainCost.toFixed(2)}
+                        </span>
+                      )}
+                      {indicatorId === 'resonance_chase' && cursorValues.resonanceChase !== undefined && cursorValues.resonanceChase !== null && !isNaN(cursorValues.resonanceChase) && (
+                        <span className="text-xs font-mono text-cyan">
+                          {Math.floor(cursorValues.resonanceChase)}
+                        </span>
+                      )}
+                    </div>
+                    <div 
+                      ref={(el) => { subChartContainerRefs.current[indicatorId] = el; }}
+                      style={{ 
+                        height: `${SUBCHART_HEIGHT}px`, 
+                        width: '100%',
+                        minHeight: `${SUBCHART_HEIGHT}px`,
+                        backgroundColor: '#1a1a2e'
+                      }} 
+                    />
+                  </Card>
+                );
+              })}
+          </div>
 
           {/* 空白状态 - 只在没有数据且没有加载时显示 */}
           {!isLoading && !visualizationData && (
@@ -2126,9 +2403,33 @@ const VisualizationPage: React.FC = () => {
         </div>
       </section>
 
+      {/* 右侧：筹码峰图表（只在显示筹码峰时显示） - 独立grid列 */}
+      {showChipDistribution && (
+        <aside className="hidden md:block md:col-start-6 md:row-start-2 overflow-hidden px-3 md:px-0 md:pr-1 min-w-0">
+          <div className="h-full flex flex-col pt-4">
+            {/* 主图表区域 - 与K线主Card对齐 */}
+            <div className="flex flex-col">
+              {/* 上对齐部分 - 与Card的头部高度匹配 */}
+              <div className="flex-shrink-0" style={{ height: '40px' }}></div>
+              {/* 筹码峰图表 - 固定高度550px */}
+              <div className="flex-shrink-0" style={{ height: '550px' }}>
+                <ChipDistributionChart 
+                  data={chipDistributionData} 
+                  loading={isLoadingChipDistribution} 
+                  priceRange={priceRange}
+                  cursorPrice={cursorPrice}
+                />
+              </div>
+            </div>
+          </div>
+        </aside>
+      )}
+
       {/* 底部指标选择区 */}
       <footer
-        className="md:col-start-2 md:col-end-5 md:row-start-3 py-3 px-3 md:px-0 border-t border-white/5 flex-shrink-0"
+        className={`py-3 px-3 md:px-0 border-t border-white/5 flex-shrink-0 ${
+          showChipDistribution ? 'md:col-start-2 md:col-end-7 md:row-start-3' : 'md:col-start-2 md:col-end-5 md:row-start-3'
+        }`}
       >
         <div className="max-w-4xl mx-auto">
           <div className="flex items-center gap-2 mb-2">

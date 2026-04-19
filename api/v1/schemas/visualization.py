@@ -27,6 +27,7 @@ class VisualizationResponse(BaseModel):
     stock_name: Optional[str] = Field(None, description="股票名称")
     kline_data: List[Dict[str, Any]] = Field(..., description="K线数据")
     indicators: List[VisualizationIndicatorData] = Field(default_factory=list, description="指标数据列表")
+    chip_distribution: Optional[Dict[str, Any]] = Field(None, description="筹码分布数据")
     
     class Config:
         json_schema_extra = {
@@ -62,9 +63,22 @@ class VisualizationSearchHistoryResponse(BaseModel):
         }
 
 
+class ChipDistributionResponse(BaseModel):
+    """筹码分布响应"""
+    
+    stock_code: str = Field(..., description="股票代码")
+    price_bins: List[float] = Field(..., description="价格区间列表")
+    chip_volumes: List[float] = Field(..., description="筹码数量列表")
+    profit_volumes: List[float] = Field(..., description="获利盘数量列表")
+    loss_volumes: List[float] = Field(..., description="套牢盘数量列表")
+    avg_cost: Optional[float] = Field(None, description="平均成本价")
+    max_chip_price: Optional[float] = Field(None, description="筹码集中度最高价格")
+    current_price: Optional[float] = Field(None, description="当前价格")
+
+
 class VisualizationSearchRequest(BaseModel):
     """可视化搜索请求"""
-    
+
     stock_code: str = Field(..., description="股票代码")
     stock_name: Optional[str] = Field(None, description="股票名称")
     days: int = Field(60, ge=1, le=3650, description="获取天数")
