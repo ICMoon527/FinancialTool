@@ -1894,10 +1894,12 @@ class AkshareFetcher(BaseFetcher):
                 return None
             
             elapsed = time.time() - start_time
+            
             logger.info(f"[API返回] ak.stock_zh_index_daily 成功: 返回 {len(df)} 天数据, 耗时 {elapsed:.2f}s")
+            logger.info(f"[API返回] 列名: {list(df.columns)}")
 
-            # 标准化列名
-            df = df.rename(columns={
+            # 标准化列名 - 兼容中英文列名
+            column_mapping = {
                 '日期': 'date',
                 '开盘': 'open',
                 '最高': 'high',
@@ -1905,17 +1907,30 @@ class AkshareFetcher(BaseFetcher):
                 '收盘': 'close',
                 '成交量': 'volume',
                 '成交额': 'amount'
-            })
+            }
+            df = df.rename(columns=column_mapping)
             
             # 确保日期格式正确
-            df['date'] = pd.to_datetime(df['date']).dt.date
+            if 'date' not in df.columns:
+                # 如果没有 date 列，尝试找日期相关的列
+                date_candidates = ['日期', 'trade_date', 'datetime', 'time']
+                for col in date_candidates:
+                    if col in df.columns:
+                        df = df.rename(columns={col: 'date'})
+                        break
+            
+            if 'date' in df.columns:
+                df['date'] = pd.to_datetime(df['date']).dt.date
+                # 记录最新日期
+                latest_date = df['date'].iloc[-1]
+                logger.info(f"[API返回] {symbol} 数据最新日期: {latest_date}")
             
             # 日期筛选
-            if start_date:
+            if start_date and 'date' in df.columns:
                 start_date_obj = datetime.strptime(start_date, '%Y-%m-%d').date()
                 df = df[df['date'] >= start_date_obj]
             
-            if end_date:
+            if end_date and 'date' in df.columns:
                 end_date_obj = datetime.strptime(end_date, '%Y-%m-%d').date()
                 df = df[df['date'] <= end_date_obj]
             

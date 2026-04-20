@@ -43,7 +43,7 @@ class ChipDistribution(BaseIndicator):
     def __init__(self, 
                 price_bin_size: float = 0.002, 
                 decay_factor: float = 0.99, 
-                turnover_coeff: float = 1.2, 
+                turnover_coeff: float = 0.9, 
                 turnover_window_days: int = 60, 
                 gaussian_sigma: float = 1.5, 
                 enable_smooth: bool = True, 

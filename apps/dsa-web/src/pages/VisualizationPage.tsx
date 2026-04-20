@@ -1984,17 +1984,13 @@ const VisualizationPage: React.FC = () => {
     <div
       className="min-h-screen flex flex-col md:grid overflow-hidden w-full"
       style={{ 
-        gridTemplateColumns: showChipDistribution 
-          ? 'minmax(12px, 1fr) 256px 24px minmax(auto, 896px) 24px 400px minmax(12px, 1fr)' 
-          : 'minmax(12px, 1fr) 256px 24px minmax(auto, 896px) minmax(12px, 1fr)', 
+        gridTemplateColumns: 'minmax(12px, 1fr) 256px 24px minmax(auto, 1200px) minmax(12px, 1fr)',
         gridTemplateRows: 'auto 1fr auto' 
       }}
     >
       {/* 顶部搜索栏 */}
       <header
-        className={`py-3 px-3 md:px-0 border-b border-white/5 flex-shrink-0 flex items-center min-w-0 overflow-hidden ${
-          showChipDistribution ? 'md:col-start-2 md:col-end-6 md:row-start-1' : 'md:col-start-2 md:col-end-5 md:row-start-1'
-        }`}
+        className="py-3 px-3 md:px-0 border-b border-white/5 flex-shrink-0 flex items-center min-w-0 overflow-hidden md:col-start-2 md:col-end-5 md:row-start-1"
       >
         <div className="flex items-center gap-2 w-full min-w-0 flex-1" style={{ maxWidth: 'min(100%, 1168px)' }}>
           {/* Mobile hamburger */}
@@ -2081,9 +2077,7 @@ const VisualizationPage: React.FC = () => {
       )}
 
       {/* 中央图表区域 - 容器始终渲染 */}
-      <section className={`flex-1 overflow-y-auto overflow-x-auto px-3 md:px-0 md:pl-1 min-w-0 min-h-0 ${
-        showChipDistribution ? 'md:col-start-4 md:row-start-2' : 'md:col-start-4 md:row-start-2'
-      }`}>
+      <section className="flex-1 overflow-y-auto overflow-x-auto px-3 md:px-0 md:pl-1 min-w-0 min-h-0 md:col-start-4 md:row-start-2">
         {/* 图表容器始终存在 */}
         <div className="max-w-6xl">
           {/* 标题 - 只在有数据时显示 */}
@@ -2164,72 +2158,122 @@ const VisualizationPage: React.FC = () => {
           
           {/* 图表区域：主图表和指标子图 */}
           <div className="w-full">
-              {/* 主图表 - K线（始终渲染） */}
-              <Card variant="default" padding="none" className="mb-4">
-                {/* 光标值显示标签 */}
-                <div className="p-2 border-b border-white/5 flex flex-wrap gap-4 items-center">
-                  {/* 显示跟随光标的时间 */}
-                  {currentCrosshairTimeRef.current !== undefined && currentCrosshairTimeRef.current !== null && (
-                    <span className="text-xs text-cyan font-mono">
-                      {(() => {
-                        let date: Date;
-                        const timeValue = currentCrosshairTimeRef.current;
-                        if (typeof timeValue === 'string') {
-                          if (timeValue.includes('-')) {
-                            date = new Date(timeValue);
+              {/* 一体化图表：K线 + 筹码分布 */}
+              <div className={showChipDistribution ? "flex gap-0" : ""}>
+                {/* 左侧：K线图 */}
+                <Card variant="default" padding="none" className={showChipDistribution ? "mb-4 flex-1 rounded-r-none border-r-0" : "mb-4"}>
+                  {/* 光标值显示标签 */}
+                  <div className="p-2 border-b border-white/5 flex flex-wrap gap-4 items-center">
+                    {/* 显示跟随光标的时间 */}
+                    {currentCrosshairTimeRef.current !== undefined && currentCrosshairTimeRef.current !== null && (
+                      <span className="text-xs text-cyan font-mono">
+                        {(() => {
+                          let date: Date;
+                          const timeValue = currentCrosshairTimeRef.current;
+                          if (typeof timeValue === 'string') {
+                            if (timeValue.includes('-')) {
+                              date = new Date(timeValue);
+                            } else {
+                              date = new Date(parseInt(timeValue) * 1000);
+                            }
                           } else {
-                            date = new Date(parseInt(timeValue) * 1000);
+                            date = new Date(timeValue * 1000);
                           }
-                        } else {
-                          date = new Date(timeValue * 1000);
-                        }
-                        const year = date.getFullYear();
-                        const month = String(date.getMonth() + 1).padStart(2, '0');
-                        const day = String(date.getDate()).padStart(2, '0');
-                        return `${year}-${month}-${day}`;
-                      })()}
-                    </span>
-                  )}
-                  {selectedIndicators.includes('main_trading') && (
-                    <>
-                      <h3 className="text-sm font-medium text-white">主力操盘</h3>
-                      {cursorValues.attackLine !== undefined && cursorValues.attackLine !== null && !isNaN(cursorValues.attackLine) && (
-                        <div className="flex items-center gap-2">
-                          <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#FF4444' }} />
-                          <span className="text-xs text-white">攻击线: <span className="font-mono">{cursorValues.attackLine.toFixed(2)}</span></span>
-                        </div>
-                      )}
-                      {cursorValues.tradingLine !== undefined && cursorValues.tradingLine !== null && !isNaN(cursorValues.tradingLine) && (
-                        <div className="flex items-center gap-2">
-                          <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#FFAA00' }} />
-                          <span className="text-xs text-white">操盘线: <span className="font-mono">{cursorValues.tradingLine.toFixed(2)}</span></span>
-                        </div>
-                      )}
-                      {cursorValues.defenseLine !== undefined && cursorValues.defenseLine !== null && !isNaN(cursorValues.defenseLine) && (
-                        <div className="flex items-center gap-2">
-                          <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#44AA44' }} />
-                          <span className="text-xs text-white">防守线: <span className="font-mono">{cursorValues.defenseLine.toFixed(2)}</span></span>
-                          {cursorValues.signal === 'buy' && (
-                            <span className="text-xs font-bold" style={{ color: '#FF0000' }}>买入</span>
-                          )}
-                          {cursorValues.signal === 'sell' && (
-                            <span className="text-xs font-bold" style={{ color: '#00FF00' }}>卖出</span>
-                          )}
-                        </div>
-                      )}
-                    </>
-                  )}
-                </div>
-                <div 
-                  ref={mainChartContainerRef} 
-                  style={{ 
-                    height: '500px', 
-                    width: '100%',
-                    minHeight: '500px',
-                    backgroundColor: '#1a1a2e'
-                  }} 
-                />
-              </Card>
+                          const year = date.getFullYear();
+                          const month = String(date.getMonth() + 1).padStart(2, '0');
+                          const day = String(date.getDate()).padStart(2, '0');
+                          return `${year}-${month}-${day}`;
+                        })()}
+                      </span>
+                    )}
+                    {selectedIndicators.includes('main_trading') && (
+                      <>
+                        <h3 className="text-sm font-medium text-white">主力操盘</h3>
+                        {cursorValues.attackLine !== undefined && cursorValues.attackLine !== null && !isNaN(cursorValues.attackLine) && (
+                          <div className="flex items-center gap-2">
+                            <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#FF4444' }} />
+                            <span className="text-xs text-white">攻击线: <span className="font-mono">{cursorValues.attackLine.toFixed(2)}</span></span>
+                          </div>
+                        )}
+                        {cursorValues.tradingLine !== undefined && cursorValues.tradingLine !== null && !isNaN(cursorValues.tradingLine) && (
+                          <div className="flex items-center gap-2">
+                            <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#FFAA00' }} />
+                            <span className="text-xs text-white">操盘线: <span className="font-mono">{cursorValues.tradingLine.toFixed(2)}</span></span>
+                          </div>
+                        )}
+                        {cursorValues.defenseLine !== undefined && cursorValues.defenseLine !== null && !isNaN(cursorValues.defenseLine) && (
+                          <div className="flex items-center gap-2">
+                            <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#44AA44' }} />
+                            <span className="text-xs text-white">防守线: <span className="font-mono">{cursorValues.defenseLine.toFixed(2)}</span></span>
+                            {cursorValues.signal === 'buy' && (
+                              <span className="text-xs font-bold" style={{ color: '#FF0000' }}>买入</span>
+                            )}
+                            {cursorValues.signal === 'sell' && (
+                              <span className="text-xs font-bold" style={{ color: '#00FF00' }}>卖出</span>
+                            )}
+                          </div>
+                        )}
+                      </>
+                    )}
+                    {/* 筹码分布标签（只在显示筹码时显示） */}
+                    {showChipDistribution && chipDistributionData && (
+                      <>
+                        {chipDistributionData.current_price !== undefined && chipDistributionData.current_price !== null && (
+                          <div className="flex items-center gap-2">
+                            <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#fbbf24' }} />
+                            <span className="text-xs text-white">现价: <span className="font-mono">{chipDistributionData.current_price.toFixed(2)}</span></span>
+                          </div>
+                        )}
+                        {chipDistributionData.avg_cost !== undefined && chipDistributionData.avg_cost !== null && (
+                          <div className="flex items-center gap-2">
+                            <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#ff6b6b' }} />
+                            <span className="text-xs text-white">成本: <span className="font-mono">{chipDistributionData.avg_cost.toFixed(2)}</span></span>
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                  <div 
+                    ref={mainChartContainerRef} 
+                    style={{ 
+                      height: '500px', 
+                      width: '100%',
+                      minHeight: '500px',
+                      backgroundColor: '#1a1a2e'
+                    }} 
+                  />
+                </Card>
+                
+                {/* 右侧：筹码分布图（无Card包装，视觉融合） */}
+                {showChipDistribution && (
+                  <div 
+                    className="mb-4"
+                    style={{ width: '300px', minWidth: '300px' }}
+                  >
+                    {/* 占位区域，与左侧标题对齐 */}
+                    <div style={{ height: '40px', borderBottom: '1px solid rgba(255,255,255,0.05)' }}></div>
+                    {/* 筹码分布图，无Card */}
+                    <div 
+                      style={{ 
+                        height: '500px', 
+                        width: '100%',
+                        minHeight: '500px',
+                        backgroundColor: '#1a1a2e',
+                        border: '1px solid rgba(255,255,255,0.05)',
+                        borderLeft: 'none',
+                        borderRadius: '0 0.5rem 0.5rem 0'
+                      }} 
+                    >
+                      <ChipDistributionChart 
+                        data={chipDistributionData} 
+                        loading={isLoadingChipDistribution} 
+                        priceRange={priceRange}
+                        cursorPrice={cursorPrice}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
 
               {/* 指标子图 - 只在有数据时显示（跳过主力操盘，它在主图显示） */}
               {visualizationData && selectedIndicators.map(indicatorId => {
@@ -2395,65 +2439,12 @@ const VisualizationPage: React.FC = () => {
         </div>
       </section>
 
-      {/* 右侧：筹码峰图表（只在显示筹码峰时显示） - 独立grid列 */}
-      {showChipDistribution && (
-        <aside className="hidden md:block md:col-start-6 md:row-start-2 overflow-hidden px-3 md:px-0 md:pr-1 min-w-0">
-          <div className="h-full flex flex-col">
-            {/* 占位区域 - 与左侧股票标题区域对齐 */}
-            <div className="mb-4" style={{ height: '50px' }}></div>
-            {/* 主图表区域 - 与K线主Card对齐 */}
-            <div className="flex flex-col">
-              {/* 筹码峰图表 - 带Card包装 */}
-              <Card variant="default" padding="none" className="mb-4">
-                {/* 筹码峰标题区域 */}
-                <div className="p-2 border-b border-white/5 flex flex-wrap gap-4 items-center" style={{ height: '40px', minHeight: '40px' }}>
-                  <h3 className="text-sm font-medium text-white">筹码分布</h3>
-                  {chipDistributionData?.current_price !== undefined && chipDistributionData?.current_price !== null && (
-                    <div className="flex items-center gap-2">
-                      <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#fbbf24' }} />
-                      <span className="text-xs text-white">现价: <span className="font-mono">{chipDistributionData.current_price.toFixed(2)}</span></span>
-                    </div>
-                  )}
-                  {chipDistributionData?.avg_cost !== undefined && chipDistributionData?.avg_cost !== null && (
-                    <div className="flex items-center gap-2">
-                      <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#ff6b6b' }} />
-                      <span className="text-xs text-white">成本: <span className="font-mono">{chipDistributionData.avg_cost.toFixed(2)}</span></span>
-                    </div>
-                  )}
-                  {chipDistributionData?.max_chip_price !== undefined && chipDistributionData?.max_chip_price !== null && (
-                    <div className="flex items-center gap-2">
-                      <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#3b82f6' }} />
-                      <span className="text-xs text-white">峰价: <span className="font-mono">{chipDistributionData.max_chip_price.toFixed(2)}</span></span>
-                    </div>
-                  )}
-                </div>
-                {/* 筹码峰图表画布 */}
-                <div 
-                  style={{ 
-                    height: '500px', 
-                    width: '100%',
-                    minHeight: '500px',
-                    backgroundColor: '#1a1a2e'
-                  }} 
-                >
-                  <ChipDistributionChart 
-                    data={chipDistributionData} 
-                    loading={isLoadingChipDistribution} 
-                    priceRange={priceRange}
-                    cursorPrice={cursorPrice}
-                  />
-                </div>
-              </Card>
-            </div>
-          </div>
-        </aside>
-      )}
+
+
 
       {/* 底部指标选择区 */}
       <footer
-        className={`py-3 px-3 md:px-0 border-t border-white/5 flex-shrink-0 ${
-          showChipDistribution ? 'md:col-start-2 md:col-end-7 md:row-start-3' : 'md:col-start-2 md:col-end-5 md:row-start-3'
-        }`}
+        className="py-3 px-3 md:px-0 border-t border-white/5 flex-shrink-0 md:col-start-2 md:col-end-5 md:row-start-3"
       >
         <div className="max-w-4xl mx-auto">
           <div className="flex items-center gap-2 mb-2">

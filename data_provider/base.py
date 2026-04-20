@@ -996,6 +996,16 @@ class DataFetcherManager:
             DataFrame with columns: date, open, high, low, close, volume, amount
             or None if failed
         """
+        from datetime import date
+        from stock_selector.trading_calendar import get_previous_trading_day
+
+        # 获取最近的交易日
+        latest_trading_day = get_previous_trading_day(date.today())
+        logger.info(f"最近的交易日为: {latest_trading_day}")
+
+        valid_data = None
+        last_error = None
+
         for i, fetcher in enumerate(self._fetchers):
             fetcher_name = fetcher.__class__.__name__
             # 只尝试支持 get_index_daily_data 方法的 fetcher
@@ -1006,14 +1016,45 @@ class DataFetcherManager:
                 df = fetcher.get_index_daily_data(symbol, start_date, end_date)
                 if df is not None and not df.empty:
                     logger.info(f"[{fetcher_name}] 成功获取 {symbol} 指数历史数据")
-                    return df
+
+                    # 验证数据最新日期是否为最近交易日
+                    if 'date' in df.columns:
+                        latest_date_in_data = pd.to_datetime(df['date'].iloc[-1]).date()
+                        logger.info(f"获取的 {symbol} 数据最新日期为: {latest_date_in_data}")
+
+                        if latest_date_in_data >= latest_trading_day:
+                            # 数据有效，返回
+                            logger.info(f"数据验证通过：{symbol} 数据最新日期 {latest_date_in_data} >= 最近交易日 {latest_trading_day}")
+                            valid_data = df
+                            break
+                        else:
+                            logger.warning(f"数据验证失败：{symbol} 数据最新日期 {latest_date_in_data} < 最近交易日 {latest_trading_day}")
+                            if i == len(self._fetchers) - 1:
+                                # 如果是最后一个 fetcher，仍然用这个数据
+                                valid_data = df
+                                break
+                            # 否则，继续尝试下一个数据源
+                            last_error = f"[{fetcher_name}] 获取的数据不完整，最新日期 {latest_date_in_data} < {latest_trading_day}"
+                    else:
+                        # 没有 date 列，直接用这个数据
+                        valid_data = df
+                        break
                 else:
                     logger.warning(f"[{fetcher_name}] 未获取到 {symbol} 指数历史数据")
             except Exception as e:
                 logger.warning(f"[{fetcher_name}] 获取 {symbol} 指数历史数据失败: {e}")
+                last_error = str(e)
         
-        logger.warning(f"所有数据源都无法获取 {symbol} 指数历史数据")
-        return None
+        if valid_data is not None:
+            return valid_data
+
+        # 所有数据源都失败了
+        error_msg = f"所有数据源都无法获取 {symbol} 指数历史数据，或无法获取到最新交易日 {latest_trading_day} 的数据"
+        if last_error:
+            error_msg += f"。最后一个错误：{last_error}"
+        
+        logger.error(error_msg)
+        raise RuntimeError(error_msg)
 
     def batch_get_stock_names(self, stock_codes: List[str]) -> Dict[str, str]:
         """

@@ -1067,6 +1067,95 @@ class EfinanceFetcher(BaseFetcher):
             logger.debug(f"异常详情: {traceback.format_exc()}")
             return None
 
+    def get_index_daily_data(self, symbol: str, start_date: Optional[str] = None,
+                              end_date: Optional[str] = None) -> Optional[pd.DataFrame]:
+        """
+        获取大盘指数历史数据
+
+        Args:
+            symbol: 指数代码，如 sh000001 (上证指数), sz399001 (深证成指)
+            start_date: 开始日期，格式 YYYY-MM-DD
+            end_date: 结束日期，格式 YYYY-MM-DD
+
+        Returns:
+            DataFrame with columns: date, open, high, low, close, volume, amount
+            or None if failed
+        """
+        import efinance as ef
+        from datetime import datetime
+
+        self._set_random_user_agent()
+        self._enforce_rate_limit()
+
+        # 将 symbol 转换为 efinance 可用的格式
+        # 例如：sh000001 -> 000001, sz399001 -> 399001
+        if symbol.lower().startswith(('sh', 'sz')):
+            code = symbol[2:]
+        else:
+            code = symbol
+
+        logger.info(f"[API调用] ef.stock.get_quote_history(stock_codes={code}) 获取指数历史数据...")
+
+        try:
+            import time
+            api_start = time.time()
+
+            # 格式化日期
+            if start_date:
+                beg = start_date.replace('-', '')
+            else:
+                beg = '20100101'
+            
+            if end_date:
+                end_dt = end_date.replace('-', '')
+            else:
+                end_dt = datetime.now().strftime('%Y%m%d')
+
+            df = ef.stock.get_quote_history(
+                stock_codes=code,
+                beg=beg,
+                end=end_dt,
+                klt=101,
+                fqt=1
+            )
+
+            api_elapsed = time.time() - api_start
+
+            if df is None or df.empty:
+                logger.warning(f"[API返回] ef.stock.get_quote_history 返回空数据")
+                return None
+
+            logger.info(f"[API返回] ef.stock.get_quote_history 成功: 返回 {len(df)} 天数据, 耗时 {api_elapsed:.2f}s")
+
+            # 标准化列名
+            df = df.rename(columns={
+                '日期': 'date',
+                '开盘': 'open',
+                '最高': 'high',
+                '最低': 'low',
+                '收盘': 'close',
+                '成交量': 'volume',
+                '成交额': 'amount'
+            })
+
+            # 确保日期格式正确
+            df['date'] = pd.to_datetime(df['date']).dt.date
+
+            # 排序并返回
+            df = df.sort_values('date').reset_index(drop=True)
+
+            # 只保留需要的列
+            keep_cols = ['date', 'open', 'high', 'low', 'close', 'volume']
+            if 'amount' in df.columns:
+                keep_cols.append('amount')
+            df = df[keep_cols]
+
+            return df
+
+        except Exception as e:
+            logger.error(f"[API调用] ef.stock.get_quote_history 失败: {e}")
+            return None
+
 
 if __name__ == "__main__":
     # 测试代码
