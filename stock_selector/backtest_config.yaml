@@ -67,6 +67,10 @@ strategies:
   top_rise_stock_selector:
     enabled: false
     multiplier: 1.0
+  # 主力建仓(Python)
+  main_capital_position:
+    enabled: false
+    multiplier: 1.0
 
 # 选股配置
 selection:

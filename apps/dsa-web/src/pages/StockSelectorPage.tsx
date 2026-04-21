@@ -232,7 +232,44 @@ const StockSelectorPage: React.FC = () => {
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
   const [filterEnabled, setFilterEnabled] = useState(false);
   
+  // 收藏策略状态管理
+  const [favoriteStrategyIds, setFavoriteStrategyIds] = useState<string[]>(() => {
+    const saved = localStorage.getItem('favorite_strategies');
+    return saved ? JSON.parse(saved) : [];
+  });
+  
   const strategyDropdownRef = useRef<HTMLDivElement>(null);
+  
+  // 切换收藏状态
+  const toggleFavorite = (strategyId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setFavoriteStrategyIds(prev => {
+      const newFavorites = prev.includes(strategyId)
+        ? prev.filter(id => id !== strategyId)
+        : [...prev, strategyId];
+      localStorage.setItem('favorite_strategies', JSON.stringify(newFavorites));
+      return newFavorites;
+    });
+  };
+  
+  // 星星图标组件
+  const StarIcon = ({ isFavorited, onClick }: { isFavorited: boolean; onClick: (e: React.MouseEvent) => void }) => (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex-shrink-0 w-5 h-5 p-0.5 hover:bg-white/10 rounded transition-colors cursor-pointer"
+    >
+      {isFavorited ? (
+        <svg className="w-full h-full text-yellow-400" fill="currentColor" viewBox="0 0 24 24">
+          <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
+        </svg>
+      ) : (
+        <svg className="w-full h-full text-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118L12 16.055l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.783-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
+        </svg>
+      )}
+    </button>
+  );
 
   const fetchStrategies = useCallback(async () => {
     try {
@@ -325,10 +362,31 @@ const StockSelectorPage: React.FC = () => {
   // 移除固定高度设置，保持自然的 flexbox 布局
   // 右侧 section 已经有 overflow-y-auto，配合 flex-1 会自动处理滚动
 
-  const filteredStrategies = strategies.filter(s => {
-    if (strategyTypeFilter === 'ALL') return true;
-    return s.strategy_type === strategyTypeFilter;
-  });
+  const filteredStrategies = useMemo(() => {
+    const filtered = strategies.filter(s => {
+      if (strategyTypeFilter === 'ALL') return true;
+      return s.strategy_type === strategyTypeFilter;
+    });
+    // 收藏的策略置顶
+    return [...filtered].sort((a, b) => {
+      const aFav = favoriteStrategyIds.includes(a.id);
+      const bFav = favoriteStrategyIds.includes(b.id);
+      if (aFav && !bFav) return -1;
+      if (!aFav && bFav) return 1;
+      return 0;
+    });
+  }, [strategies, strategyTypeFilter, favoriteStrategyIds]);
+  
+  // 下拉框用的策略列表（同样收藏置顶）
+  const dropdownStrategies = useMemo(() => {
+    return [...strategies].sort((a, b) => {
+      const aFav = favoriteStrategyIds.includes(a.id);
+      const bFav = favoriteStrategyIds.includes(b.id);
+      if (aFav && !bFav) return -1;
+      if (!aFav && bFav) return 1;
+      return 0;
+    });
+  }, [strategies, favoriteStrategyIds]);
 
   const processedCandidates = useMemo(() => {
     let result = [...candidates];
@@ -404,12 +462,12 @@ const StockSelectorPage: React.FC = () => {
             
             {isStrategyDropdownOpen && (
               <div className="absolute top-full left-0 mt-1 w-72 bg-elevated border border-white/15 rounded-xl shadow-2xl z-[9999] max-h-80 overflow-y-auto">
-                {strategies.length === 0 ? (
+                {dropdownStrategies.length === 0 ? (
                   <div className="px-3 py-4 text-center text-xs text-muted">
                     Loading strategies...
                   </div>
                 ) : (
-                  strategies.map((strategy) => (
+                  dropdownStrategies.map((strategy) => (
                     <label
                       key={strategy.id}
                       className="flex items-center gap-2 px-3 py-2.5 hover:bg-white/10 cursor-pointer transition-colors border-b border-white/5 last:border-0"
@@ -432,6 +490,10 @@ const StockSelectorPage: React.FC = () => {
                         <div className="text-sm text-white truncate">{strategy.display_name}</div>
                         <div className="text-xs text-muted truncate">{strategy.description}</div>
                       </div>
+                      <StarIcon
+                        isFavorited={favoriteStrategyIds.includes(strategy.id)}
+                        onClick={(e) => toggleFavorite(strategy.id, e)}
+                      />
                     </label>
                   ))
                 )}
