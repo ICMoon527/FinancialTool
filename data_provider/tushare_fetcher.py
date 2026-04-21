@@ -508,56 +508,17 @@ class TushareFetcher(BaseFetcher):
 
     def get_stock_name(self, stock_code: str) -> Optional[str]:
         """
-        获取股票名称
+        获取股票名称（禁用 Tushare API，避免频率超限）
         
-        使用 Tushare 的 stock_basic 接口获取股票基本信息
+        直接返回 None，让 DataFetcherManager 尝试其他数据源
         
         Args:
             stock_code: 股票代码
             
         Returns:
-            股票名称，失败返回 None
+            None
         """
-        if self._api is None:
-            logger.warning("Tushare API 未初始化，无法获取股票名称")
-            return None
-        
-        # 检查缓存
-        if hasattr(self, '_stock_name_cache') and stock_code in self._stock_name_cache:
-            return self._stock_name_cache[stock_code]
-        
-        # 初始化缓存
-        if not hasattr(self, '_stock_name_cache'):
-            self._stock_name_cache = {}
-        
-        try:
-            # 速率限制检查
-            self._check_rate_limit()
-            
-            # 转换代码格式
-            ts_code = self._convert_stock_code(stock_code)
-            
-            # ETF uses fund_basic, regular stocks use stock_basic
-            if _is_etf_code(stock_code):
-                df = self._api.fund_basic(
-                    ts_code=ts_code,
-                    fields='ts_code,name'
-                )
-            else:
-                df = self._api.stock_basic(
-                    ts_code=ts_code,
-                    fields='ts_code,name'
-                )
-            
-            if df is not None and not df.empty:
-                name = df.iloc[0]['name']
-                self._stock_name_cache[stock_code] = name
-                logger.debug(f"Tushare 获取股票名称成功: {stock_code} -> {name}")
-                return name
-            
-        except Exception as e:
-            logger.warning(f"Tushare 获取股票名称失败 {stock_code}: {e}")
-        
+        logger.debug(f"Tushare 禁用获取股票名称: {stock_code}")
         return None
     
     def get_list_date(self, stock_code: str) -> Optional[date]:

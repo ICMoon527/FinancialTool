@@ -70,20 +70,57 @@ def _should_add_realtime_quote(kline_data: List[Dict[str, Any]], force_update: b
     if force_update:
         return True
     
-    # 首先检查是否为交易时间
-    if not _is_trading_time():
-        return False
-    
     # 获取今天的日期字符串
     today_str = date.today().strftime('%Y-%m-%d')
     
     # 检查 kline_data 中是否已经有今天的数据
+    has_today_data = False
     for kline in kline_data:
         if kline.get('date') == today_str:
-            return False
+            has_today_data = True
+            break
     
-    # 没有今天的数据，应该添加实时行情
-    return True
+    if has_today_data:
+        # 已有今天数据，不需要添加
+        return False
+    
+    # 没有今天的数据，检查时间有两种情况需要添加：
+    # 1. 在交易时间内
+    # 2. 收盘后，但历史数据还没更新
+    if _is_trading_time() or _is_after_trading_day_and_should_add_realtime_after_close():
+        return True
+    
+    return False
+
+
+def _is_after_trading_day_and_should_add_realtime_after_close() -> bool:
+    """
+    判断是否是交易日且收盘后，但应该补充实时行情
+    
+    Returns:
+        True 如果是交易日且在收盘后2小时内，或历史数据可能还没更新
+    """
+    from datetime import datetime, time
+    from stock_selector.trading_calendar import is_trading_day
+    
+    today = date.today()
+    now = datetime.now()
+    
+    # 首先检查今天是不是交易日
+    if not is_trading_day(today):
+        return False
+    
+    # 检查是否在收盘后（15:00 之后，但在收盘后2小时内（17:00 之前）
+    # 这个时间段内，历史数据可能还没更新
+    market_close = time(15, 0, 0)
+    market_close_plus_2h = time(17, 0, 0)
+    current_time = now.time()
+    
+    if market_close < current_time <= market_close_plus_2h:
+        logger.info(f"交易日收盘后{current_time}，历史数据可能还没更新，尝试补充实时行情")
+        return True
+    
+    return False
 
 
 def _convert_realtime_quote_to_kline(quote: UnifiedRealtimeQuote) -> Dict[str, Any]:
@@ -224,7 +261,7 @@ class VisualizationService:
             try:
                 logger.info(f"正在更新 {stock_code} 的流通股本...")
                 turnover_service = TurnoverService()
-                stock_name_for_update = fetcher_manager.get_stock_name(stock_code)
+                stock_name_for_update = fetcher_manager.get_stock_name(stock_code, skip_realtime=True)
                 # fill_historical=False：不更新数据库中的历史换手率，只保存流通股本
                 success, _ = turnover_service.process_akshare_data(
                     daily_data,

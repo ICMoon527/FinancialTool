@@ -172,7 +172,7 @@ class MarketDataCache:
         Returns:
             完整的大盘数据DataFrame
         """
-        from datetime import date, datetime, time
+        from datetime import date, datetime, time, timedelta
         from stock_selector.trading_calendar import get_previous_trading_day
         
         # 获取当前时间和日期
@@ -196,6 +196,7 @@ class MarketDataCache:
         
         # 判断是否需要补充实时数据
         need_realtime_supplement = False
+        market_close_plus_2h = time(17, 0, 0)
         
         if current_time >= market_open and current_time < market_close:
             # 交易时间内
@@ -206,10 +207,22 @@ class MarketDataCache:
                 # 历史数据没有今天，需要补充
                 need_realtime_supplement = True
                 logger.info(f"[智能大盘数据] 需要补充今天（{today}）的实时数据")
-        elif current_time >= market_close:
-            # 收盘后
+        elif market_close <= current_time <= market_close_plus_2h:
+            # 收盘后2小时内
             target_trading_day = get_previous_trading_day(today)
-            logger.info(f"[智能大盘数据] 当前时间 {current_time} 已过收盘时间")
+            logger.info(f"[智能大盘数据] 当前时间 {current_time} 在收盘后2小时内")
+            
+            # 检查历史数据是否已更新到今天
+            if latest_date_in_data < today:
+                # 历史数据还没更新，补充实时数据
+                need_realtime_supplement = True
+                logger.info(f"[智能大盘数据] 收盘后历史数据未更新，需要补充今天（{today}）的实时数据")
+            elif latest_date_in_data < target_trading_day:
+                logger.warning(f"[智能大盘数据] 历史数据不完整，最新日期 {latest_date_in_data} < {target_trading_day}")
+        elif current_time > market_close_plus_2h:
+            # 收盘2小时后
+            target_trading_day = get_previous_trading_day(today)
+            logger.info(f"[智能大盘数据] 当前时间 {current_time} 已过收盘时间2小时以上")
             
             if latest_date_in_data < target_trading_day:
                 logger.warning(f"[智能大盘数据] 历史数据不完整，最新日期 {latest_date_in_data} < {target_trading_day}")

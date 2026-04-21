@@ -110,13 +110,17 @@ const ChipDistributionChart: React.FC<ChipDistributionChartProps> = ({
         textStyle: { color: '#fff', fontSize: 12 },
         formatter: (params: any) => {
           if (!params || params.length === 0) return '';
-          console.log('ChipDistributionChart tooltip params:', params);
-          console.log('ChipDistributionChart data:', data);
+          if (import.meta.env.DEV) {
+            console.log('ChipDistributionChart tooltip params:', params);
+            console.log('ChipDistributionChart data:', data);
+          }
           const dataIndex = params[0].dataIndex;
           const price = priceBins[dataIndex];
           const probabilityDensity = data?.chip_volumes?.[dataIndex] || 0;
           const circulatingShares = data?.circulating_shares;
-          console.log('circulatingShares:', circulatingShares, 'probabilityDensity:', probabilityDensity);
+          if (import.meta.env.DEV) {
+            console.log('circulatingShares:', circulatingShares, 'probabilityDensity:', probabilityDensity);
+          }
           const position = circulatingShares ? circulatingShares * probabilityDensity : 0;
           const formatPosition = (val: number) => {
             if (val >= 10000) {
