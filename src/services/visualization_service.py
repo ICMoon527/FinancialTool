@@ -344,16 +344,38 @@ class VisualizationService:
                 
                 if index_symbol:
                     logger.info(f"正在获取 {stock_code} 对应的大盘指数数据 ({index_symbol})...")
-                    # 获取与K线数据相同日期范围的大盘指数
-                    if kline_data:
-                        start_date = kline_data[0].get('date')
-                        end_date = kline_data[-1].get('date')
-                        index_data = fetcher_manager.get_index_daily_data(index_symbol, start_date, end_date)
-                    else:
-                        index_data = fetcher_manager.get_index_daily_data(index_symbol)
+                    
+                    # 优先使用智能时间窗策略获取完整大盘数据（包含实时补充）
+                    try:
+                        from stock_selector.market_data_cache import MarketDataCache
+                        index_data = MarketDataCache.get_complete_index_data(
+                            index_symbol,
+                            data_provider=fetcher_manager
+                        )
+                        
+                        if index_data is not None and not index_data.empty:
+                            logger.info(f"成功获取完整大盘数据 ({index_symbol}): {len(index_data)} 条")
+                        else:
+                            logger.warning(f"完整大盘数据获取失败，回退到标准方法")
+                            # 回退到原来的方法
+                            if kline_data:
+                                start_date = kline_data[0].get('date')
+                                end_date = kline_data[-1].get('date')
+                                index_data = fetcher_manager.get_index_daily_data(index_symbol, start_date, end_date)
+                            else:
+                                index_data = fetcher_manager.get_index_daily_data(index_symbol)
+                    except Exception as smart_e:
+                        logger.warning(f"智能大盘数据获取失败: {smart_e}，使用标准方法")
+                        # 回退到原来的方法
+                        if kline_data:
+                            start_date = kline_data[0].get('date')
+                            end_date = kline_data[-1].get('date')
+                            index_data = fetcher_manager.get_index_daily_data(index_symbol, start_date, end_date)
+                        else:
+                            index_data = fetcher_manager.get_index_daily_data(index_symbol)
                     
                     if index_data is not None and not index_data.empty:
-                        logger.info(f"成功获取 {index_symbol} 大盘指数数据: {len(index_data)} 条")
+                        logger.info(f"大盘指数数据准备完成: {len(index_data)} 条")
                     else:
                         logger.warning(f"未获取到 {index_symbol} 大盘指数数据，将使用代理模式")
             except Exception as e:
@@ -980,6 +1002,17 @@ class VisualizationService:
             if result:
                 result['stock_code'] = stock_code
             
+            # 获取流通股本并添加到结果中
+            from src.services.turnover_service import TurnoverService
+            turnover_service = TurnoverService()
+            stock_basic = turnover_service.get_stock_basic(stock_code)
+            circulating_shares = None
+            if stock_basic and stock_basic.circulating_shares and stock_basic.circulating_shares > 0:
+                circulating_shares = stock_basic.circulating_shares
+                logger.info(f"预计算筹码分布时获取到 {stock_code} 的流通股本: {circulating_shares:.0f} 股")
+            if result:
+                result['circulating_shares'] = circulating_shares
+            
             logger.info(f"仅预计算了最新日期的筹码分布")
             
             # 返回结果 - 只返回最新数据，不预计算历史
@@ -1104,7 +1137,8 @@ class VisualizationService:
                 'loss_volumes': [],
                 'avg_cost': None,
                 'max_chip_price': None,
-                'current_price': None
+                'current_price': None,
+                'circulating_shares': circulating_shares
             }
 
         # 检查是否有真实换手率数据
@@ -1122,7 +1156,8 @@ class VisualizationService:
                 'loss_volumes': [],
                 'avg_cost': None,
                 'max_chip_price': None,
-                'current_price': None
+                'current_price': None,
+                'circulating_shares': circulating_shares
             }
 
         # 转换为筹码分布计算需要的格式
@@ -1169,4 +1204,8 @@ class VisualizationService:
         result['stock_code'] = stock_code
 
         logger.info(f"{stock_code} 筹码分布计算完成")
+        
+        # 将流通股本包含在结果中
+        result['circulating_shares'] = circulating_shares
+        
         return result

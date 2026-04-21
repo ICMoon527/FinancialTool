@@ -996,15 +996,38 @@ class DataFetcherManager:
             DataFrame with columns: date, open, high, low, close, volume, amount
             or None if failed
         """
-        from datetime import date
+        from datetime import date, datetime, time, timedelta
         from stock_selector.trading_calendar import get_previous_trading_day
 
-        # 获取最近的交易日
-        latest_trading_day = get_previous_trading_day(date.today())
-        logger.info(f"最近的交易日为: {latest_trading_day}")
+        # 获取当前日期和时间
+        today = date.today()
+        now = datetime.now().time()
+        # 开盘时间：早上 9:15
+        market_open_time = time(9, 15, 0)
+        # 收盘时间：下午 15:00
+        market_close_time = time(15, 0, 0)
+
+        # 确定我们应该验证的目标日期
+        # 核心逻辑：
+        # 1. 如果还没到开盘时间 -> 上一个交易日
+        # 2. 如果在交易时间但还没收盘 -> 上一个交易日（因为历史数据通常收盘后才更新）
+        # 3. 如果已过收盘时间 -> 最近的交易日（今天）
+        if now < market_open_time:
+            # 还没开盘，目标日期设为上一个交易日
+            target_trading_day = get_previous_trading_day(today - timedelta(days=1))
+            logger.info(f"当前时间 {now} 早于开盘时间 {market_open_time}，目标日期设为上一个交易日: {target_trading_day}")
+        elif now < market_close_time:
+            # 在交易时间但还没收盘，历史数据还没有今天的，目标日期设为上一个交易日
+            target_trading_day = get_previous_trading_day(today - timedelta(days=1))
+            logger.info(f"当前时间 {now} 在交易时间但未收盘，目标日期设为上一个交易日: {target_trading_day}")
+        else:
+            # 已过收盘时间，目标日期设为最近的交易日
+            target_trading_day = get_previous_trading_day(today)
+            logger.info(f"当前时间 {now} 已过收盘时间 {market_close_time}，目标日期设为最近的交易日: {target_trading_day}")
 
         valid_data = None
         last_error = None
+        validated_once = False
 
         for i, fetcher in enumerate(self._fetchers):
             fetcher_name = fetcher.__class__.__name__
@@ -1017,24 +1040,37 @@ class DataFetcherManager:
                 if df is not None and not df.empty:
                     logger.info(f"[{fetcher_name}] 成功获取 {symbol} 指数历史数据")
 
-                    # 验证数据最新日期是否为最近交易日
+                    # 验证数据最新日期是否满足要求
                     if 'date' in df.columns:
                         latest_date_in_data = pd.to_datetime(df['date'].iloc[-1]).date()
                         logger.info(f"获取的 {symbol} 数据最新日期为: {latest_date_in_data}")
 
-                        if latest_date_in_data >= latest_trading_day:
+                        if latest_date_in_data >= target_trading_day:
                             # 数据有效，返回
-                            logger.info(f"数据验证通过：{symbol} 数据最新日期 {latest_date_in_data} >= 最近交易日 {latest_trading_day}")
+                            logger.info(f"数据验证通过：{symbol} 数据最新日期 {latest_date_in_data} >= 目标日期 {target_trading_day}")
                             valid_data = df
                             break
                         else:
-                            logger.warning(f"数据验证失败：{symbol} 数据最新日期 {latest_date_in_data} < 最近交易日 {latest_trading_day}")
-                            if i == len(self._fetchers) - 1:
+                            # 第一次验证失败时，检查是否需要调整目标日期
+                            if not validated_once and latest_date_in_data < target_trading_day:
+                                logger.warning(f"数据验证失败：{symbol} 数据最新日期 {latest_date_in_data} < 目标日期 {target_trading_day}")
+                                logger.info(f"历史数据可能还未更新，尝试将目标日期调整为数据最新日期的上一个交易日")
+                                # 将目标日期调整为数据最新日期的上一个交易日
+                                target_trading_day = get_previous_trading_day(latest_date_in_data)
+                                logger.info(f"目标日期已调整为: {target_trading_day}")
+                                validated_once = True
+                                # 重新验证
+                                if latest_date_in_data >= target_trading_day:
+                                    logger.info(f"数据验证通过（调整目标日期后）：{symbol} 数据最新日期 {latest_date_in_data} >= 目标日期 {target_trading_day}")
+                                    valid_data = df
+                                    break
+                            elif i == len(self._fetchers) - 1:
                                 # 如果是最后一个 fetcher，仍然用这个数据
                                 valid_data = df
                                 break
-                            # 否则，继续尝试下一个数据源
-                            last_error = f"[{fetcher_name}] 获取的数据不完整，最新日期 {latest_date_in_data} < {latest_trading_day}"
+                            else:
+                                # 继续尝试下一个数据源
+                                last_error = f"[{fetcher_name}] 获取的数据不完整，最新日期 {latest_date_in_data} < {target_trading_day}"
                     else:
                         # 没有 date 列，直接用这个数据
                         valid_data = df
@@ -1049,7 +1085,7 @@ class DataFetcherManager:
             return valid_data
 
         # 所有数据源都失败了
-        error_msg = f"所有数据源都无法获取 {symbol} 指数历史数据，或无法获取到最新交易日 {latest_trading_day} 的数据"
+        error_msg = f"所有数据源都无法获取 {symbol} 指数历史数据，或无法获取到目标日期 {target_trading_day} 的数据"
         if last_error:
             error_msg += f"。最后一个错误：{last_error}"
         

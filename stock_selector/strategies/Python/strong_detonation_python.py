@@ -68,19 +68,34 @@ class StrongDetonationSelectorStrategy(StockSelectorStrategy):
         return data.rolling(window=period).min()
 
     def _get_market_data(self) -> Optional[pd.DataFrame]:
-        """获取大盘数据（只使用缓存，不联网）"""
+        """获取大盘数据（智能时间窗策略）"""
         symbol = "sh000001"
 
         if StrongDetonationSelectorStrategy._market_data_cache is not None:
             return StrongDetonationSelectorStrategy._market_data_cache
-
+        
+        # 使用新的智能方法获取完整大盘数据
+        try:
+            from stock_selector.market_data_cache import MarketDataCache
+            complete_data = MarketDataCache.get_complete_index_data(
+                symbol, 
+                data_provider=self._data_provider
+            )
+            
+            if complete_data is not None:
+                StrongDetonationSelectorStrategy._market_data_cache = complete_data
+                logger.info(f"[强势起爆] 使用智能大盘数据，共 {len(complete_data)} 条")
+                return complete_data
+        except Exception as e:
+            logger.warning(f"[强势起爆] 获取智能大盘数据失败：{e}")
+        
+        # 回退到原来的缓存方法
         cached_data = MarketDataCache.load(symbol)
         if cached_data is not None:
             StrongDetonationSelectorStrategy._market_data_cache = cached_data
             return cached_data
         
-        # 只使用缓存，不联网获取
-        logger.warning(f"[强势起爆] 大盘数据缓存 {symbol} 不存在，且不联网获取")
+        logger.warning(f"[强势起爆] 大盘数据缓存 {symbol} 不存在")
         return None
 
     def _calculate_strong_detonation_indicators(

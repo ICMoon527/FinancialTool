@@ -171,7 +171,7 @@ class EfinanceFetcher(BaseFetcher):
     """
     
     name = "EfinanceFetcher"
-    priority = int(os.getenv("EFINANCE_PRIORITY", "-1"))  # 高优先级，包含换手率数据，仅次于 AkshareFetcher
+    priority = int(os.getenv("EFINANCE_PRIORITY", "3"))  # 降低优先级，避免获取大盘数据时失败浪费时间
     
     def __init__(self, sleep_min: float = 1.5, sleep_max: float = 3.0):
         """

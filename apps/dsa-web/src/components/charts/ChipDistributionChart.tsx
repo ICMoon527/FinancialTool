@@ -110,16 +110,23 @@ const ChipDistributionChart: React.FC<ChipDistributionChartProps> = ({
         textStyle: { color: '#fff', fontSize: 12 },
         formatter: (params: any) => {
           if (!params || params.length === 0) return '';
+          console.log('ChipDistributionChart tooltip params:', params);
+          console.log('ChipDistributionChart data:', data);
           const dataIndex = params[0].dataIndex;
           const price = priceBins[dataIndex];
-          const profit = profitVolumes[dataIndex] || 0;
-          const loss = lossVolumes[dataIndex] || 0;
-          const total = profit + loss;
+          const probabilityDensity = data?.chip_volumes?.[dataIndex] || 0;
+          const circulatingShares = data?.circulating_shares;
+          console.log('circulatingShares:', circulatingShares, 'probabilityDensity:', probabilityDensity);
+          const position = circulatingShares ? circulatingShares * probabilityDensity : 0;
+          const formatPosition = (val: number) => {
+            if (val >= 10000) {
+              return `${(val / 10000).toFixed(2)}万`;
+            }
+            return val.toFixed(0);
+          };
           return `
             <div style="font-weight: bold; margin-bottom: 4px;">价格: ${price.toFixed(2)}</div>
-            <div>持仓量: ${total >= 10000 ? ((total / 10000).toFixed(2) + '万') : total.toFixed(0)}</div>
-            <div style="color: #ef4444;">获利盘: ${total > 0 ? (profit / total * 100).toFixed(1) : 0}%</div>
-            <div style="color: #3b82f6;">套牢盘: ${total > 0 ? (loss / total * 100).toFixed(1) : 0}%</div>
+            <div>持仓量: ${formatPosition(position)}</div>
           `;
         }
       },

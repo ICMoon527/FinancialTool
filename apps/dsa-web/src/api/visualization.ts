@@ -65,6 +65,7 @@ export type ChipDistributionResponse = {
   avg_cost?: number;
   max_chip_price?: number;
   current_price?: number;
+  circulating_shares?: number;
 };
 
 export type VisualizationSearchRequest = {

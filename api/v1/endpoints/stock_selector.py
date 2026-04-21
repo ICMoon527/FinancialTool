@@ -32,7 +32,7 @@ router = APIRouter(tags=["Stock Selector"])
 
 def _update_market_data():
     """
-    更新大盘数据缓存
+    更新大盘数据缓存（支持智能时间窗策略）
     """
     try:
         logger.info("开始更新大盘数据缓存...")
@@ -42,14 +42,14 @@ def _update_market_data():
         
         data_fetcher = DataFetcherManager()
         
-        # 更新上证指数 (sh000001)
-        sh_data = data_fetcher.get_index_daily_data("sh000001")
+        # 更新上证指数 (sh000001) - 使用智能时间窗方法
+        sh_data = MarketDataCache.get_complete_index_data("sh000001", data_provider=data_fetcher)
         if sh_data is not None and not sh_data.empty:
             MarketDataCache.save("sh000001", sh_data)
             logger.info(f"上证指数缓存更新成功，共 {len(sh_data)} 条")
         
-        # 更新深证成指 (sz399001)
-        sz_data = data_fetcher.get_index_daily_data("sz399001")
+        # 更新深证成指 (sz399001) - 使用智能时间窗方法
+        sz_data = MarketDataCache.get_complete_index_data("sz399001", data_provider=data_fetcher)
         if sz_data is not None and not sz_data.empty:
             MarketDataCache.save("sz399001", sz_data)
             logger.info(f"深证成指缓存更新成功，共 {len(sz_data)} 条")

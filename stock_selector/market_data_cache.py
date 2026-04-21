@@ -136,3 +136,155 @@ class MarketDataCache:
                     temp_file.unlink()
                 except:
                     pass
+    
+    @classmethod
+    def _load_without_validation(cls, symbol: str) -> Optional[pd.DataFrame]:
+        """
+        从缓存文件加载数据，不进行日期严格验证（用于智能时间窗方法）
+        """
+        cache_file = cls._get_cache_file_path(symbol)
+        if not cache_file.exists():
+            return None
+        try:
+            with open(cache_file, "rb") as f:
+                data = pickle.load(f)
+            if data is not None and not data.empty and 'date' in data.columns:
+                return data
+            return None
+        except Exception as e:
+            logger.warning(f"[智能大盘数据] 加载缓存失败（宽松模式）: {e}")
+            cls._cleanup_corrupted_cache(cache_file)
+            return None
+    
+    @classmethod
+    def get_complete_index_data(cls, symbol: str, data_provider=None) -> Optional[pd.DataFrame]:
+        """
+        获取完整可用的大盘指数数据（智能时间窗策略）
+        
+        策略：
+        - 交易中（9:15-15:00）：用历史数据 + 实时大盘收盘价补充
+        - 收盘后：用完整历史数据
+        
+        Args:
+            symbol: 指数代码（sh000001 / sz399001）
+            data_provider: 数据提供者实例（可选，用于获取实时行情）
+        
+        Returns:
+            完整的大盘数据DataFrame
+        """
+        from datetime import date, datetime, time
+        from stock_selector.trading_calendar import get_previous_trading_day
+        
+        # 获取当前时间和日期
+        now = datetime.now()
+        today = date.today()
+        current_time = now.time()
+        
+        # 开盘时间和收盘时间
+        market_open = time(9, 15, 0)
+        market_close = time(15, 0, 0)
+        
+        # 先从缓存加载历史数据（使用宽松模式）
+        historical_data = cls._load_without_validation(symbol)
+        
+        if historical_data is None or historical_data.empty:
+            logger.warning(f"[智能大盘数据] 没有历史数据可用")
+            return None
+        
+        latest_date_in_data = pd.to_datetime(historical_data['date'].iloc[-1]).date()
+        logger.info(f"[智能大盘数据] 历史数据最新日期：{latest_date_in_data}")
+        
+        # 判断是否需要补充实时数据
+        need_realtime_supplement = False
+        
+        if current_time >= market_open and current_time < market_close:
+            # 交易时间内
+            target_trading_day = get_previous_trading_day(today - timedelta(days=1))
+            logger.info(f"[智能大盘数据] 当前时间 {current_time} 在交易时间内")
+            
+            if latest_date_in_data < today:
+                # 历史数据没有今天，需要补充
+                need_realtime_supplement = True
+                logger.info(f"[智能大盘数据] 需要补充今天（{today}）的实时数据")
+        elif current_time >= market_close:
+            # 收盘后
+            target_trading_day = get_previous_trading_day(today)
+            logger.info(f"[智能大盘数据] 当前时间 {current_time} 已过收盘时间")
+            
+            if latest_date_in_data < target_trading_day:
+                logger.warning(f"[智能大盘数据] 历史数据不完整，最新日期 {latest_date_in_data} < {target_trading_day}")
+        else:
+            # 开盘前
+            target_trading_day = get_previous_trading_day(today - timedelta(days=1))
+            logger.info(f"[智能大盘数据] 当前时间 {current_time} 在开盘前")
+        
+        # 如果不需要补充实时数据，直接返回历史数据
+        if not need_realtime_supplement:
+            logger.info(f"[智能大盘数据] 直接使用历史数据")
+            return historical_data
+        
+        # 需要补充实时数据
+        if data_provider is None:
+            logger.warning(f"[智能大盘数据] 需要补充实时数据但没有data_provider")
+            return historical_data
+        
+        # 获取实时大盘行情
+        try:
+            logger.info(f"[智能大盘数据] 尝试获取实时大盘行情")
+            main_indices = data_provider.get_main_indices(region="cn")
+            
+            if main_indices is None or len(main_indices) == 0:
+                logger.warning(f"[智能大盘数据] 获取实时行情失败，使用历史数据")
+                return historical_data
+            
+            # 找到对应的指数
+            target_index = None
+            for idx in main_indices:
+                if idx.get("code") == symbol:
+                    target_index = idx
+                    break
+            
+            if target_index is None:
+                logger.warning(f"[智能大盘数据] 没找到指数 {symbol} 的实时数据")
+                return historical_data
+            
+            # 获取实时价格
+            current_price = target_index.get("current")
+            if current_price is None:
+                logger.warning(f"[智能大盘数据] 实时数据没有价格")
+                return historical_data
+            
+            logger.info(f"[智能大盘数据] 实时指数点位：{current_price}")
+            
+            # 准备补充的数据
+            last_row = historical_data.iloc[-1].copy()
+            new_row = {
+                "date": today,
+                "open": last_row.get("close", current_price),
+                "high": max(last_row.get("close", current_price), current_price),
+                "low": min(last_row.get("close", current_price), current_price),
+                "close": current_price,
+                "volume": last_row.get("volume", 0),
+            }
+            
+            # 如果有成交额字段，也保留
+            if "amount" in last_row:
+                new_row["amount"] = last_row.get("amount", 0)
+            
+            # 检查今天的数据是否已经存在
+            if latest_date_in_data >= today:
+                logger.info(f"[智能大盘数据] 历史数据已经包含今天，不重复添加")
+                return historical_data
+            
+            # 追加新数据
+            complete_data = pd.concat([
+                historical_data,
+                pd.DataFrame([new_row])
+            ], ignore_index=True)
+            
+            logger.info(f"[智能大盘数据] 成功补充实时数据，现在共 {len(complete_data)} 条")
+            return complete_data
+            
+        except Exception as e:
+            logger.warning(f"[智能大盘数据] 获取实时数据失败：{e}，使用历史数据")
+            return historical_data

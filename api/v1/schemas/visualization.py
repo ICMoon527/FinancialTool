@@ -77,6 +77,7 @@ class ChipDistributionResponse(BaseModel):
     avg_cost: Optional[float] = Field(None, description="平均成本价")
     max_chip_price: Optional[float] = Field(None, description="筹码集中度最高价格")
     current_price: Optional[float] = Field(None, description="当前价格")
+    circulating_shares: Optional[float] = Field(None, description="流通股本")
 
 
 class VisualizationSearchRequest(BaseModel):

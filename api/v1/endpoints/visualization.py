@@ -411,7 +411,8 @@ def get_chip_distribution(
             loss_volumes=result['loss_volumes'],
             avg_cost=result['avg_cost'],
             max_chip_price=result['max_chip_price'],
-            current_price=result['current_price']
+            current_price=result['current_price'],
+            circulating_shares=result.get('circulating_shares')
         )
 
     except HTTPException:
