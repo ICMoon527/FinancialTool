@@ -226,6 +226,20 @@ class MarketDataCache:
             
             if latest_date_in_data < target_trading_day:
                 logger.warning(f"[智能大盘数据] 历史数据不完整，最新日期 {latest_date_in_data} < {target_trading_day}")
+                # 尝试获取最新的完整历史数据
+                if data_provider is not None:
+                    try:
+                        logger.info(f"[智能大盘数据] 尝试获取最新的完整历史数据...")
+                        complete_data = data_provider.get_index_daily_data(symbol)
+                        if complete_data is not None and not complete_data.empty:
+                            new_latest_date = pd.to_datetime(complete_data['date'].iloc[-1]).date()
+                            if new_latest_date >= target_trading_day:
+                                logger.info(f"[智能大盘数据] 成功获取最新历史数据，最新日期：{new_latest_date}")
+                                return complete_data
+                            else:
+                                logger.warning(f"[智能大盘数据] 获取的历史数据仍然不完整，最新日期：{new_latest_date}")
+                    except Exception as e:
+                        logger.warning(f"[智能大盘数据] 获取最新历史数据失败：{e}")
         else:
             # 开盘前
             target_trading_day = get_previous_trading_day(today - timedelta(days=1))

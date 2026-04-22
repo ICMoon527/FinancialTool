@@ -237,7 +237,55 @@ class AkshareFetcher(BaseFetcher):
         # 执行随机 jitter 休眠
         self.random_sleep(self.sleep_min, self.sleep_max)
         self._last_request_time = time.time()
-    
+
+    def get_stock_name(self, stock_code: str) -> Optional[str]:
+        """
+        获取股票名称
+
+        使用 Akshare 的 stock_individual_info_em 接口获取股票基本信息
+
+        Args:
+            stock_code: 股票代码
+
+        Returns:
+            股票名称，失败返回 None
+        """
+        # 检查缓存
+        if hasattr(self, '_stock_name_cache') and stock_code in self._stock_name_cache:
+            return self._stock_name_cache[stock_code]
+
+        # 初始化缓存
+        if not hasattr(self, '_stock_name_cache'):
+            self._stock_name_cache = {}
+
+        # 美股、港股不支持
+        if _is_us_code(stock_code) or _is_hk_code(stock_code):
+            return None
+
+        try:
+            import akshare as ak
+
+            self._enforce_rate_limit()
+
+            # 使用东方财富接口获取股票基本信息
+            df = ak.stock_individual_info_em(symbol=stock_code)
+
+            if df is not None and not df.empty:
+                # 返回的 DataFrame 包含：股票代码、股票简称、曾用名、所属行业、所属概念、上市时间等
+                # 查找"股票简称"对应的值
+                name_row = df[df['item'] == '股票简称']
+                if not name_row.empty:
+                    name = str(name_row['value'].values[0]).strip()
+                    if name:
+                        self._stock_name_cache[stock_code] = name
+                        logger.debug(f"Akshare 获取股票名称成功: {stock_code} -> {name}")
+                        return name
+
+        except Exception as e:
+            logger.debug(f"Akshare 获取股票名称失败 {stock_code}: {e}")
+
+        return None
+
     @retry(
         stop=stop_after_attempt(3),  # 最多重试3次
         wait=wait_exponential(multiplier=1, min=2, max=30),  # 指数退避：2, 4, 8... 最大30秒
