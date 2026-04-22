@@ -854,24 +854,23 @@ class DataFetcherManager:
         """
         获取股票中文名称（自动切换数据源）
         
-        尝试从多个数据源获取股票名称：
-        1. 先从实时行情缓存中获取（如果有，且 skip_realtime=False）
-        2. 依次尝试各个数据源的 get_stock_name 方法
-        3. 最后尝试让大模型通过搜索获取（需要外部调用）
+        尝试从多个数据源获取股票名称，优先级从高到低：
+        1. 从内存缓存 _stock_name_cache 中查找
+        2. 从 Stock Pool（数据库）中查找（效率最高）
+        3. 从实时行情中获取（最快，仅在 skip_realtime=False 时）
+        4. 依次尝试各个数据源的 get_stock_name 方法
         
         Args:
             stock_code: 股票代码
             skip_realtime: 是否跳过从实时行情获取（避免不必要的API调用）
             
         Returns:
-            股票中文名称，所有数据源都失败则返回 None
+            股票中文名称，所有数据源都失败则返回空字符串
         """
         # Normalize code (strip SH/SZ prefix etc.)
         stock_code = normalize_stock_code(stock_code)
-        if stock_code in STOCK_NAME_MAP:
-            return STOCK_NAME_MAP[stock_code]
 
-        # 1. 先检查缓存
+        # 1. 先检查内存缓存
         if hasattr(self, '_stock_name_cache') and stock_code in self._stock_name_cache:
             return self._stock_name_cache[stock_code]
         
@@ -879,7 +878,30 @@ class DataFetcherManager:
         if not hasattr(self, '_stock_name_cache'):
             self._stock_name_cache = {}
         
-        # 2. 尝试从实时行情中获取（最快）- 仅在 skip_realtime=False 时
+        # 2. 优先从 Stock Pool（数据库）中查找 - 效率最高
+        try:
+            from stock_selector.stock_pool import StockPoolItem
+            from src.storage import get_db
+            
+            db = get_db()
+            with db.get_session() as session:
+                from sqlalchemy import select
+                
+                result = session.execute(
+                    select(StockPoolItem.name)
+                    .where(StockPoolItem.code == stock_code)
+                ).scalar_one_or_none()
+                
+                if result:
+                    # 找到并缓存
+                    self._stock_name_cache[stock_code] = result
+                    logger.debug(f"[股票名称] 从Stock Pool获取: {stock_code} -> {result}")
+                    return result
+        except Exception as e:
+            logger.debug(f"[股票名称] 从Stock Pool获取失败: {e}")
+            # 继续尝试其他方式
+        
+        # 3. 尝试从实时行情中获取（最快）- 仅在 skip_realtime=False 时
         if not skip_realtime:
             quote = self.get_realtime_quote(stock_code)
             if quote and hasattr(quote, 'name') and quote.name:
@@ -888,7 +910,7 @@ class DataFetcherManager:
                 logger.info(f"[股票名称] 从实时行情获取: {stock_code} -> {name}")
                 return name
         
-        # 3. 依次尝试各个数据源
+        # 4. 依次尝试各个数据源
         for fetcher in self._fetchers:
             if hasattr(fetcher, 'get_stock_name'):
                 try:
@@ -901,7 +923,7 @@ class DataFetcherManager:
                     logger.debug(f"[股票名称] {fetcher.name} 获取失败: {e}")
                     continue
         
-        # 4. 所有数据源都失败
+        # 5. 所有数据源都失败
         logger.warning(f"[股票名称] 所有数据源都无法获取 {stock_code} 的名称")
         return ""
     

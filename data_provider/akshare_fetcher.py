@@ -242,7 +242,7 @@ class AkshareFetcher(BaseFetcher):
         """
         获取股票名称
 
-        使用 Akshare 的 stock_individual_info_em 接口获取股票基本信息
+        使用 Akshare 的多个接口尝试获取股票基本信息
 
         Args:
             stock_code: 股票代码
@@ -267,22 +267,51 @@ class AkshareFetcher(BaseFetcher):
 
             self._enforce_rate_limit()
 
-            # 使用东方财富接口获取股票基本信息
-            df = ak.stock_individual_info_em(symbol=stock_code)
+            # 尝试 1: 使用 stock_individual_info_em
+            try:
+                df = ak.stock_individual_info_em(symbol=stock_code)
+                if df is not None and not df.empty:
+                    name_row = df[df['item'] == '股票简称']
+                    if not name_row.empty:
+                        name = str(name_row['value'].values[0]).strip()
+                        if name:
+                            self._stock_name_cache[stock_code] = name
+                            logger.debug(f"Akshare 获取股票名称成功 (info_em: {stock_code} -> {name}")
+                            return name
+            except Exception as e:
+                logger.debug(f"  info_em 失败: {e}")
 
-            if df is not None and not df.empty:
-                # 返回的 DataFrame 包含：股票代码、股票简称、曾用名、所属行业、所属概念、上市时间等
-                # 查找"股票简称"对应的值
-                name_row = df[df['item'] == '股票简称']
-                if not name_row.empty:
-                    name = str(name_row['value'].values[0]).strip()
-                    if name:
-                        self._stock_name_cache[stock_code] = name
-                        logger.debug(f"Akshare 获取股票名称成功: {stock_code} -> {name}")
-                        return name
+            # 尝试 2: 从实时行情中获取
+            try:
+                # 获取全部实时行情
+                df_spot = ak.stock_zh_a_spot_em()
+                if df_spot is not None and not df_spot.empty:
+                    stock_info = df_spot[df_spot['代码'] == stock_code]
+                    if not stock_info.empty:
+                        name = str(stock_info['名称'].values[0]).strip()
+                        if name:
+                            self._stock_name_cache[stock_code] = name
+                            logger.debug(f"Akshare 获取股票名称成功 (spot_em: {stock_code} -> {name}")
+                            return name
+            except Exception as e:
+                logger.debug(f"  spot_em 失败: {e}")
+
+            # 尝试 3: stock_individual_basic_info_xq
+            try:
+                xq_code = f"SH{stock_code}" if stock_code.startswith('6') else f"SZ{stock_code}"
+                df_xq = ak.stock_individual_basic_info_xq(symbol=xq_code)
+                if df_xq is not None and not df_xq.empty:
+                    if '股票名称' in df_xq.columns:
+                        name = str(df_xq['股票名称'].iloc[0]).strip()
+                        if name:
+                            self._stock_name_cache[stock_code] = name
+                            logger.debug(f"Akshare 获取股票名称成功 (xq: {stock_code} -> {name}")
+                            return name
+            except Exception as e:
+                logger.debug(f"  xq 失败: {e}")
 
         except Exception as e:
-            logger.debug(f"Akshare 获取股票名称失败 {stock_code}: {e}")
+            logger.warning(f"Akshare 获取股票名称失败 {stock_code}: {e}")
 
         return None
 
