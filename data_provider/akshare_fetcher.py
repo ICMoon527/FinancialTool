@@ -1628,9 +1628,9 @@ class AkshareFetcher(BaseFetcher):
         """
         获取板块涨跌榜
 
-        数据源优先级：
-        1. 东财接口 (ak.stock_board_industry_name_em)
-        2. 新浪接口 (ak.stock_sector_spot)
+        数据源：
+        新浪接口 (ak.stock_sector_spot)
+        （东财接口已禁用，因为经常连接失败）
         
         Args:
             n: 返回前n个和后n个（当 return_all=False 时使用）
@@ -1638,70 +1638,7 @@ class AkshareFetcher(BaseFetcher):
         """
         import akshare as ak
 
-        # 优先东财接口
-        try:
-            self._set_random_user_agent()
-            self._enforce_rate_limit()
-
-            logger.info("[API调用] ak.stock_board_industry_name_em() 获取板块排行...")
-            df = ak.stock_board_industry_name_em()
-            if df is not None and not df.empty:
-                change_col = '涨跌幅'
-                if change_col in df.columns:
-                    df[change_col] = pd.to_numeric(df[change_col], errors='coerce')
-                    df = df.dropna(subset=[change_col])
-                    
-                    # 按涨跌幅排序
-                    df_sorted = df.sort_values(by=change_col, ascending=False)
-
-                    if return_all:
-                        # 返回所有板块
-                        all_sectors = []
-                        for _, row in df_sorted.iterrows():
-                            up_count = int(row.get('上涨家数', 0))
-                            down_count = int(row.get('下跌家数', 0))
-                            stock_count = up_count + down_count
-                            all_sectors.append({
-                                'name': row['板块名称'], 
-                                'change_pct': row[change_col],
-                                'stock_count': stock_count,
-                                'limit_up_count': 0
-                            })
-                        # 返回所有板块作为top_sectors，bottom_sectors为空
-                        return all_sectors, []
-                    else:
-                        # 只返回前n和后n
-                        top = df_sorted.head(n)
-                        top_sectors = []
-                        for _, row in top.iterrows():
-                            up_count = int(row.get('上涨家数', 0))
-                            down_count = int(row.get('下跌家数', 0))
-                            stock_count = up_count + down_count
-                            top_sectors.append({
-                                'name': row['板块名称'], 
-                                'change_pct': row[change_col],
-                                'stock_count': stock_count,
-                                'limit_up_count': 0
-                            })
-
-                        bottom = df_sorted.tail(n)
-                        bottom_sectors = []
-                        for _, row in bottom.iterrows():
-                            up_count = int(row.get('上涨家数', 0))
-                            down_count = int(row.get('下跌家数', 0))
-                            stock_count = up_count + down_count
-                            bottom_sectors.append({
-                                'name': row['板块名称'], 
-                                'change_pct': row[change_col],
-                                'stock_count': stock_count,
-                                'limit_up_count': 0
-                            })
-
-                        return top_sectors, bottom_sectors
-        except Exception as e:
-            logger.warning(f"[Akshare] 东财接口获取板块排行失败: {e}，尝试新浪接口")
-
-        # 东财失败后，尝试新浪接口
+        # 直接使用新浪接口（跳过东财接口，因为经常连接失败）
         try:
             self._set_random_user_agent()
             self._enforce_rate_limit()

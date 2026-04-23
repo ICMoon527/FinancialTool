@@ -42,17 +42,15 @@ def _update_market_data():
         
         data_fetcher = DataFetcherManager()
         
-        # 更新上证指数 (sh000001) - 使用智能时间窗方法
+        # 更新上证指数 (sh000001) - 使用智能时间窗方法（会自动保存缓存）
         sh_data = MarketDataCache.get_complete_index_data("sh000001", data_provider=data_fetcher)
         if sh_data is not None and not sh_data.empty:
-            MarketDataCache.save("sh000001", sh_data)
-            logger.info(f"上证指数缓存更新成功，共 {len(sh_data)} 条")
+            logger.info(f"上证指数数据获取成功，共 {len(sh_data)} 条")
         
-        # 更新深证成指 (sz399001) - 使用智能时间窗方法
+        # 更新深证成指 (sz399001) - 使用智能时间窗方法（会自动保存缓存）
         sz_data = MarketDataCache.get_complete_index_data("sz399001", data_provider=data_fetcher)
         if sz_data is not None and not sz_data.empty:
-            MarketDataCache.save("sz399001", sz_data)
-            logger.info(f"深证成指缓存更新成功，共 {len(sz_data)} 条")
+            logger.info(f"深证成指数据获取成功，共 {len(sz_data)} 条")
         
         logger.info("大盘数据缓存更新完成！")
     except Exception as e:
