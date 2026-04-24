@@ -13,11 +13,29 @@
 import logging
 import traceback
 import uuid
-from typing import Callable, Optional
+from typing import Callable, Optional, Any
 
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
+import json
+from api.utils.json_encoder import NumpyJSONEncoder, jsonable_encoder_with_numpy
+
+
+class CustomJSONResponse(JSONResponse):
+    """
+    自定义 JSONResponse，支持 numpy 数据类型序列化
+    """
+    def render(self, content: Any) -> bytes:
+        processed_content = jsonable_encoder_with_numpy(content)
+        return json.dumps(
+            processed_content,
+            ensure_ascii=False,
+            allow_nan=False,
+            indent=None,
+            separators=(",", ":"),
+            cls=NumpyJSONEncoder,
+        ).encode("utf-8")
 
 logger = logging.getLogger(__name__)
 
@@ -88,9 +106,9 @@ class ErrorHandlerMiddleware(BaseHTTPMiddleware):
                 request_id=request_id
             )
             
-            return JSONResponse(
+            return CustomJSONResponse(
                 status_code=500,
-                content=error_resp.model_dump()
+                content=error_resp.model_dump(),
             )
 
 
@@ -114,7 +132,7 @@ def add_error_handlers(app) -> None:
         
         # 如果 detail 已经是标准格式的 dict，直接使用
         if isinstance(exc.detail, dict) and "code" in exc.detail and "error" in exc.detail:
-            return JSONResponse(
+            return CustomJSONResponse(
                 status_code=exc.status_code,
                 content=exc.detail,
                 headers={"X-Request-ID": request_id}
@@ -128,7 +146,7 @@ def add_error_handlers(app) -> None:
             request_id=request_id
         )
         
-        return JSONResponse(
+        return CustomJSONResponse(
             status_code=exc.status_code,
             content=error_resp.model_dump(),
             headers={"X-Request-ID": request_id}
@@ -147,7 +165,7 @@ def add_error_handlers(app) -> None:
             request_id=request_id
         )
         
-        return JSONResponse(
+        return CustomJSONResponse(
             status_code=422,
             content=error_resp.model_dump(),
             headers={"X-Request-ID": request_id}
@@ -172,7 +190,7 @@ def add_error_handlers(app) -> None:
             request_id=request_id
         )
         
-        return JSONResponse(
+        return CustomJSONResponse(
             status_code=500,
             content=error_resp.model_dump(),
             headers={"X-Request-ID": request_id}

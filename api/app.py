@@ -19,18 +19,37 @@ import os
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Any
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+import json
+from api.utils.json_encoder import NumpyJSONEncoder, jsonable_encoder_with_numpy
 
 from api.v1 import api_v1_router
 from api.middlewares.auth import add_auth_middleware
 from api.middlewares.error_handler import add_error_handlers
 from api.v1.schemas.common import HealthResponse
 from src.services.system_config_service import SystemConfigService
+
+
+class CustomJSONResponse(JSONResponse):
+    """
+    自定义 JSONResponse，支持 numpy 数据类型序列化
+    """
+    def render(self, content: Any) -> bytes:
+        # 先使用我们的编码器处理内容
+        processed_content = jsonable_encoder_with_numpy(content)
+        return json.dumps(
+            processed_content,
+            ensure_ascii=False,
+            allow_nan=False,
+            indent=None,
+            separators=(",", ":"),
+            cls=NumpyJSONEncoder,
+        ).encode("utf-8")
 
 
 @asynccontextmanager
@@ -72,6 +91,7 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
         ),
         version="1.0.0",
         lifespan=app_lifespan,
+        default_response_class=CustomJSONResponse,
     )
     
     # ============================================================
@@ -180,7 +200,6 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
             app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
         
         # SPA 路由回退 - 使用自定义 404 处理器
-        from fastapi.responses import JSONResponse
         
         @app.exception_handler(404)
         async def custom_404_handler(request: Request, exc):
@@ -189,7 +208,7 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
             
             # 如果是 API 路径，返回标准 404 JSON
             if path.startswith("/api/"):
-                return JSONResponse(
+                return CustomJSONResponse(
                     status_code=404,
                     content={"detail": "Not Found"}
                 )

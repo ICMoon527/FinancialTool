@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Depends
+from api.utils.json_encoder import jsonable_encoder_with_numpy
 
 from api.v1.schemas.stock_selector import (
     StrategyInfo,
@@ -100,10 +101,10 @@ def _convert_stock_candidate_to_info(candidate, active_strategy_ids: list[str], 
         StrategyMatchInfo(
             strategy_id=m.strategy_id,
             strategy_name=m.strategy_name,
-            matched=m.matched,
-            score=m.score,
+            matched=bool(m.matched),  # 确保转换为普通 bool
+            score=float(m.score),    # 确保转换为普通 float
             reason=m.reason,
-            match_details=m.match_details,
+            match_details=jsonable_encoder_with_numpy(m.match_details),  # 处理 match_details 中的 numpy 类型
         )
         for m in candidate.strategy_matches
     ]
@@ -118,12 +119,12 @@ def _convert_stock_candidate_to_info(candidate, active_strategy_ids: list[str], 
     return StockCandidateInfo(
         stock_code=candidate.code,
         stock_name=candidate.name,
-        current_price=candidate.current_price,
-        overall_score=candidate.match_score,
+        current_price=float(candidate.current_price),  # 确保转换为普通 float
+        overall_score=float(candidate.match_score),    # 确保转换为普通 float
         strategy_matches=match_infos,
         created_at=candidate.created_at,
         sectors=sectors,
-        extra_data=candidate.extra_data,
+        extra_data=jsonable_encoder_with_numpy(candidate.extra_data),  # 处理 extra_data 中的 numpy 类型
     )
 
 
