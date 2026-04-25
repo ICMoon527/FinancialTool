@@ -19,10 +19,32 @@ import type {
 // ============ API ============
 
 export const backtestApi = {
-  /**
-   * 获取策略列表
-   */
-  getStrategies: async (): Promise<StrategyInfo[]> => {
+    /**
+     * 获取回测默认配置
+     */
+    getBacktestConfig: async (): Promise<{
+        start_date?: string;
+        end_date?: string;
+        max_positions?: number;
+    }> => {
+        const response = await apiClient.get<{
+            success: boolean;
+            config: {
+                start_date?: string;
+                end_date?: string;
+                max_positions?: number;
+            };
+        }>('/api/v1/backtest/config');
+        if (response.data.success) {
+            return response.data.config;
+        }
+        return {};
+    },
+
+    /**
+     * 获取策略列表
+     */
+    getStrategies: async (): Promise<StrategyInfo[]> => {
     const response = await apiClient.get<Record<string, unknown>>(
       '/api/v1/backtest/strategies',
     );

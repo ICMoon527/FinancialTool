@@ -132,20 +132,37 @@ const BacktestPage: React.FC = () => {
     }
   }, [selectedStrategy, addLog]);
 
-  // 初始化日期
-  useEffect(() => {
-    const today = new Date();
-    const oneYearAgo = new Date();
-    oneYearAgo.setFullYear(today.getFullYear() - 1);
-
-    setEndDate(today.toISOString().split('T')[0]);
-    setStartDate(oneYearAgo.toISOString().split('T')[0]);
-  }, []);
-
-  // 加载策略列表
-  useEffect(() => {
-    fetchStrategies();
-  }, [fetchStrategies]);
+  // 加载默认配置和策略列表
+    useEffect(() => {
+        const loadDefaults = async () => {
+            try {
+                const config = await backtestApi.getBacktestConfig();
+                
+                // 使用配置文件的值，或回退到默认值
+                if (config.start_date) {
+                    setStartDate(config.start_date);
+                }
+                if (config.end_date) {
+                    setEndDate(config.end_date);
+                }
+                if (config.max_positions !== undefined) {
+                    setMaxPositions(config.max_positions);
+                }
+            } catch (error) {
+                console.error('加载默认配置失败:', error);
+                // 加载失败时使用默认值
+                const today = new Date();
+                const oneYearAgo = new Date();
+                oneYearAgo.setFullYear(today.getFullYear() - 1);
+                setEndDate(today.toISOString().split('T')[0]);
+                setStartDate(oneYearAgo.toISOString().split('T')[0]);
+                setMaxPositions(3);
+            }
+        };
+        
+        loadDefaults();
+        fetchStrategies();
+    }, [fetchStrategies]);
 
   // 组件挂载
   useEffect(() => {

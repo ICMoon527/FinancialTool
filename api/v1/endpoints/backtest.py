@@ -78,6 +78,47 @@ def log_generator():
 # ============ 策略回测端点 ============
 
 @router.get(
+    "/config",
+    summary="获取回测默认配置",
+    description="获取 backtest_config.yaml 中的默认配置",
+)
+def get_backtest_config():
+    """
+    获取回测默认配置
+    """
+    try:
+        from pathlib import Path
+        import yaml
+        
+        project_root = Path(__file__).parent.parent.parent
+        config_path = project_root / "stock_selector" / "backtest_config.yaml"
+        
+        if config_path.exists():
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = yaml.safe_load(f)
+                
+            # 返回前端需要的配置项
+            return {
+                "success": True,
+                "config": {
+                    "start_date": config.get("start_date"),
+                    "end_date": config.get("end_date"),
+                    "max_positions": config.get("max_positions"),
+                }
+            }
+        else:
+            return {
+                "success": False,
+                "message": "配置文件不存在"
+            }
+    except Exception as exc:
+        logger.error(f"获取配置失败: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"获取配置失败: {str(exc)}"},
+        )
+
+@router.get(
     "/strategies",
     response_model=StrategyListResponse,
     responses={
