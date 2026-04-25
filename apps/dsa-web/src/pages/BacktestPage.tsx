@@ -178,6 +178,7 @@ const BacktestPage: React.FC = () => {
     }
     
     try {
+      console.log('正在获取任务状态:', currentTaskId);
       const response = await backtestApi.getBacktestTaskStatus(currentTaskId);
       
       // 再次检查组件是否已卸载，避免在组件卸载后设置状态
@@ -185,10 +186,12 @@ const BacktestPage: React.FC = () => {
         return;
       }
       
+      console.log('任务状态响应:', response);
       setTaskStatus(response.task);
 
       if (response.task) {
         const status = response.task.status;
+        console.log('任务状态:', status);
         
         // 任务结束
         if (status === 'completed' || status === 'failed' || status === 'stopped') {
@@ -218,6 +221,7 @@ const BacktestPage: React.FC = () => {
       }
     } catch (err) {
       console.error('获取任务状态失败:', err);
+      addLog(`获取任务状态失败: ${err instanceof Error ? err.message : String(err)}`);
     }
   }, [addLog]);
 
@@ -480,14 +484,11 @@ const BacktestPage: React.FC = () => {
               
               {/* 绩效指标 */}
               {metrics && (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {Object.entries(metrics).map(([category, categoryMetrics]) => (
-                    <MetricsCard
-                      key={category}
-                      metrics={categoryMetrics as Record<string, unknown>}
-                      title={category}
-                    />
-                  ))}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <MetricsCard
+                    metrics={metrics}
+                    title="策略绩效"
+                  />
                 </div>
               )}
 
@@ -496,6 +497,8 @@ const BacktestPage: React.FC = () => {
                 <BacktestChartsContainer
                   loading={isRunning && !resultData}
                   error={runError}
+                  results={resultData?.results}
+                  metrics={resultData?.metrics}
                   onRetry={() => {
                     if (taskId) {
                       pollTaskStatus(taskId);

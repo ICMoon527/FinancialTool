@@ -180,6 +180,8 @@ def run_strategy_backtest_async(
             start_date=request.start_date,
             end_date=request.end_date,
             max_positions=request.max_positions,
+            on_complete=lambda: _update_running_state(False),
+            on_error=lambda: _update_running_state(False),
         )
         
         return StrategyBacktestRunAsyncResponse(
@@ -195,6 +197,15 @@ def run_strategy_backtest_async(
             status_code=500,
             detail={"error": "internal_error", "message": f"异步回测任务提交失败: {str(exc)}"},
         )
+
+
+def _update_running_state(is_running: bool):
+    """更新全局运行状态"""
+    global _is_backtest_running
+    _is_backtest_running = is_running
+    if not is_running:
+        capturer = get_log_capturer()
+        capturer.stop_capture()
 
 
 @router.get(

@@ -79,3 +79,4 @@ static/
 /apps/dsa-desktop/node_modules/
 .trae/
 .github/
+strategy_backtest_results

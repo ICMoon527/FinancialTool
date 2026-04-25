@@ -214,6 +214,8 @@ class StrategyBacktestService:
         start_date_obj: date,
         end_date_obj: date,
         max_positions: int,
+        on_complete: Optional[callable] = None,
+        on_error: Optional[callable] = None,
     ) -> None:
         """
         在后台线程中运行回测
@@ -225,6 +227,8 @@ class StrategyBacktestService:
             start_date_obj: 开始日期
             end_date_obj: 结束日期
             max_positions: 最大持仓数
+            on_complete: 完成回调
+            on_error: 错误回调
         """
         task_manager = get_task_manager()
         
@@ -275,6 +279,13 @@ class StrategyBacktestService:
             
             logger.info(f"后台回测任务完成: {task_id}")
             
+            # 调用完成回调
+            if on_complete:
+                try:
+                    on_complete()
+                except Exception as e:
+                    logger.error(f"完成回调执行失败: {e}")
+            
         except Exception as e:
             logger.error(f"后台回测任务失败: {task_id}, 错误: {e}", exc_info=True)
             task_manager.update_task_status(
@@ -282,6 +293,13 @@ class StrategyBacktestService:
                 BacktestTaskStatus.FAILED,
                 error=str(e)
             )
+            
+            # 调用错误回调
+            if on_error:
+                try:
+                    on_error()
+                except Exception as e_call:
+                    logger.error(f"错误回调执行失败: {e_call}")
     
     def run_backtest_async(
         self,
@@ -289,6 +307,8 @@ class StrategyBacktestService:
         start_date: str,
         end_date: str,
         max_positions: int,
+        on_complete: Optional[callable] = None,
+        on_error: Optional[callable] = None,
     ) -> str:
         """
         异步运行策略回测，立即返回task_id
@@ -298,6 +318,8 @@ class StrategyBacktestService:
             start_date: 开始日期 (YYYY-MM-DD)
             end_date: 结束日期 (YYYY-MM-DD)
             max_positions: 最大持仓数
+            on_complete: 完成回调
+            on_error: 错误回调
             
         Returns:
             task_id
@@ -317,6 +339,8 @@ class StrategyBacktestService:
                 BacktestTaskStatus.FAILED,
                 error=f"日期格式错误: {e}"
             )
+            if on_error:
+                on_error()
             return task_id
         
         # 获取策略
@@ -329,6 +353,8 @@ class StrategyBacktestService:
                 BacktestTaskStatus.FAILED,
                 error=error_msg
             )
+            if on_error:
+                on_error()
             return task_id
         
         # 获取股票池
@@ -344,6 +370,8 @@ class StrategyBacktestService:
                 start_date_obj,
                 end_date_obj,
                 max_positions,
+                on_complete,
+                on_error,
             ),
             daemon=True
         )

@@ -853,8 +853,6 @@ class TushareDataDownloader:
         config = get_config()
         if efinance_batch_size is None:
             efinance_batch_size = config.efinance_batch_size
-        if days is None:
-            days = config.update_data_default_days
         
         if stock_codes is None:
             stock_codes = get_all_stock_codes()

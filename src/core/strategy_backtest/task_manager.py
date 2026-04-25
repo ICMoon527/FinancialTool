@@ -49,14 +49,35 @@ class BacktestTask:
         self._lock = threading.Lock()
     
     def to_dict(self) -> Dict[str, Any]:
-        """转换为字典"""
+        """转换为字典 - 不包含不可序列化的对象"""
+        # 确保 result 是可序列化的
+        def make_serializable(value):
+            import numpy as np
+            if isinstance(value, np.floating):
+                return float(value)
+            if isinstance(value, np.integer):
+                return int(value)
+            if isinstance(value, float) and not np.isfinite(value):
+                return None
+            if isinstance(value, dict):
+                return {k: make_serializable(v) for k, v in value.items()}
+            if isinstance(value, list):
+                return [make_serializable(v) for v in value]
+            if isinstance(value, tuple):
+                return tuple(make_serializable(v) for v in value)
+            return value
+        
+        result = self.result
+        if result is not None:
+            result = make_serializable(result)
+        
         return {
             "task_id": self.task_id,
             "status": self.status.value,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
-            "result": self.result,
+            "result": result,
             "error": self.error
         }
 

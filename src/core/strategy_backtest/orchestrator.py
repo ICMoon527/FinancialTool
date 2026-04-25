@@ -584,9 +584,29 @@ class BacktestOrchestrator:
         logger.info("完整回测流程完成")
         logger.info("=" * 50)
 
+        # 确保所有数据可被 JSON 序列化
+        def make_serializable(value):
+            import numpy as np
+            if isinstance(value, np.floating):
+                return float(value)
+            if isinstance(value, np.integer):
+                return int(value)
+            if isinstance(value, float) and not np.isfinite(value):
+                return None
+            if isinstance(value, dict):
+                return {k: make_serializable(v) for k, v in value.items()}
+            if isinstance(value, list):
+                return [make_serializable(v) for v in value]
+            if isinstance(value, tuple):
+                return tuple(make_serializable(v) for v in value)
+            return value
+        
+        # 序列化 metrics
+        serializable_metrics = make_serializable(metrics)
+        
         return {
             "results": results,
-            "metrics": metrics,
+            "metrics": serializable_metrics,
             "reports": reports,
         }
 

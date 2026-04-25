@@ -117,8 +117,8 @@ stock_pool: []
 # - take_profit_pct: 止盈百分比（例如：0.10 表示 10% 止盈）
 # - 优先级：如果设置了百分比，则使用百分比计算止盈止损价；
 #   如果没有设置（为null），则使用AI分析生成的具体价格
-stop_loss_pct: 0.05
-take_profit_pct: 0.15
+stop_loss_pct: 0.03
+take_profit_pct: 0.20
 # 最高持仓数
 max_positions: 1
-max_holding_days: 10
+max_holding_days: 1000
