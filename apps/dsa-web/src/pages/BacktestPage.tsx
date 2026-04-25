@@ -133,36 +133,39 @@ const BacktestPage: React.FC = () => {
   }, [selectedStrategy, addLog]);
 
   // 加载默认配置和策略列表
-    useEffect(() => {
-        const loadDefaults = async () => {
-            try {
-                const config = await backtestApi.getBacktestConfig();
-                
-                // 使用配置文件的值，或回退到默认值
-                if (config.start_date) {
-                    setStartDate(config.start_date);
-                }
-                if (config.end_date) {
-                    setEndDate(config.end_date);
-                }
-                if (config.max_positions !== undefined) {
-                    setMaxPositions(config.max_positions);
-                }
-            } catch (error) {
-                console.error('加载默认配置失败:', error);
-                // 加载失败时使用默认值
-                const today = new Date();
-                const oneYearAgo = new Date();
-                oneYearAgo.setFullYear(today.getFullYear() - 1);
-                setEndDate(today.toISOString().split('T')[0]);
-                setStartDate(oneYearAgo.toISOString().split('T')[0]);
-                setMaxPositions(3);
-            }
-        };
+  useEffect(() => {
+    const loadDefaults = async () => {
+      try {
+        console.log('正在加载回测配置...');
+        const config = await backtestApi.getBacktestConfig();
+        console.log('获取到的配置:', config);
         
-        loadDefaults();
-        fetchStrategies();
-    }, [fetchStrategies]);
+        // 使用配置文件的值，或回退到默认值
+        if (config.start_date) {
+          setStartDate(config.start_date);
+        }
+        if (config.end_date) {
+          setEndDate(config.end_date);
+        }
+        if (config.max_positions !== undefined) {
+          setMaxPositions(config.max_positions);
+        }
+        console.log('配置加载完成');
+      } catch (error) {
+        console.error('加载默认配置失败:', error);
+        // 加载失败时使用默认值
+        const today = new Date();
+        const oneYearAgo = new Date();
+        oneYearAgo.setFullYear(today.getFullYear() - 1);
+        setEndDate(today.toISOString().split('T')[0]);
+        setStartDate(oneYearAgo.toISOString().split('T')[0]);
+        setMaxPositions(3);
+      }
+    };
+    
+    loadDefaults();
+    fetchStrategies();
+  }, []);
 
   // 组件挂载
   useEffect(() => {

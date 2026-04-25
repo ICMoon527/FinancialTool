@@ -102,7 +102,7 @@ risk_free_rate: 0.025
 start_date: "2025-01-01"
 
 # 回测结束日期（YYYY-MM-DD格式）
-end_date: "2026-04-03"
+end_date: "2026-04-24"
 
 # 股票池范围：沪A主板 + 深A主板
 # 过滤规则（与stock_selector一致）：

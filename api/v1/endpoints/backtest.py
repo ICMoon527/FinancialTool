@@ -90,26 +90,52 @@ def get_backtest_config():
         from pathlib import Path
         import yaml
         
-        project_root = Path(__file__).parent.parent.parent
+        # 尝试多种方式查找项目根目录
+        # 方式 1: 从当前文件向上查找
+        current_file = Path(__file__).resolve()
+        project_root = None
+        
+        for parent in current_file.parents:
+            # 检查是否有 stock_selector 文件夹
+            if (parent / "stock_selector").exists():
+                project_root = parent
+                break
+        
+        # 方式 2: 使用当前工作目录作为备选
+        if project_root is None:
+            project_root = Path.cwd()
+        
         config_path = project_root / "stock_selector" / "backtest_config.yaml"
+        
+        logger.info(f"项目根目录: {project_root}")
+        logger.info(f"配置文件路径: {config_path}")
+        logger.info(f"配置文件存在: {config_path.exists()}")
         
         if config_path.exists():
             with open(config_path, "r", encoding="utf-8") as f:
                 config = yaml.safe_load(f)
+            
+            # 提取配置
+            start_date = config.get("start_date")
+            end_date = config.get("end_date")
+            max_positions = config.get("max_positions")
+            
+            logger.info(f"提取到的配置: start_date={start_date}, end_date={end_date}, max_positions={max_positions}")
                 
             # 返回前端需要的配置项
             return {
                 "success": True,
                 "config": {
-                    "start_date": config.get("start_date"),
-                    "end_date": config.get("end_date"),
-                    "max_positions": config.get("max_positions"),
+                    "start_date": start_date,
+                    "end_date": end_date,
+                    "max_positions": max_positions,
                 }
             }
         else:
+            logger.error(f"配置文件不存在: {config_path}")
             return {
                 "success": False,
-                "message": "配置文件不存在"
+                "message": f"配置文件不存在: {config_path}"
             }
     except Exception as exc:
         logger.error(f"获取配置失败: {exc}", exc_info=True)
