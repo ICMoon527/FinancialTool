@@ -561,35 +561,18 @@ class TushareDataDownloader:
                     stats['total_records'] += len(stock_df)
                     logger.debug(f"Successfully processed {stock_code} from batch")
                 else:
-                    # 批量获取没有这只股票的数据，尝试单独获取
-                    logger.debug(f"No data for {stock_code} in batch, trying individual download")
-                    success, records, error = self._download_single_stock_from_other_sources(
-                        stock_code, start_date, end_date
-                    )
-                    if success:
-                        stats['stocks_success'] += 1
-                        stats['total_records'] += records
-                    else:
-                        stats['stocks_failed'] += 1
-                        stats['failed_stocks'].append({
-                            'code': stock_code,
-                            'error': error
-                        })
+                    # 批量获取没有这只股票的数据 - 可能是新股、停牌、退市等
+                    # 直接跳过，不尝试其他数据源（避免浪费时间）
+                    logger.debug(f"No data for {stock_code} in batch, skipping (may be new/stopped/delisted)")
+                    stats['stocks_skipped'] = stats.get('stocks_skipped', 0) + 1
             except Exception as e:
                 logger.error(f"Error processing {stock_code} from batch: {e}")
-                # 失败时尝试单独获取
-                success, records, error = self._download_single_stock_from_other_sources(
-                    stock_code, start_date, end_date
-                )
-                if success:
-                    stats['stocks_success'] += 1
-                    stats['total_records'] += records
-                else:
-                    stats['stocks_failed'] += 1
-                    stats['failed_stocks'].append({
-                        'code': stock_code,
-                        'error': error
-                    })
+                # 异常时也直接跳过，不尝试其他数据源
+                stats['stocks_failed'] += 1
+                stats['failed_stocks'].append({
+                    'code': stock_code,
+                    'error': str(e)
+                })
     
     def _process_efinance_batch_data(self, batch_result: Dict[str, pd.DataFrame], batch_stocks: List[str], start_date: date, end_date: date, stats: Dict[str, any]):
         """
@@ -806,6 +789,7 @@ class TushareDataDownloader:
         print("=" * 80)
         print(f"总股票数：{stats['total_stocks']}")
         print(f"成功：{stats['stocks_success']}")
+        print(f"跳过（无数据）：{stats.get('stocks_skipped', 0)}")
         print(f"失败：{stats['stocks_failed']}")
         print(f"总记录数：{stats['total_records']}")
         print(f"总耗时：{duration:.2f} 秒")
@@ -995,6 +979,7 @@ class TushareDataDownloader:
             print("下载完成！")
             print(f"总股票数：{stats['total_stocks']}")
             print(f"成功：{stats['stocks_success']}")
+            print(f"跳过（无数据）：{stats.get('stocks_skipped', 0)}")
             print(f"失败：{stats['stocks_failed']}")
             print(f"总记录数：{stats['total_records']}")
             print(f"总耗时：{duration:.2f} 秒")
