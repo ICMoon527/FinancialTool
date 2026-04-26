@@ -56,9 +56,12 @@ export const backtestApi = {
    * 运行策略回测（同步，废弃）
    */
   runStrategyBacktest: async (params: StrategyBacktestRunRequest): Promise<StrategyBacktestRunResponse> => {
-    const requestData: Record<string, unknown> = {
-      strategy_id: params.strategyId,
-    };
+    const requestData: Record<string, unknown> = {};
+    if (params.strategyIds) {
+      requestData.strategy_ids = params.strategyIds;
+    } else if (params.strategyId) {
+      requestData.strategy_id = params.strategyId;
+    }
     if (params.startDate) requestData.start_date = params.startDate;
     if (params.endDate) requestData.end_date = params.endDate;
     if (params.stockPool) requestData.stock_pool = params.stockPool;
@@ -75,12 +78,15 @@ export const backtestApi = {
    * 异步运行策略回测
    */
   runStrategyBacktestAsync: async (params: StrategyBacktestRunAsyncRequest): Promise<StrategyBacktestRunAsyncResponse> => {
-    const requestData: Record<string, unknown> = {
-      strategy_id: params.strategyId,
-      start_date: params.startDate,
-      end_date: params.endDate,
-      max_positions: params.maxPositions,
-    };
+    const requestData: Record<string, unknown> = {};
+    if (params.strategyIds) {
+      requestData.strategy_ids = params.strategyIds;
+    } else if (params.strategyId) {
+      requestData.strategy_id = params.strategyId;
+    }
+    requestData.start_date = params.startDate;
+    requestData.end_date = params.endDate;
+    requestData.max_positions = params.maxPositions;
 
     const response = await strategyBacktestApiClient.post<Record<string, unknown>>(
       '/api/v1/backtest/strategy/run-async',

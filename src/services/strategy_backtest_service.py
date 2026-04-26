@@ -126,7 +126,8 @@ class StrategyBacktestService:
 
     def run_backtest(
         self,
-        strategy_id: str,
+        strategy_id: Optional[str] = None,
+        strategy_ids: Optional[List[str]] = None,
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
         stock_pool: Optional[List[str]] = None,
@@ -137,7 +138,8 @@ class StrategyBacktestService:
         运行策略回测。
 
         Args:
-            strategy_id: 策略ID
+            strategy_id: 策略ID（已弃用，向后兼容）
+            strategy_ids: 策略ID列表（多策略支持）
             start_date: 开始日期 (YYYY-MM-DD)
             end_date: 结束日期 (YYYY-MM-DD)
             stock_pool: 股票池，如果为None则使用默认股票池
@@ -149,10 +151,26 @@ class StrategyBacktestService:
         if not self.strategy_manager:
             raise ValueError("策略管理器未初始化")
 
-        # 获取策略
-        strategy = self.strategy_manager.get_strategy(strategy_id)
-        if not strategy:
-            raise ValueError(f"策略不存在: {strategy_id}")
+        # 确定要使用的策略列表
+        strategies_to_use = []
+        
+        # 优先使用 strategy_ids
+        if strategy_ids:
+            for sid in strategy_ids:
+                strategy = self.strategy_manager.get_strategy(sid)
+                if strategy:
+                    strategies_to_use.append(strategy)
+                else:
+                    raise ValueError(f"策略不存在: {sid}")
+        # 其次使用单个 strategy_id（向后兼容）
+        elif strategy_id:
+            strategy = self.strategy_manager.get_strategy(strategy_id)
+            if not strategy:
+                raise ValueError(f"策略不存在: {strategy_id}")
+            strategies_to_use.append(strategy)
+        # 都没有提供则报错
+        else:
+            raise ValueError("必须提供 strategy_id 或 strategy_ids")
 
         # 解析日期
         start_date_obj = None
@@ -187,16 +205,20 @@ class StrategyBacktestService:
         # 保存当前编排器引用
         self._current_orchestrator = orchestrator
 
+        # 确定策略名称（用于报告）
+        strategy_name = "多策略组合" if len(strategies_to_use) > 1 else strategies_to_use[0].display_name
+
         # 运行完整回测
         try:
             result = orchestrator.run_full_backtest(
                 data_provider=self.data_provider,
-                strategy=strategy,
+                strategy=strategies_to_use[0] if len(strategies_to_use) == 1 else None,  # 单个策略保持向后兼容
+                strategies=strategies_to_use,  # 多策略支持
                 stock_pool=stock_pool,
                 start_date=start_date_obj,
                 end_date=end_date_obj,
                 max_positions=max_positions,
-                strategy_name=strategy.display_name,
+                strategy_name=strategy_name,
             )
             return result
         except Exception as e:
@@ -209,7 +231,8 @@ class StrategyBacktestService:
     def _run_backtest_in_background(
         self,
         task_id: str,
-        strategy: Any,
+        strategy: Optional[Any],
+        strategies: Optional[List[Any]],
         stock_pool: List[str],
         start_date_obj: date,
         end_date_obj: date,
@@ -222,7 +245,8 @@ class StrategyBacktestService:
         
         Args:
             task_id: 任务ID
-            strategy: 策略对象
+            strategy: 单个策略对象（已弃用，向后兼容）
+            strategies: 策略对象列表（多策略支持）
             stock_pool: 股票池
             start_date_obj: 开始日期
             end_date_obj: 结束日期
@@ -231,6 +255,16 @@ class StrategyBacktestService:
             on_error: 错误回调
         """
         task_manager = get_task_manager()
+        
+        # 确定要使用的策略列表
+        strategies_to_use = []
+        if strategies:
+            strategies_to_use = strategies
+        elif strategy:
+            strategies_to_use = [strategy]
+        
+        # 确定策略名称
+        strategy_name = "多策略组合" if len(strategies_to_use) > 1 else strategies_to_use[0].display_name
         
         try:
             logger.info(f"后台回测任务开始: {task_id}")
@@ -262,12 +296,13 @@ class StrategyBacktestService:
             # 运行完整回测
             result = orchestrator.run_full_backtest(
                 data_provider=self.data_provider,
-                strategy=strategy,
+                strategy=strategies_to_use[0] if len(strategies_to_use) == 1 else None,
+                strategies=strategies_to_use,
                 stock_pool=stock_pool,
                 start_date=start_date_obj,
                 end_date=end_date_obj,
                 max_positions=max_positions,
-                strategy_name=strategy.display_name,
+                strategy_name=strategy_name,
             )
             
             # 更新任务状态为完成
@@ -303,10 +338,11 @@ class StrategyBacktestService:
     
     def run_backtest_async(
         self,
-        strategy_id: str,
-        start_date: str,
-        end_date: str,
-        max_positions: int,
+        strategy_id: Optional[str] = None,
+        strategy_ids: Optional[List[str]] = None,
+        start_date: str = None,
+        end_date: str = None,
+        max_positions: int = 3,
         on_complete: Optional[callable] = None,
         on_error: Optional[callable] = None,
     ) -> str:
@@ -314,7 +350,8 @@ class StrategyBacktestService:
         异步运行策略回测，立即返回task_id
         
         Args:
-            strategy_id: 策略ID
+            strategy_id: 策略ID（已弃用，向后兼容）
+            strategy_ids: 策略ID列表（多策略支持）
             start_date: 开始日期 (YYYY-MM-DD)
             end_date: 结束日期 (YYYY-MM-DD)
             max_positions: 最大持仓数
@@ -343,10 +380,44 @@ class StrategyBacktestService:
                 on_error()
             return task_id
         
-        # 获取策略
-        strategy = self.strategy_manager.get_strategy(strategy_id)
-        if not strategy:
-            error_msg = f"策略不存在: {strategy_id}"
+        # 确定要使用的策略列表
+        strategies_to_use = []
+        
+        # 优先使用 strategy_ids
+        if strategy_ids:
+            for sid in strategy_ids:
+                strategy = self.strategy_manager.get_strategy(sid)
+                if strategy:
+                    strategies_to_use.append(strategy)
+                else:
+                    error_msg = f"策略不存在: {sid}"
+                    logger.error(error_msg)
+                    task_manager.update_task_status(
+                        task_id,
+                        BacktestTaskStatus.FAILED,
+                        error=error_msg
+                    )
+                    if on_error:
+                        on_error()
+                    return task_id
+        # 其次使用单个 strategy_id（向后兼容）
+        elif strategy_id:
+            strategy = self.strategy_manager.get_strategy(strategy_id)
+            if not strategy:
+                error_msg = f"策略不存在: {strategy_id}"
+                logger.error(error_msg)
+                task_manager.update_task_status(
+                    task_id,
+                    BacktestTaskStatus.FAILED,
+                    error=error_msg
+                )
+                if on_error:
+                    on_error()
+                return task_id
+            strategies_to_use.append(strategy)
+        # 都没有提供则报错
+        else:
+            error_msg = "必须提供 strategy_id 或 strategy_ids"
             logger.error(error_msg)
             task_manager.update_task_status(
                 task_id,
@@ -365,7 +436,8 @@ class StrategyBacktestService:
             target=self._run_backtest_in_background,
             args=(
                 task_id,
-                strategy,
+                strategies_to_use[0] if len(strategies_to_use) == 1 else None,
+                strategies_to_use,
                 stock_pool,
                 start_date_obj,
                 end_date_obj,

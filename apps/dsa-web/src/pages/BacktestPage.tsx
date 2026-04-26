@@ -1,12 +1,85 @@
 import type React from 'react';
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, memo, useMemo } from 'react';
 import { backtestApi } from '../api/backtest';
-import { Card } from '../components/common';
+import { Card, Badge } from '../components/common';
 import { BacktestChartsContainer } from '../components/charts';
 import type {
   StrategyInfo,
   StrategyBacktestTaskStatusResponse,
 } from '../types/backtest';
+
+// 星星图标组件
+const StarIcon = ({ isFavorited, onClick }: { isFavorited: boolean; onClick: (e: React.MouseEvent) => void }) => (
+  <button
+    type="button"
+    onClick={onClick}
+    className="flex-shrink-0 w-5 h-5 p-0.5 hover:bg-white/10 rounded transition-colors cursor-pointer"
+  >
+    {isFavorited ? (
+      <svg className="w-full h-full text-yellow-400" fill="currentColor" viewBox="0 0 24 24">
+        <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
+      </svg>
+    ) : (
+      <svg className="w-full h-full text-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118L12 16.055l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.783-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
+      </svg>
+    )}
+  </button>
+);
+
+// 策略项组件
+const StrategyItem = memo(({
+  strategy,
+  isSelected,
+  onToggle,
+  isLoading,
+  isFavorited,
+  onToggleFavorite
+}: {
+  strategy: StrategyInfo;
+  isSelected: boolean;
+  onToggle: (strategyId: string, selected: boolean) => void;
+  isLoading: boolean;
+  isFavorited: boolean;
+  onToggleFavorite: (strategyId: string, e: React.MouseEvent) => void;
+}) => {
+  const strategyTypeBadge = (() => {
+    switch (strategy.type) {
+      case 'NATURAL_LANGUAGE':
+        return <Badge variant="info">NL</Badge>;
+      case 'PYTHON':
+        return <Badge variant="success">PY</Badge>;
+      default:
+        return <Badge variant="default">{strategy.type}</Badge>;
+    }
+  })();
+
+  return (
+    <label className="flex items-center gap-2 px-3 py-2.5 hover:bg-white/10 cursor-pointer transition-colors border-b border-white/5 last:border-0">
+      <input
+        type="checkbox"
+        checked={isSelected}
+        onChange={(e) => {
+          e.stopPropagation();
+          onToggle(strategy.id, e.target.checked);
+        }}
+        disabled={isLoading}
+        className="rounded w-4 h-4"
+      />
+      {strategyTypeBadge}
+      <div className="flex-1 min-w-0">
+        <div className="text-sm text-white truncate">{strategy.name}</div>
+        <div className="text-xs text-muted truncate">{strategy.description}</div>
+      </div>
+      <StarIcon
+        isFavorited={isFavorited}
+        onClick={(e) => onToggleFavorite(strategy.id, e)}
+      />
+    </label>
+  );
+});
+
+StrategyItem.displayName = 'StrategyItem';
 
 // ============ 格式化函数 ============
 
@@ -84,8 +157,16 @@ const TerminalLog: React.FC<{ logs: string[] }> = ({ logs }) => {
 const BacktestPage: React.FC = () => {
   // 策略状态
   const [strategies, setStrategies] = useState<StrategyInfo[]>([]);
-  const [selectedStrategy, setSelectedStrategy] = useState('');
+  const [selectedStrategyIds, setSelectedStrategyIds] = useState<string[]>([]);
   const [isLoadingStrategies, setIsLoadingStrategies] = useState(false);
+  const [isStrategyListOpen, setIsStrategyListOpen] = useState(false);
+  const strategyContainerRef = useRef<HTMLDivElement>(null);
+
+  // 收藏策略状态
+  const [favoriteStrategyIds, setFavoriteStrategyIds] = useState<string[]>(() => {
+    const saved = localStorage.getItem('favorite_strategies');
+    return saved ? JSON.parse(saved) : [];
+  });
 
   // 日期状态
   const [startDate, setStartDate] = useState('');
@@ -115,22 +196,53 @@ const BacktestPage: React.FC = () => {
     setLogs(prev => [...prev, `[${timestamp}] ${message}`]);
   }, []);
 
+  // 切换收藏状态
+  const toggleFavorite = useCallback((strategyId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setFavoriteStrategyIds(prev => {
+      const newFavorites = prev.includes(strategyId)
+        ? prev.filter(id => id !== strategyId)
+        : [...prev, strategyId];
+      localStorage.setItem('favorite_strategies', JSON.stringify(newFavorites));
+      return newFavorites;
+    });
+  }, []);
+
+  // 下拉框用的策略列表（收藏置顶）
+  const orderedStrategies = useMemo(() => {
+    return [...strategies].sort((a, b) => {
+      const aFav = favoriteStrategyIds.includes(a.id);
+      const bFav = favoriteStrategyIds.includes(b.id);
+      if (aFav && !bFav) return -1;
+      if (!aFav && bFav) return 1;
+      return 0;
+    });
+  }, [strategies, favoriteStrategyIds]);
+
+  // 策略切换
+  const handleStrategyToggle = useCallback((strategyId: string, selected: boolean) => {
+    setSelectedStrategyIds(prev => {
+      if (selected) {
+        return [...prev, strategyId];
+      } else {
+        return prev.filter(id => id !== strategyId);
+      }
+    });
+  }, []);
+
   // 获取策略列表
   const fetchStrategies = useCallback(async () => {
     setIsLoadingStrategies(true);
     try {
       const data = await backtestApi.getStrategies();
       setStrategies(data);
-      if (data.length > 0 && !selectedStrategy) {
-        setSelectedStrategy(data[0].id);
-      }
     } catch (err) {
       console.error('获取策略列表失败:', err);
       addLog('获取策略列表失败');
     } finally {
       setIsLoadingStrategies(false);
     }
-  }, [selectedStrategy, addLog]);
+  }, [addLog]);
 
   // 加载默认配置和策略列表
   useEffect(() => {
@@ -165,6 +277,23 @@ const BacktestPage: React.FC = () => {
     
     loadDefaults();
     fetchStrategies();
+  }, []);
+
+  // 点击其他地方关闭策略列表
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (
+        strategyContainerRef.current &&
+        !strategyContainerRef.current.contains(event.target as Node)
+      ) {
+        setIsStrategyListOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
   }, []);
 
   // 组件挂载
@@ -247,16 +376,9 @@ const BacktestPage: React.FC = () => {
 
   // 运行策略回测
   const handleRun = async () => {
-    if (!selectedStrategy) {
+    if (selectedStrategyIds.length === 0) {
       setRunError('请选择策略');
       addLog('错误: 请选择策略');
-      return;
-    }
-
-    const strategyInfo = strategies.find(s => s.id === selectedStrategy);
-    if (!strategyInfo) {
-      setRunError('策略不存在');
-      addLog('错误: 策略不存在');
       return;
     }
 
@@ -293,7 +415,7 @@ const BacktestPage: React.FC = () => {
 
     try {
       const response = await backtestApi.runStrategyBacktestAsync({
-        strategyId: strategyInfo.id,
+        strategyIds: selectedStrategyIds,
         startDate: startDate,
         endDate: endDate,
         maxPositions: typeof maxPositions === 'number' ? maxPositions : 3,
@@ -359,28 +481,70 @@ const BacktestPage: React.FC = () => {
   // 获取结果数据
   const resultData = taskStatus?.result;
   const metrics = resultData?.metrics as Record<string, unknown> | undefined;
+  
+  // 调试信息
+  console.log('=== BacktestPage 调试 ===');
+  console.log('  - taskStatus:', taskStatus);
+  console.log('  - resultData:', resultData);
+  console.log('  - metrics:', metrics);
+  console.log('  - resultData?.results:', resultData?.results);
+
+  // 获取已选策略的显示文本
+  const getSelectedStrategiesText = useCallback(() => {
+    if (selectedStrategyIds.length === 0) {
+      return '请选择策略';
+    }
+    const selected = strategies.filter(s => selectedStrategyIds.includes(s.id));
+    if (selected.length === 1) {
+      return selected[0].name;
+    }
+    return `${selected.length} 个策略`;
+  }, [selectedStrategyIds, strategies]);
 
   return (
     <div className="min-h-screen flex flex-col">
       {/* 页面头部 */}
       <header className="flex-shrink-0 px-4 py-3 border-b border-white/5">
-        <div className="flex items-center gap-2 max-w-6xl flex-wrap">
+        <div className="flex items-start gap-2 max-w-6xl flex-wrap">
           {/* 策略选择 */}
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-muted">策略</span>
-            <select
-              value={selectedStrategy}
-              onChange={(e) => setSelectedStrategy(e.target.value)}
+          <div ref={strategyContainerRef} className="relative">
+            <button
+              type="button"
+              onClick={() => setIsStrategyListOpen(!isStrategyListOpen)}
               disabled={isRunning || isLoadingStrategies}
-              className="input-terminal text-xs py-2 min-w-48"
+              className="input-terminal text-xs py-2 px-3 min-w-64 flex items-center justify-between"
             >
-              <option value="">-- 选择策略 --</option>
-              {strategies.map((strategy) => (
-                <option key={strategy.id} value={strategy.id}>
-                  {strategy.name} ({strategy.type})
-                </option>
-              ))}
-            </select>
+              <span>{getSelectedStrategiesText()}</span>
+              <svg
+                className={`w-4 h-4 transition-transform ${isStrategyListOpen ? 'rotate-180' : ''}`}
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+            {isStrategyListOpen && (
+              <div className="absolute top-full left-0 mt-1 w-72 bg-elevated border border-white/15 rounded-xl shadow-2xl z-[9999] max-h-80 overflow-y-auto">
+                {orderedStrategies.length === 0 ? (
+                  <div className="px-3 py-4 text-center text-xs text-muted">
+                    加载策略中...
+                  </div>
+                ) : (
+                  orderedStrategies.map((strategy) => (
+                    <StrategyItem
+                      key={strategy.id}
+                      strategy={strategy}
+                      isSelected={selectedStrategyIds.includes(strategy.id)}
+                      onToggle={handleStrategyToggle}
+                      isLoading={isRunning}
+                      isFavorited={favoriteStrategyIds.includes(strategy.id)}
+                      onToggleFavorite={toggleFavorite}
+                    />
+                  ))
+                )}
+              </div>
+            )}
           </div>
 
           {/* 开始日期 */}
@@ -428,7 +592,7 @@ const BacktestPage: React.FC = () => {
           <button
             type="button"
             onClick={handleRun}
-            disabled={isRunning || !selectedStrategy}
+            disabled={isRunning || selectedStrategyIds.length === 0}
             className="btn-primary flex items-center gap-1.5 whitespace-nowrap"
           >
             {isRunning ? (

@@ -20,7 +20,8 @@ class StrategyListResponse(BaseModel):
 
 
 class StrategyBacktestRunRequest(BaseModel):
-    strategy_id: str = Field(..., description="策略ID")
+    strategy_id: Optional[str] = Field(None, description="策略ID（已弃用，请使用strategy_ids）")
+    strategy_ids: Optional[List[str]] = Field(None, description="策略ID列表（支持多策略）")
     start_date: Optional[str] = Field(None, description="开始日期 (YYYY-MM-DD)")
     end_date: Optional[str] = Field(None, description="结束日期 (YYYY-MM-DD)")
     stock_pool: Optional[List[str]] = Field(None, description="股票池")
@@ -37,7 +38,8 @@ class StrategyBacktestRunResponse(BaseModel):
 
 class StrategyBacktestRunAsyncRequest(BaseModel):
     """策略回测异步运行请求"""
-    strategy_id: str = Field(..., description="策略ID")
+    strategy_id: Optional[str] = Field(None, description="策略ID（已弃用，请使用strategy_ids）")
+    strategy_ids: Optional[List[str]] = Field(None, description="策略ID列表（支持多策略）")
     start_date: str = Field(..., description="开始日期 (YYYY-MM-DD)")
     end_date: str = Field(..., description="结束日期 (YYYY-MM-DD)")
     max_positions: int = Field(3, ge=1, description="最高持仓数（例如：3表示最多同时持有3只股票）")

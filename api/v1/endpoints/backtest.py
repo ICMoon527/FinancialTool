@@ -214,7 +214,7 @@ def stop_strategy_backtest():
         500: {"description": "服务器错误", "model": ErrorResponse},
     },
     summary="异步运行策略回测",
-    description="异步运行指定策略的回测，立即返回task_id",
+    description="异步运行指定策略的回测，立即返回task_id（支持多策略）",
 )
 def run_strategy_backtest_async(
     request: StrategyBacktestRunAsyncRequest,
@@ -227,6 +227,7 @@ def run_strategy_backtest_async(
         # 调试：打印接收到的请求
         logger.info(f"收到异步回测请求: {request}")
         logger.info(f"  strategy_id: {request.strategy_id}")
+        logger.info(f"  strategy_ids: {request.strategy_ids}")
         logger.info(f"  start_date: {request.start_date}")
         logger.info(f"  end_date: {request.end_date}")
         logger.info(f"  max_positions: {request.max_positions}")
@@ -244,6 +245,7 @@ def run_strategy_backtest_async(
         service = get_strategy_backtest_service()
         task_id = service.run_backtest_async(
             strategy_id=request.strategy_id,
+            strategy_ids=request.strategy_ids,
             start_date=request.start_date,
             end_date=request.end_date,
             max_positions=request.max_positions,
@@ -307,6 +309,21 @@ def get_strategy_backtest_task_status(
                 detail={"error": "task_not_found", "message": "任务不存在"},
             )
         
+        # 调试：打印任务数据
+        logger.info(f"任务状态数据 (task {task_id}):")
+        logger.info(f"  - status: {task.get('status')}")
+        logger.info(f"  - has result: {task.get('result') is not None}")
+        if task.get('result'):
+            result = task.get('result')
+            logger.info(f"  - result keys: {list(result.keys())}")
+            logger.info(f"  - has results: {result.get('results') is not None}")
+            logger.info(f"  - has metrics: {result.get('metrics') is not None}")
+            if result.get('results'):
+                results = result.get('results')
+                logger.info(f"  - results keys: {list(results.keys())}")
+                logger.info(f"  - has equity_history: {results.get('equity_history') is not None}")
+                logger.info(f"  - equity_history length: {len(results.get('equity_history', []))}")
+        
         return StrategyBacktestTaskStatusResponse(
             success=True,
             message="获取任务状态成功",
@@ -360,7 +377,7 @@ def stop_strategy_backtest_by_task_id(
         500: {"description": "服务器错误", "model": ErrorResponse},
     },
     summary="运行策略回测",
-    description="运行指定策略的回测",
+    description="运行指定策略的回测（支持多策略）",
 )
 def run_strategy_backtest(
     request: StrategyBacktestRunRequest,
@@ -381,6 +398,7 @@ def run_strategy_backtest(
         service = get_strategy_backtest_service()
         result = service.run_backtest(
             strategy_id=request.strategy_id,
+            strategy_ids=request.strategy_ids,
             start_date=request.start_date,
             end_date=request.end_date,
             stock_pool=request.stock_pool,

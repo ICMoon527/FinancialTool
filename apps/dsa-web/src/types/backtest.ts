@@ -104,7 +104,8 @@ export interface StrategyListResponse {
 }
 
 export interface StrategyBacktestRunRequest {
-  strategyId: string;
+  strategyId?: string;  // 已废弃，向后兼容
+  strategyIds?: string[];  // 多策略支持
   startDate?: string;
   endDate?: string;
   stockPool?: string[];
@@ -120,7 +121,8 @@ export interface StrategyBacktestRunResponse {
 }
 
 export interface StrategyBacktestRunAsyncRequest {
-  strategyId: string;
+  strategyId?: string;  // 已废弃，向后兼容
+  strategyIds?: string[];  // 多策略支持
   startDate: string;
   endDate: string;
   maxPositions: number;

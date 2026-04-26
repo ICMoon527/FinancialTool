@@ -215,6 +215,7 @@ class StrategyBacktestEngine:
         self.trading_dates: List[date] = []
         self.current_date_index = 0
         self._strategy = None
+        self._strategies: List[Any] = []  # 多策略支持
         self._stock_pool: List[str] = []
         self.stop_loss_pct = stop_loss_pct
         self.take_profit_pct = take_profit_pct
@@ -239,8 +240,24 @@ class StrategyBacktestEngine:
             strategy: 策略对象
         """
         self._strategy = strategy
+        self._strategies = [strategy]  # 同时更新多策略列表
         if hasattr(strategy, "_data_provider"):
             strategy._data_provider = self._data_provider
+
+    def set_strategies(self, strategies: List[Any]) -> None:
+        """
+        设置多个回测策略（多策略支持）。
+
+        Args:
+            strategies: 策略对象列表
+        """
+        self._strategies = strategies
+        if strategies:
+            self._strategy = strategies[0]  # 保持向后兼容
+        # 为每个策略设置数据提供者
+        for strategy in strategies:
+            if hasattr(strategy, "_data_provider"):
+                strategy._data_provider = self._data_provider
 
     def set_stock_pool(self, stock_pool: List[str]) -> None:
         """
@@ -934,11 +951,13 @@ class StrategyBacktestEngine:
                 logger.info(f"持仓未满（当前持仓: {current_holdings}, 挂单: {pending_count}, 最高持仓: {self.max_positions}），需要跑策略选股")
         
         # 执行策略选股（如果需要）
-        if self._strategy and need_run_strategy:
+        has_strategies = (self._strategy is not None) or (len(self._strategies) > 0)
+        if has_strategies and need_run_strategy:
             selected_stocks = []
             from tqdm import tqdm
             
-            logger.info(f"开始策略选股，共 {len(self._stock_pool)} 只股票...")
+            strategies_to_use = self._strategies if len(self._strategies) > 0 else [self._strategy]
+            logger.info(f"开始策略选股，共 {len(self._stock_pool)} 只股票，使用 {len(strategies_to_use)} 个策略...")
             
             # 使用进度条遍历股票池
             selected_with_scores = []
@@ -950,9 +969,21 @@ class StrategyBacktestEngine:
                 ncols=100
             ):
                 try:
-                    match = self._strategy.select(stock_code)
-                    if match and match.matched:
-                        selected_with_scores.append((stock_code, match.score))
+                    # 计算综合得分：所有匹配策略的平均得分
+                    total_score = 0.0
+                    all_matched = True
+                    
+                    for strategy in strategies_to_use:
+                        match = strategy.select(stock_code)
+                        if not match or not match.matched:
+                            all_matched = False
+                            break
+                        total_score += match.score
+                    
+                    # 只有当所有策略都匹配时才选中（与选股页面保持一致）
+                    if all_matched:
+                        avg_score = total_score / len(strategies_to_use)
+                        selected_with_scores.append((stock_code, avg_score))
                 except Exception as e:
                     logger.warning(f"策略执行失败 {stock_code}: {e}")
             
@@ -968,7 +999,7 @@ class StrategyBacktestEngine:
                 logger.info(f"选中的股票: {selected_stocks[:10]}{'...' if len(selected_stocks) > 10 else ''}")
             
             self.rebalance(selected_stocks)
-        elif self._strategy and not need_run_strategy:
+        elif has_strategies and not need_run_strategy:
             logger.info("无需跑策略选股：没有股票被卖出且持仓已满")
 
         self.portfolio.record_equity(current_date)

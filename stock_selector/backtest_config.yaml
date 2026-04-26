@@ -99,10 +99,10 @@ slippage_rate: 0.001
 risk_free_rate: 0.025
 
 # 回测开始日期（YYYY-MM-DD格式）
-start_date: "2025-01-01"
+start_date: "2023-05-01"
 
 # 回测结束日期（YYYY-MM-DD格式）
-end_date: "2026-04-24"
+end_date: "2024-09-01"
 
 # 股票池范围：沪A主板 + 深A主板
 # 过滤规则（与stock_selector一致）：

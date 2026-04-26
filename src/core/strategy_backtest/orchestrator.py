@@ -273,8 +273,9 @@ class BacktestOrchestrator:
     def execute_strategy(
         self,
         data_provider: Any,
-        strategy: Any,
-        trading_dates: List[date],
+        strategy: Optional[Any] = None,
+        strategies: Optional[List[Any]] = None,
+        trading_dates: List[date] = None,
         stock_pool: Optional[List[str]] = None,
         max_positions: Optional[int] = None,
     ):
@@ -317,7 +318,12 @@ class BacktestOrchestrator:
             max_holding_days=self.config.get("max_holding_days", 5),
         )
 
-        self.engine.set_strategy(strategy)
+        # 设置策略（支持多策略）
+        if strategies:
+            self.engine.set_strategies(strategies)
+        elif strategy:
+            self.engine.set_strategy(strategy)
+        
         self.engine.set_stock_pool(stock_pool)
         self.engine.set_trading_dates(trading_dates)
 
@@ -537,7 +543,8 @@ class BacktestOrchestrator:
     def run_full_backtest(
         self,
         data_provider: Any,
-        strategy: Any,
+        strategy: Optional[Any] = None,
+        strategies: Optional[List[Any]] = None,
         stock_pool: Optional[List[str]] = None,
         start_date: Optional[date] = None,
         end_date: Optional[date] = None,
@@ -572,6 +579,7 @@ class BacktestOrchestrator:
         self.execute_strategy(
             data_provider=data_provider,
             strategy=strategy,
+            strategies=strategies,
             trading_dates=trading_dates,
             max_positions=max_positions,
         )
