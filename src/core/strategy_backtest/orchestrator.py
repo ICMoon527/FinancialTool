@@ -612,6 +612,22 @@ class BacktestOrchestrator:
         # 序列化 metrics
         serializable_metrics = make_serializable(metrics)
         
+        # 保存结果到 JSON 文件
+        import json
+        results_data = {
+            "results": make_serializable(results),
+            "metrics": serializable_metrics,
+        }
+        
+        # 保存到 results.json
+        results_json_path = self.output_dir / "results.json"
+        try:
+            with open(results_json_path, 'w', encoding='utf-8') as f:
+                json.dump(results_data, f, ensure_ascii=False, indent=2)
+            logger.info(f"回测结果已保存到: {results_json_path}")
+        except Exception as e:
+            logger.error(f"保存结果 JSON 失败: {e}")
+        
         return {
             "results": results,
             "metrics": serializable_metrics,

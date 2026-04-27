@@ -78,6 +78,114 @@ def log_generator():
 # ============ 策略回测端点 ============
 
 @router.get(
+    "/strategy/results/latest",
+    summary="获取最近一次回测结果",
+    description="获取最近一次成功完成的回测结果，包括数据和图片路径",
+)
+def get_latest_backtest_results():
+    """获取最近一次回测结果"""
+    try:
+        from pathlib import Path
+        import json
+        
+        # 查找项目根目录
+        project_root = None
+        current_file = Path(__file__).resolve()
+        
+        for parent in current_file.parents:
+            if (parent / "stock_selector").exists():
+                project_root = parent
+                break
+        
+        if project_root is None:
+            project_root = Path.cwd()
+        
+        # 查找可能的回测结果目录 - 优先使用 backtest_results
+        possible_dirs = [
+            project_root / "backtest_results",
+            project_root / "strategy_backtest_results"
+        ]
+        
+        results_dir = None
+        for dir_path in possible_dirs:
+            if dir_path.exists():
+                results_dir = dir_path
+                break
+        
+        if results_dir is None:
+            return {
+                "success": False,
+                "message": "没有找到回测结果目录"
+            }
+        
+        # 如果是根目录的回测结果，直接在这个目录查找文件
+        latest_dir = results_dir
+        dir_name = ""
+        
+        # 检查是否有子目录或者直接在根目录有文件
+        has_subdirs = False
+        result_dirs = []
+        
+        for item in results_dir.iterdir():
+            if item.is_dir():
+                # 检查子目录是否有报告或图片
+                if (item / "backtest_report.md").exists() or (item / "equity_curve.png").exists():
+                    has_subdirs = True
+                    result_dirs.append(item)
+        
+        # 如果有子目录，取最新的
+        if has_subdirs:
+            result_dirs.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+            latest_dir = result_dirs[0]
+            dir_name = latest_dir.name
+        
+        logger.info(f"找到最近回测结果: {latest_dir}")
+        
+        # 收集图片路径
+        image_paths = {}
+        image_files = ["equity_curve.png", "drawdown_curve.png", "metrics_heatmap.png", "metrics_radar.png"]
+        
+        for img_name in image_files:
+            img_path = latest_dir / img_name
+            if img_path.exists():
+                # 返回相对路径，用于静态文件服务
+                if dir_name:
+                    relative_path = f"{results_dir.name}/{dir_name}/{img_name}"
+                else:
+                    relative_path = f"{results_dir.name}/{img_name}"
+                image_paths[img_name.replace('.png', '')] = relative_path
+        
+        # 检查是否有数据文件（比如 JSON）
+        results_data = None
+        # 先尝试 results.json，再尝试 backtest_results.json
+        possible_json_files = ["results.json", "backtest_results.json"]
+        for json_filename in possible_json_files:
+            json_path = latest_dir / json_filename
+            if json_path.exists():
+                try:
+                    with open(json_path, 'r', encoding='utf-8') as f:
+                        results_data = json.load(f)
+                        break
+                except Exception as e:
+                    logger.warning(f"无法读取 {json_filename}: {e}")
+        
+        return {
+            "success": True,
+            "result_dir": str(latest_dir),
+            "images": image_paths,
+            "has_data": results_data is not None,
+            "data": results_data
+        }
+        
+    except Exception as exc:
+        logger.error(f"获取最近回测结果失败: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"获取最近回测结果失败: {str(exc)}"}
+        )
+
+
+@router.get(
     "/config",
     summary="获取回测默认配置",
     description="获取 backtest_config.yaml 中的默认配置",

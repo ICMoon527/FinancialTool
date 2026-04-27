@@ -20,6 +20,22 @@ import type {
 
 export const backtestApi = {
     /**
+     * 获取最近一次回测结果
+     */
+    getLatestBacktestResults: async (): Promise<{
+        success: boolean;
+        result_dir?: string;
+        images?: {
+            [key: string]: string;
+        };
+        has_data?: boolean;
+        data?: any;
+    }> => {
+        const response = await apiClient.get('/api/v1/backtest/strategy/results/latest');
+        return response.data;
+    },
+
+    /**
      * 获取回测默认配置
      */
     getBacktestConfig: async (): Promise<{

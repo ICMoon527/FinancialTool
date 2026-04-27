@@ -118,40 +118,6 @@ const MetricsCard: React.FC<{ metrics: Record<string, unknown>; title: string }>
   );
 };
 
-// ============ 终端日志显示框 ============
-
-const TerminalLog: React.FC<{ logs: string[] }> = ({ logs }) => {
-  const logRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (logRef.current) {
-      logRef.current.scrollTop = logRef.current.scrollHeight;
-    }
-  }, [logs]);
-
-  return (
-    <Card padding="md" className="mt-3">
-      <div className="mb-2">
-        <span className="label-uppercase">终端日志</span>
-      </div>
-      <div 
-        ref={logRef}
-        className="bg-black/50 rounded-lg p-3 h-48 overflow-y-auto font-mono text-xs"
-      >
-        {logs.length === 0 ? (
-          <p className="text-muted">等待回测开始...</p>
-        ) : (
-          logs.map((log, index) => (
-            <div key={index} className="py-0.5">
-              <span className="text-cyan">{log}</span>
-            </div>
-          ))
-        )}
-      </div>
-    </Card>
-  );
-};
-
 // ============ 主页面 ============
 
 const BacktestPage: React.FC = () => {
@@ -182,19 +148,15 @@ const BacktestPage: React.FC = () => {
   const [taskStatus, setTaskStatus] = useState<StrategyBacktestTaskStatusResponse['task'] | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
 
-  // 终端日志
-  const [logs, setLogs] = useState<string[]>([]);
+  // 回测结果状态
+  const [backtestImages, setBacktestImages] = useState<{
+    [key: string]: string;
+  }>({});
+  const [latestBacktestData, setLatestBacktestData] = useState<any>(null);
 
   // 轮询定时器引用
   const pollTimerRef = useRef<number | null>(null);
-  const eventSourceRef = useRef<EventSource | null>(null);
   const isMountedRef = useRef<boolean>(true);
-
-  // 添加日志
-  const addLog = useCallback((message: string) => {
-    const timestamp = new Date().toLocaleTimeString();
-    setLogs(prev => [...prev, `[${timestamp}] ${message}`]);
-  }, []);
 
   // 切换收藏状态
   const toggleFavorite = useCallback((strategyId: string, e: React.MouseEvent) => {
@@ -238,11 +200,74 @@ const BacktestPage: React.FC = () => {
       setStrategies(data);
     } catch (err) {
       console.error('获取策略列表失败:', err);
-      addLog('获取策略列表失败');
     } finally {
       setIsLoadingStrategies(false);
     }
-  }, [addLog]);
+  }, []);
+
+  // 获取最近回测结果的函数
+  const fetchLatestBacktestResults = useCallback(async () => {
+    if (!isMountedRef.current) return;
+    
+    try {
+      console.log('正在获取最近回测结果...');
+      const response = await backtestApi.getLatestBacktestResults();
+      
+      if (!isMountedRef.current) return;
+      
+      console.log('最近回测结果响应:', response);
+      
+      if (response.success) {
+        // 如果有保存的图片
+        setBacktestImages(response.images || {});
+        
+        // 如果有保存的数据
+        if (response.data) {
+          setLatestBacktestData(response.data);
+        }
+      }
+    } catch (err) {
+      console.error('获取最近回测结果失败:', err);
+    }
+  }, []);
+
+  // 获取任务状态的函数
+  const fetchTaskStatus = useCallback(async (currentTaskId: string) => {
+    if (!isMountedRef.current || !currentTaskId) return;
+    
+    try {
+      console.log('正在获取任务状态:', currentTaskId);
+      const response = await backtestApi.getBacktestTaskStatus(currentTaskId);
+      
+      if (!isMountedRef.current) return;
+      
+      console.log('任务状态响应:', response);
+      setTaskStatus(response.task);
+
+      if (response.task) {
+        const status = response.task.status;
+        console.log('任务状态:', status);
+        
+        // 任务结束
+        if (status === 'completed' || status === 'failed' || status === 'stopped') {
+          setIsRunning(false);
+          setIsStopping(false);
+          
+          if (pollTimerRef.current) {
+            clearInterval(pollTimerRef.current);
+            pollTimerRef.current = null;
+          }
+
+          if (status === 'failed') {
+            const errorMsg = response.task.error || '回测失败';
+            setRunError(errorMsg);
+          }
+        }
+      }
+    } catch (err) {
+      console.error('获取任务状态失败:', err);
+    }
+  }, []);
 
   // 加载默认配置和策略列表
   useEffect(() => {
@@ -275,9 +300,26 @@ const BacktestPage: React.FC = () => {
       }
     };
     
+    // 尝试从localStorage读取之前的taskId
+    const savedTaskId = localStorage.getItem('backtest_task_id');
+    if (savedTaskId) {
+      console.log('发现保存的taskId:', savedTaskId);
+      setTaskId(savedTaskId);
+    }
+    
+    // 获取最近回测结果
+    fetchLatestBacktestResults();
+    
     loadDefaults();
     fetchStrategies();
-  }, []);
+  }, [fetchLatestBacktestResults, fetchStrategies]);
+
+  // 当有taskId时，获取任务状态
+  useEffect(() => {
+    if (taskId && !isRunning) {
+      fetchTaskStatus(taskId);
+    }
+  }, [taskId, fetchTaskStatus, isRunning]);
 
   // 点击其他地方关闭策略列表
   useEffect(() => {
@@ -301,84 +343,21 @@ const BacktestPage: React.FC = () => {
     isMountedRef.current = true;
     return () => {
       isMountedRef.current = false;
-      // 彻底清理所有资源
+      // 清理所有资源
       if (pollTimerRef.current) {
         clearInterval(pollTimerRef.current);
         pollTimerRef.current = null;
-      }
-      if (eventSourceRef.current) {
-        eventSourceRef.current.close();
-        eventSourceRef.current = null;
       }
     };
   }, []);
 
   // 轮询任务状态
-  const pollTaskStatus = useCallback(async (currentTaskId: string) => {
-    // 防护1：检查组件是否已卸载
-    if (!isMountedRef.current) {
-      return;
-    }
-    
-    // 防护2：检查 taskId 是否有效
-    if (!currentTaskId || currentTaskId === 'undefined' || currentTaskId === 'null') {
-      console.warn('pollTaskStatus 被调用了无效的 taskId:', currentTaskId);
-      return;
-    }
-    
-    try {
-      console.log('正在获取任务状态:', currentTaskId);
-      const response = await backtestApi.getBacktestTaskStatus(currentTaskId);
-      
-      // 再次检查组件是否已卸载，避免在组件卸载后设置状态
-      if (!isMountedRef.current) {
-        return;
-      }
-      
-      console.log('任务状态响应:', response);
-      setTaskStatus(response.task);
-
-      if (response.task) {
-        const status = response.task.status;
-        console.log('任务状态:', status);
-        
-        // 任务结束
-        if (status === 'completed' || status === 'failed' || status === 'stopped') {
-          setIsRunning(false);
-          setIsStopping(false);
-          
-          if (pollTimerRef.current) {
-            clearInterval(pollTimerRef.current);
-            pollTimerRef.current = null;
-          }
-          
-          if (eventSourceRef.current) {
-            eventSourceRef.current.close();
-            eventSourceRef.current = null;
-          }
-
-          if (status === 'completed') {
-            addLog('回测完成');
-          } else if (status === 'failed') {
-            const errorMsg = response.task.error || '回测失败';
-            setRunError(errorMsg);
-            addLog(`错误: ${errorMsg}`);
-          } else if (status === 'stopped') {
-            addLog('回测已终止');
-          }
-        }
-      }
-    } catch (err) {
-      console.error('获取任务状态失败:', err);
-      addLog(`获取任务状态失败: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }, [addLog]);
+  const pollTaskStatus = fetchTaskStatus;
 
   // 运行策略回测
   const handleRun = async () => {
     if (selectedStrategyIds.length === 0) {
       setRunError('请选择策略');
-      addLog('错误: 请选择策略');
       return;
     }
 
@@ -387,31 +366,11 @@ const BacktestPage: React.FC = () => {
     setTaskId(null);
     setTaskStatus(null);
     setRunError(null);
-    setLogs([]);
 
     // 清理之前的轮询
     if (pollTimerRef.current) {
       clearInterval(pollTimerRef.current);
     }
-    if (eventSourceRef.current) {
-      eventSourceRef.current.close();
-    }
-
-    // 连接SSE获取实时日志
-    const eventSource = new EventSource('/api/v1/backtest/strategy/logs');
-    eventSourceRef.current = eventSource;
-    
-    eventSource.onmessage = (event) => {
-      if (event.data === '[DONE]') {
-        return;
-      }
-      // 直接添加后端传来的日志（已经包含时间戳）
-      setLogs(prev => [...prev, event.data]);
-    };
-
-    eventSource.onerror = (error) => {
-      console.error('SSE连接错误:', error);
-    };
 
     try {
       const response = await backtestApi.runStrategyBacktestAsync({
@@ -422,9 +381,11 @@ const BacktestPage: React.FC = () => {
       });
       
       setTaskId(response.task_id);
-      addLog(`回测任务已提交: ${response.task_id}`);
+      // 保存taskId到localStorage
+      localStorage.setItem('backtest_task_id', response.task_id);
+      console.log(`回测任务已提交: ${response.task_id}`);
       
-      // 清理之前的轮询（双重保险）
+      // 清理之前的轮询
       if (pollTimerRef.current) {
         clearInterval(pollTimerRef.current);
         pollTimerRef.current = null;
@@ -432,16 +393,7 @@ const BacktestPage: React.FC = () => {
       
       // 开始轮询任务状态
       pollTimerRef.current = setInterval(() => {
-        // 再次检查 taskId 是否有效
-        if (response.task_id && response.task_id !== 'undefined' && response.task_id !== 'null') {
-          pollTaskStatus(response.task_id);
-        } else {
-          // 如果 taskId 无效，清除定时器
-          if (pollTimerRef.current) {
-            clearInterval(pollTimerRef.current);
-            pollTimerRef.current = null;
-          }
-        }
+        pollTaskStatus(response.task_id);
       }, 3000);
       
       // 立即查询一次
@@ -450,30 +402,20 @@ const BacktestPage: React.FC = () => {
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : '回测任务提交失败';
       setRunError(errorMessage);
-      addLog(`错误: ${errorMessage}`);
       setIsRunning(false);
-      
-      if (eventSource.readyState !== EventSource.CLOSED) {
-        eventSource.close();
-      }
     }
   };
 
   // 终止回测
   const handleStop = async () => {
-    if (!taskId) {
-      return;
-    }
+    if (!taskId) return;
 
     setIsStopping(true);
-    addLog('正在终止回测...');
     
     try {
       await backtestApi.stopStrategyBacktestByTaskId(taskId);
-      addLog('已发送停止信号');
     } catch (err) {
       console.error('停止回测失败:', err);
-      addLog('停止回测失败');
       setIsStopping(false);
     }
   };
@@ -485,7 +427,11 @@ const BacktestPage: React.FC = () => {
   // 调试信息
   console.log('=== BacktestPage 调试 ===');
   console.log('  - taskStatus:', taskStatus);
+  console.log('  - taskStatus 完整类型:', typeof taskStatus);
+  console.log('  - taskStatus 所有键:', taskStatus ? Object.keys(taskStatus) : '无');
   console.log('  - resultData:', resultData);
+  console.log('  - resultData 类型:', typeof resultData);
+  console.log('  - resultData 所有键:', resultData ? Object.keys(resultData) : '无');
   console.log('  - metrics:', metrics);
   console.log('  - resultData?.results:', resultData?.results);
 
@@ -648,7 +594,7 @@ const BacktestPage: React.FC = () => {
 
       {/* 页面主体 */}
       <main className="flex-1 p-4 overflow-y-auto">
-        <div className="max-w-6xl">
+        <div className="w-full">
           {/* 错误提示 */}
           {runError && (
             <Card padding="md" className="mb-4 border-red-500/30 bg-red-500/10">
@@ -658,40 +604,117 @@ const BacktestPage: React.FC = () => {
             </Card>
           )}
 
-          {/* 终端日志 */}
-          <TerminalLog logs={logs} />
+          {/* 终端日志 - 暂时隐藏 */}
+          {/* <TerminalLog logs={logs} /> */}
+
+          {/* 调试信息 */}
+          <div className="mb-4">
+            <Card padding="sm">
+              <div className="text-xs text-muted">
+                <p>调试信息:</p>
+                <p>taskStatus.status: {JSON.stringify(taskStatus?.status)}</p>
+                <p>taskStatus 完整对象: {JSON.stringify(taskStatus, null, 2)}</p>
+                <p>resultData: {resultData ? '有数据' : '无数据'}</p>
+                <p>resultData 类型: {typeof resultData}</p>
+                {resultData && (
+                  <p>resultData keys: {Object.keys(resultData).join(', ')}</p>
+                )}
+                {resultData && (
+                  <p>resultData 完整对象: {JSON.stringify(resultData, null, 2)}</p>
+                )}
+                <p>metrics: {metrics ? '有数据' : '无数据'}</p>
+                <p>backtestImages keys: {Object.keys(backtestImages).join(', ')}</p>
+              </div>
+            </Card>
+          </div>
 
           {/* 回测结果 */}
-          {resultData && (
-            <div className="mt-6 space-y-6">
-              <h2 className="text-lg font-semibold text-white">回测结果</h2>
-              
-              {/* 绩效指标 */}
-              {metrics && (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <MetricsCard
-                    metrics={metrics}
-                    title="策略绩效"
+          <div className="space-y-6">
+            <h2 className="text-lg font-semibold text-white">回测结果</h2>
+            
+            {/* 保存的图片 - 优先显示 */}
+            {Object.keys(backtestImages).length > 0 && (
+              <div className="space-y-4">
+                {/* 净值曲线 */}
+                {backtestImages['equity_curve'] && (
+                  <Card padding="md">
+                    <h3 className="text-sm font-semibold text-white mb-2">净值曲线</h3>
+                    <img
+                      src={`/${backtestImages['equity_curve']}`}
+                      alt="净值曲线"
+                      className="w-full rounded-lg"
+                    />
+                  </Card>
+                )}
+                
+                {/* 回撤曲线 */}
+                {backtestImages['drawdown_curve'] && (
+                  <Card padding="md">
+                    <h3 className="text-sm font-semibold text-white mb-2">回撤曲线</h3>
+                    <img
+                      src={`/${backtestImages['drawdown_curve']}`}
+                      alt="回撤曲线"
+                      className="w-full rounded-lg"
+                    />
+                  </Card>
+                )}
+                
+                {/* 指标热力图 */}
+                {backtestImages['metrics_heatmap'] && (
+                  <Card padding="md">
+                    <h3 className="text-sm font-semibold text-white mb-2">指标热力图</h3>
+                    <img
+                      src={`/${backtestImages['metrics_heatmap']}`}
+                      alt="指标热力图"
+                      className="w-full rounded-lg"
+                    />
+                  </Card>
+                )}
+                
+                {/* 指标雷达图 */}
+                {backtestImages['metrics_radar'] && (
+                  <Card padding="md">
+                    <h3 className="text-sm font-semibold text-white mb-2">指标雷达图</h3>
+                    <img
+                      src={`/${backtestImages['metrics_radar']}`}
+                      alt="指标雷达图"
+                      className="w-full rounded-lg"
+                    />
+                  </Card>
+                )}
+              </div>
+            )}
+            
+            {/* 或者，用最新保存的数据显示绩效指标和图表 */}
+            {Object.keys(backtestImages).length === 0 && (
+              <>
+                {/* 绩效指标 */}
+                {(metrics || latestBacktestData?.metrics) && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <MetricsCard
+                      metrics={metrics || latestBacktestData?.metrics}
+                      title="策略绩效"
+                    />
+                  </div>
+                )}
+
+                {/* 图表 */}
+                <div className="mt-6">
+                  <BacktestChartsContainer
+                    loading={isRunning && !resultData && !latestBacktestData}
+                    error={runError}
+                    results={resultData?.results || latestBacktestData?.results}
+                    metrics={resultData?.metrics || latestBacktestData?.metrics}
+                    onRetry={() => {
+                      if (taskId) {
+                        pollTaskStatus(taskId);
+                      }
+                    }}
                   />
                 </div>
-              )}
-
-              {/* 图表 */}
-              <div className="mt-6">
-                <BacktestChartsContainer
-                  loading={isRunning && !resultData}
-                  error={runError}
-                  results={resultData?.results}
-                  metrics={resultData?.metrics}
-                  onRetry={() => {
-                    if (taskId) {
-                      pollTaskStatus(taskId);
-                    }
-                  }}
-                />
-              </div>
-            </div>
-          )}
+              </>
+            )}
+          </div>
         </div>
       </main>
     </div>

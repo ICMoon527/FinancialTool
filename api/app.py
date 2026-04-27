@@ -190,6 +190,32 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
         )
     
     # ============================================================
+    # 回测结果静态文件
+    # ============================================================
+    
+    # 查找项目根目录
+    project_root = None
+    current_file = Path(__file__).resolve()
+    
+    for parent in current_file.parents:
+        if (parent / "stock_selector").exists():
+            project_root = parent
+            break
+    
+    if project_root is None:
+        project_root = Path.cwd()
+    
+    # 挂载 backtest_results 目录（优先）
+    backtest_results_dir = project_root / "backtest_results"
+    if backtest_results_dir.exists():
+        app.mount("/backtest_results", StaticFiles(directory=backtest_results_dir), name="backtest_results_main")
+    
+    # 挂载 strategy_backtest_results 目录
+    strategy_backtest_results_dir = project_root / "strategy_backtest_results"
+    if strategy_backtest_results_dir.exists():
+        app.mount("/strategy_backtest_results", StaticFiles(directory=strategy_backtest_results_dir), name="strategy_backtest_results")
+    
+    # ============================================================
     # 静态文件托管（前端 SPA）
     # ============================================================
     
@@ -208,6 +234,13 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
             
             # 如果是 API 路径，返回标准 404 JSON
             if path.startswith("/api/"):
+                return CustomJSONResponse(
+                    status_code=404,
+                    content={"detail": "Not Found"}
+                )
+            
+            # 检查是否是回测结果文件
+            if path.startswith("/backtest_results/") or path.startswith("/strategy_backtest_results/"):
                 return CustomJSONResponse(
                     status_code=404,
                     content={"detail": "Not Found"}
