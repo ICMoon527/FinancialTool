@@ -19,5 +19,13 @@ export default defineConfig({
     // 打包输出到项目根目录的 static 文件夹
     outDir: path.resolve(__dirname, '../../static'),
     emptyOutDir: true,
+    // 强制生成完全唯一的文件名，彻底避免缓存问题
+    rollupOptions: {
+      output: {
+        entryFileNames: `assets/[name]-v2-[hash].js`,
+        chunkFileNames: `assets/[name]-v2-[hash].js`,
+        assetFileNames: `assets/[name]-v2-[hash].[ext]`
+      }
+    }
   },
 })

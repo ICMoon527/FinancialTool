@@ -100,10 +100,10 @@ def get_latest_backtest_results():
         if project_root is None:
             project_root = Path.cwd()
         
-        # 查找可能的回测结果目录 - 优先使用 backtest_results
+        # 查找可能的回测结果目录 - 优先使用 strategy_backtest_results（新的 QuantStats 目录）
         possible_dirs = [
-            project_root / "backtest_results",
-            project_root / "strategy_backtest_results"
+            project_root / "strategy_backtest_results",
+            project_root / "backtest_results"
         ]
         
         results_dir = None
@@ -141,9 +141,12 @@ def get_latest_backtest_results():
         
         logger.info(f"找到最近回测结果: {latest_dir}")
         
-        # 收集图片路径
+        # 收集图片路径 - 支持原始文件名和新的 QuantStats 文件名
         image_paths = {}
-        image_files = ["equity_curve.png", "drawdown_curve.png", "metrics_heatmap.png", "metrics_radar.png"]
+        image_files = [
+            "equity_curve.png", "drawdown_curve.png", "metrics_heatmap.png", "metrics_radar.png",
+            "qs_equity_curve.png", "qs_drawdown_curve.png", "qs_monthly_heatmap.png"
+        ]
         
         for img_name in image_files:
             img_path = latest_dir / img_name
@@ -154,6 +157,28 @@ def get_latest_backtest_results():
                 else:
                     relative_path = f"{results_dir.name}/{img_name}"
                 image_paths[img_name.replace('.png', '')] = relative_path
+        
+        # 收集 QuantStats HTML 报告
+        html_report = None
+        html_filename = "quantstats_report.html"
+        html_path = latest_dir / html_filename
+        if html_path.exists():
+            if dir_name:
+                html_report = f"{results_dir.name}/{dir_name}/{html_filename}"
+            else:
+                html_report = f"{results_dir.name}/{html_filename}"
+        
+        # 收集 QuantStats metrics JSON
+        quantstats_metrics = None
+        quantstats_json = "quantstats_metrics.json"
+        metrics_json_path = latest_dir / quantstats_json
+        if metrics_json_path.exists():
+            try:
+                with open(metrics_json_path, 'r', encoding='utf-8') as f:
+                    import json
+                    quantstats_metrics = json.load(f)
+            except Exception as e:
+                logger.warning(f"无法读取 {quantstats_json}: {e}")
         
         # 检查是否有数据文件（比如 JSON）
         results_data = None
@@ -174,7 +199,9 @@ def get_latest_backtest_results():
             "result_dir": str(latest_dir),
             "images": image_paths,
             "has_data": results_data is not None,
-            "data": results_data
+            "data": results_data,
+            "quantstats_html": html_report,
+            "quantstats_metrics": quantstats_metrics
         }
         
     except Exception as exc:

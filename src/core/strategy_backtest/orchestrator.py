@@ -18,7 +18,7 @@ import yaml
 
 from .engine import StrategyBacktestEngine, Portfolio
 from .metrics import PerformanceMetrics
-from .visualization import BacktestVisualizer
+from .quantstats_visualization import QuantStatsVisualizer
 from .report import BacktestReportGenerator
 from .smart_data_preloader import SmartDataPreloader
 
@@ -504,12 +504,15 @@ class BacktestOrchestrator:
         if self.portfolio is None or self.metrics is None:
             raise ValueError("请先执行策略并计算指标")
 
-        visualizer = BacktestVisualizer(
+        # 使用 QuantStats 可视化工具
+        logger.info("使用 QuantStats 生成专业分析报告...")
+        qs_visualizer = QuantStatsVisualizer(
             portfolio=self.portfolio,
-            metrics=self.metrics,
             output_dir=str(self.output_dir),
         )
-        self.chart_paths = visualizer.plot_all()
+        quantstats_reports = qs_visualizer.plot_all(report_title=strategy_name)
+        self.chart_paths.update(quantstats_reports)
+        logger.info("QuantStats 报告生成完成")
 
         report_generator = BacktestReportGenerator(
             portfolio=self.portfolio,

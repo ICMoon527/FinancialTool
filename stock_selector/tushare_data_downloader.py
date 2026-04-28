@@ -627,23 +627,18 @@ class TushareDataDownloader:
         self,
         stock_codes: Optional[List[str]] = None,
         days: Optional[int] = None,
-        efinance_batch_size: Optional[int] = None,
         tushare_batch_size: Optional[int] = None
     ) -> Dict[str, any]:
         """
         下载股票数据
         
-        策略（优先级从高到低）：
-        1. 使用 Tushare 批量获取每批 tushare_batch_size 只股票的数据（稳定可靠）
-        2. Tushare 需要等待配额或失败时，使用 efinance 批量获取每批 efinance_batch_size 只股票的数据（免费，无配额限制）
-        3. 如果都失败，使用其他数据源单独获取
-        
-        注意：efinance 不用作单一股票获取 API 途径，只用于批量获取
+        策略：
+        1. 只使用 Tushare 批量获取每批 tushare_batch_size 只股票的数据（稳定可靠）
+        2. Tushare 失败或需要等待配额时，此批直接失败，不尝试其他数据源（节省时间）
         
         Args:
             stock_codes: 股票代码列表（默认所有股票）
             days: 获取多少个交易日的数据（默认 365）
-            efinance_batch_size: efinance 每批处理多少只股票（默认 50）
             tushare_batch_size: Tushare 每批处理多少只股票（默认 13）
             
         Returns:
@@ -651,8 +646,6 @@ class TushareDataDownloader:
         """
         # 从配置读取默认值
         config = get_config()
-        if efinance_batch_size is None:
-            efinance_batch_size = config.efinance_batch_size
         if days is None:
             days = config.update_data_default_days
         
@@ -691,10 +684,10 @@ class TushareDataDownloader:
         print(f"开始下载：{len(stock_codes)} 只股票，{days} 个交易日数据")
         if filtered_count > 0:
             print(f"（已过滤 {filtered_count} 只北交所股票）")
-        print(f"Tushare批量：{tushare_batch_size} 只/批，efinance批量：{efinance_batch_size} 只/批")
+        print(f"Tushare批量：{tushare_batch_size} 只/批")
         print(f"共 {total_batches} 批")
         print(f"日期范围：{start_date} 至 {end_date}")
-        print(f"数据源优先级：Tushare (批量) > efinance (批量) > 其他数据源 (单独)")
+        print(f"数据源：仅使用 Tushare 批量获取，失败则直接停止")
         print("=" * 80 + "\n")
         
         try:
@@ -711,69 +704,47 @@ class TushareDataDownloader:
                 
                 logger.debug(f"处理第 {batch_idx + 1}/{total_batches} 批：{len(batch_stocks)} 只股票")
                 
-                # 策略 1: 优先使用 Tushare 批量获取（稳定可靠）
+                # 策略 1: 只使用 Tushare 批量获取，失败则直接停止
                 pbar.set_description(f"总体进度 | 数据源: Tushare")
                 # 检查 Tushare 是否需要等待配额
                 need_to_wait = self.tushare_fetcher.will_need_to_wait()
                 
-                if not need_to_wait:
-                    # 不需要等待，尝试批量获取
-                    try:
-                        logger.debug(f"Trying Tushare batch download for {len(batch_stocks)} stocks")
-                        batch_df = self.tushare_fetcher.get_daily_data_batch(
-                            batch_stocks,
-                            start_date=start_str,
-                            end_date=end_str
-                        )
-                        
-                        if batch_df is not None and not batch_df.empty:
-                            # 成功批量获取，处理数据
-                            logger.debug(f"Tushare batch download successful, processing {len(batch_df)} records")
-                            self._process_batch_data(batch_df, batch_stocks, start_date, end_date, stats)
-                            continue
-                    except Exception as e:
-                        logger.debug(f"Tushare batch download failed: {e}, trying efinance")
+                if need_to_wait:
+                    logger.warning(f"Tushare 需要等待配额，跳过此批")
+                    stats['stocks_failed'] += len(batch_stocks)
+                    stats['failed_stocks'].extend([
+                        {'code': code, 'error': 'Tushare 需要等待配额'} 
+                        for code in batch_stocks
+                    ])
+                    continue
                 
-                # 策略 2: Tushare 需要等待或失败，尝试 efinance 批量获取
-                pbar.set_description(f"总体进度 | 数据源: efinance")
                 try:
-                    logger.debug(f"Trying efinance batch download for {len(batch_stocks)} stocks")
-                    batch_result = self.efinance_fetcher.get_daily_data_batch(
+                    logger.debug(f"Trying Tushare batch download for {len(batch_stocks)} stocks")
+                    batch_df = self.tushare_fetcher.get_daily_data_batch(
                         batch_stocks,
                         start_date=start_str,
                         end_date=end_str
                     )
                     
-                    if batch_result and len(batch_result) > 0:
+                    if batch_df is not None and not batch_df.empty:
                         # 成功批量获取，处理数据
-                        logger.debug(f"efinance batch download successful, got {len(batch_result)} stocks")
-                        self._process_efinance_batch_data(batch_result, batch_stocks, start_date, end_date, stats)
+                        logger.debug(f"Tushare batch download successful, processing {len(batch_df)} records")
+                        self._process_batch_data(batch_df, batch_stocks, start_date, end_date, stats)
                         continue
-                except Exception as e:
-                    logger.debug(f"efinance batch download failed: {e}, falling back to individual download")
-                
-                # 策略 3: 都失败或需要等待，使用其他数据源单独获取
-                pbar.set_description(f"总体进度 | 数据源: 其他")
-                logger.debug(f"Using other sources for batch {batch_idx + 1}")
-                for stock_code in tqdm(
-                    batch_stocks,
-                    desc=f"  第 {batch_idx + 1} 批",
-                    unit="stock",
-                    leave=False
-                ):
-                    success, records, error = self._download_single_stock_from_other_sources(
-                        stock_code, start_date, end_date
-                    )
-                    
-                    if success:
-                        stats['stocks_success'] += 1
-                        stats['total_records'] += records
                     else:
-                        stats['stocks_failed'] += 1
-                        stats['failed_stocks'].append({
-                            'code': stock_code,
-                            'error': error
-                        })
+                        logger.warning(f"Tushare 返回空数据，此批失败")
+                        stats['stocks_failed'] += len(batch_stocks)
+                        stats['failed_stocks'].extend([
+                            {'code': code, 'error': 'Tushare 返回空数据'} 
+                            for code in batch_stocks
+                        ])
+                except Exception as e:
+                    logger.warning(f"Tushare 批量获取失败: {e}，此批失败")
+                    stats['stocks_failed'] += len(batch_stocks)
+                    stats['failed_stocks'].extend([
+                        {'code': code, 'error': f'Tushare 批量获取失败: {e}'} 
+                        for code in batch_stocks
+                    ])
         
         except KeyboardInterrupt:
             print("\n\n下载被用户中断")
@@ -810,24 +781,19 @@ class TushareDataDownloader:
         stock_codes: Optional[List[str]] = None,
         start_date: Optional[date] = None,
         end_date: Optional[date] = None,
-        efinance_batch_size: Optional[int] = None,
         tushare_batch_size: Optional[int] = None
     ) -> Dict[str, any]:
         """
-        下载指定日期范围的股票数据（与download_data逻辑完全相同，但直接接受日期范围
+        下载指定日期范围的股票数据
         
-        策略（优先级从高到低）：
-        1. 使用 Tushare 批量获取每批 tushare_batch_size 只股票的数据（稳定可靠）
-        2. Tushare 需要等待配额或失败时，使用 efinance 批量获取每批 efinance_batch_size 只股票的数据（免费，无配额限制）
-        3. 如果都失败，使用其他数据源单独获取
-        
-        注意：efinance 不用作单一股票获取 API 途径，只用于批量获取
+        策略：
+        1. 只使用 Tushare 批量获取每批 tushare_batch_size 只股票的数据（稳定可靠）
+        2. Tushare 失败或需要等待配额时，此批直接失败，不尝试其他数据源（节省时间）
         
         Args:
             stock_codes: 股票代码列表（默认所有股票）
             start_date: 开始日期
             end_date: 结束日期
-            efinance_batch_size: efinance 每批处理多少只股票（默认 50）
             tushare_batch_size: Tushare 每批处理多少只股票（默认 20）
             
         Returns:
@@ -835,8 +801,6 @@ class TushareDataDownloader:
         """
         # 从配置读取默认值
         config = get_config()
-        if efinance_batch_size is None:
-            efinance_batch_size = config.efinance_batch_size
         
         if stock_codes is None:
             stock_codes = get_all_stock_codes()
@@ -882,10 +846,10 @@ class TushareDataDownloader:
         print(f"开始下载：{len(stock_codes)} 只股票，{days} 个交易日数据")
         if filtered_count > 0:
             print(f"（已过滤 {filtered_count} 只北交所股票）")
-        print(f"Tushare批量：{tushare_batch_size} 只/批，efinance批量：{efinance_batch_size} 只/批")
+        print(f"Tushare批量：{tushare_batch_size} 只/批")
         print(f"共 {total_batches} 批")
         print(f"日期范围：{start_date} 至 {end_date}")
-        print(f"数据源优先级：Tushare (批量) > efinance (批量) > 其他数据源 (单独)")
+        print(f"数据源：仅使用 Tushare 批量获取，失败则直接停止")
         print("=" * 80 + "\n")
         
         try:
@@ -902,72 +866,47 @@ class TushareDataDownloader:
                 
                 logger.info(f"处理第 {batch_idx + 1}/{total_batches} 批：{len(batch_stocks)} 只股票")
                 
-                # 策略 1: 优先使用 Tushare 批量获取（稳定可靠）
+                # 策略 1: 只使用 Tushare 批量获取，失败则直接停止
                 pbar.set_description(f"总体进度 | 数据源: Tushare")
                 # 检查 Tushare 是否需要等待配额
                 need_to_wait = self.tushare_fetcher.will_need_to_wait()
                 
-                if not need_to_wait:
-                    # 不需要等待，尝试批量获取
-                    try:
-                        logger.debug(f"Trying Tushare batch download for {len(batch_stocks)} stocks")
-                        batch_df = self.tushare_fetcher.get_daily_data_batch(
-                            batch_stocks,
-                            start_date=start_str,
-                            end_date=end_str
-                        )
-                        
-                        if batch_df is not None and not batch_df.empty:
-                            # 成功批量获取，处理数据
-                            logger.debug(f"Tushare batch download successful, processing {len(batch_df)} records")
-                            self._process_batch_data(batch_df, batch_stocks, start_date, end_date, stats)
-                            continue
-                    except Exception as e:
-                        logger.debug(f"Tushare batch download failed: {e}, trying efinance")
+                if need_to_wait:
+                    logger.warning(f"Tushare 需要等待配额，跳过此批")
+                    stats['stocks_failed'] += len(batch_stocks)
+                    stats['failed_stocks'].extend([
+                        {'code': code, 'error': 'Tushare 需要等待配额'} 
+                        for code in batch_stocks
+                    ])
+                    continue
                 
-                # 策略 2: Tushare 需要等待或失败，尝试 efinance 批量获取
-                pbar.set_description(f"总体进度 | 数据源: efinance")
                 try:
-                    logger.debug(f"Trying efinance batch download for {len(batch_stocks)} stocks")
-                    batch_result = self.efinance_fetcher.get_daily_data_batch(
+                    logger.debug(f"Trying Tushare batch download for {len(batch_stocks)} stocks")
+                    batch_df = self.tushare_fetcher.get_daily_data_batch(
                         batch_stocks,
-                        start_date=start_date,
-                        end_date=end_date
+                        start_date=start_str,
+                        end_date=end_str
                     )
                     
-                    if batch_result['success'] and not batch_result['data'].empty:
-                        logger.debug(f"efinance batch download successful, processing {len(batch_result['data'])} records")
-                        self._process_batch_data(batch_result['data'], batch_stocks, start_date, end_date, stats)
+                    if batch_df is not None and not batch_df.empty:
+                        # 成功批量获取，处理数据
+                        logger.debug(f"Tushare batch download successful, processing {len(batch_df)} records")
+                        self._process_batch_data(batch_df, batch_stocks, start_date, end_date, stats)
                         continue
                     else:
-                        logger.debug(f"efinance batch failed or empty, trying individual sources")
+                        logger.warning(f"Tushare 返回空数据，此批失败")
+                        stats['stocks_failed'] += len(batch_stocks)
+                        stats['failed_stocks'].extend([
+                            {'code': code, 'error': 'Tushare 返回空数据'} 
+                            for code in batch_stocks
+                        ])
                 except Exception as e:
-                    logger.debug(f"efinance batch download failed: {e}, trying individual sources")
-                
-                # 策略 3: 两种批量都失败，使用单独的数据源
-                pbar.set_description(f"总体进度 | 数据源: 单只获取")
-                for stock_code in batch_stocks:
-                    try:
-                        logger.debug(f"Trying individual download for {stock_code}")
-                        # 尝试多种数据源
-                        df = self._download_single_stock(stock_code, start_date, end_date)
-                        if df is not None and not df.empty:
-                            logger.debug(f"Individual download successful for {stock_code}, processing {len(df)} records")
-                            self._process_single_stock_data(df, stock_code, stats)
-                        else:
-                            logger.debug(f"No data for {stock_code} from any source")
-                            stats['stocks_failed'] += 1
-                            stats['failed_stocks'].append({
-                                'code': stock_code,
-                                'error': 'No data available from any source'
-                            })
-                    except Exception as e:
-                        logger.error(f"Failed to download {stock_code}: {e}")
-                        stats['stocks_failed'] += 1
-                        stats['failed_stocks'].append({
-                            'code': stock_code,
-                            'error': str(e)
-                        })
+                    logger.warning(f"Tushare 批量获取失败: {e}，此批失败")
+                    stats['stocks_failed'] += len(batch_stocks)
+                    stats['failed_stocks'].extend([
+                        {'code': code, 'error': f'Tushare 批量获取失败: {e}'} 
+                        for code in batch_stocks
+                    ])
         
         except Exception as e:
             logger.error(f"下载过程出错: {e}", exc_info=True)

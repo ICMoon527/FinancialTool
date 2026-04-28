@@ -1047,61 +1047,24 @@ class DataFetcherManager:
             target_trading_day = get_previous_trading_day(today)
             logger.info(f"当前时间 {now} 已过收盘时间 {market_close_time}，目标日期设为最近的交易日: {target_trading_day}")
 
+        # 直接只使用 AkshareFetcher 获取大盘数据
         valid_data = None
-        last_error = None
-        validated_once = False
-
-        for i, fetcher in enumerate(self._fetchers):
-            fetcher_name = fetcher.__class__.__name__
-            # 只尝试支持 get_index_daily_data 方法的 fetcher
-            if not hasattr(fetcher, 'get_index_daily_data'):
-                continue
-            try:
-                logger.info(f"尝试使用 [{fetcher_name}] 获取 {symbol} 指数历史数据...")
-                df = fetcher.get_index_daily_data(symbol, start_date, end_date)
-                if df is not None and not df.empty:
-                    logger.info(f"[{fetcher_name}] 成功获取 {symbol} 指数历史数据")
-
-                    # 验证数据最新日期是否满足要求
-                    if 'date' in df.columns:
-                        latest_date_in_data = pd.to_datetime(df['date'].iloc[-1]).date()
-                        logger.info(f"获取的 {symbol} 数据最新日期为: {latest_date_in_data}")
-
-                        if latest_date_in_data >= target_trading_day:
-                            # 数据有效，返回
-                            logger.info(f"数据验证通过：{symbol} 数据最新日期 {latest_date_in_data} >= 目标日期 {target_trading_day}")
-                            valid_data = df
-                            break
-                        else:
-                            # 第一次验证失败时，检查是否需要调整目标日期
-                            if not validated_once and latest_date_in_data < target_trading_day:
-                                logger.warning(f"数据验证失败：{symbol} 数据最新日期 {latest_date_in_data} < 目标日期 {target_trading_day}")
-                                logger.info(f"历史数据可能还未更新，尝试将目标日期调整为数据最新日期的上一个交易日")
-                                # 将目标日期调整为数据最新日期的上一个交易日
-                                target_trading_day = get_previous_trading_day(latest_date_in_data)
-                                logger.info(f"目标日期已调整为: {target_trading_day}")
-                                validated_once = True
-                                # 重新验证
-                                if latest_date_in_data >= target_trading_day:
-                                    logger.info(f"数据验证通过（调整目标日期后）：{symbol} 数据最新日期 {latest_date_in_data} >= 目标日期 {target_trading_day}")
-                                    valid_data = df
-                                    break
-                            elif i == len(self._fetchers) - 1:
-                                # 如果是最后一个 fetcher，仍然用这个数据
-                                valid_data = df
-                                break
-                            else:
-                                # 继续尝试下一个数据源
-                                last_error = f"[{fetcher_name}] 获取的数据不完整，最新日期 {latest_date_in_data} < {target_trading_day}"
-                    else:
-                        # 没有 date 列，直接用这个数据
+        for fetcher in self._fetchers:
+            if fetcher.__class__.__name__ == "AkshareFetcher" and hasattr(fetcher, 'get_index_daily_data'):
+                try:
+                    logger.info(f"使用 [AkshareFetcher] 获取 {symbol} 指数历史数据...")
+                    df = fetcher.get_index_daily_data(symbol, start_date, end_date)
+                    if df is not None and not df.empty:
+                        logger.info(f"[AkshareFetcher] 成功获取 {symbol} 指数历史数据")
+                        if 'date' in df.columns:
+                            latest_date_in_data = pd.to_datetime(df['date'].iloc[-1]).date()
+                            logger.info(f"获取的 {symbol} 数据最新日期为: {latest_date_in_data}")
                         valid_data = df
-                        break
-                else:
-                    logger.warning(f"[{fetcher_name}] 未获取到 {symbol} 指数历史数据")
-            except Exception as e:
-                logger.warning(f"[{fetcher_name}] 获取 {symbol} 指数历史数据失败: {e}")
-                last_error = str(e)
+                    else:
+                        logger.warning(f"[AkshareFetcher] 未获取到 {symbol} 指数历史数据")
+                except Exception as e:
+                    logger.warning(f"[AkshareFetcher] 获取 {symbol} 指数历史数据失败: {e}")
+                break
         
         if valid_data is not None:
             return valid_data

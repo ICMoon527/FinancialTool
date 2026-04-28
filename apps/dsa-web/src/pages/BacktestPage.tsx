@@ -153,6 +153,10 @@ const BacktestPage: React.FC = () => {
     [key: string]: string;
   }>({});
   const [latestBacktestData, setLatestBacktestData] = useState<any>(null);
+  
+  // QuantStats 报告状态
+  const [quantstatsHtml, setQuantstatsHtml] = useState<string | null>(null);
+  const [quantstatsMetrics, setQuantstatsMetrics] = useState<any>(null);
 
   // 轮询定时器引用
   const pollTimerRef = useRef<number | null>(null);
@@ -225,6 +229,14 @@ const BacktestPage: React.FC = () => {
         if (response.data) {
           setLatestBacktestData(response.data);
         }
+        
+        // QuantStats 数据
+        if (response.quantstats_html) {
+          setQuantstatsHtml(response.quantstats_html);
+        }
+        if (response.quantstats_metrics) {
+          setQuantstatsMetrics(response.quantstats_metrics);
+        }
       }
     } catch (err) {
       console.error('获取最近回测结果失败:', err);
@@ -262,12 +274,21 @@ const BacktestPage: React.FC = () => {
             const errorMsg = response.task.error || '回测失败';
             setRunError(errorMsg);
           }
+          
+          // 如果任务成功完成，刷新最新的回测结果
+          if (status === 'completed') {
+            console.log('回测完成，等待报告生成...');
+            // 稍微延迟1.5秒，确保 QuantStats 报告完全生成好
+            await new Promise(resolve => setTimeout(resolve, 1500));
+            console.log('刷新最新回测结果...');
+            await fetchLatestBacktestResults();
+          }
         }
       }
     } catch (err) {
       console.error('获取任务状态失败:', err);
     }
-  }, []);
+  }, [fetchLatestBacktestResults]);
 
   // 加载默认配置和策略列表
   useEffect(() => {
@@ -614,16 +635,13 @@ const BacktestPage: React.FC = () => {
                 <p>调试信息:</p>
                 <p>taskStatus.status: {JSON.stringify(taskStatus?.status)}</p>
                 <p>taskStatus 完整对象: {JSON.stringify(taskStatus, null, 2)}</p>
-                <p>resultData: {resultData ? '有数据' : '无数据'}</p>
-                <p>resultData 类型: {typeof resultData}</p>
-                {resultData && (
-                  <p>resultData keys: {Object.keys(resultData).join(', ')}</p>
-                )}
-                {resultData && (
-                  <p>resultData 完整对象: {JSON.stringify(resultData, null, 2)}</p>
-                )}
-                <p>metrics: {metrics ? '有数据' : '无数据'}</p>
+                <p>latestBacktestData: {latestBacktestData ? '有数据' : '无数据'}</p>
                 <p>backtestImages keys: {Object.keys(backtestImages).join(', ')}</p>
+                <p>quantstatsHtml: {quantstatsHtml ? quantstatsHtml : '无数据'}</p>
+                <p>quantstatsMetrics: {quantstatsMetrics ? '有数据' : '无数据'}</p>
+                {quantstatsMetrics && (
+                  <p>quantstatsMetrics keys: {Object.keys(quantstatsMetrics).join(', ')}</p>
+                )}
               </div>
             </Card>
           </div>
@@ -632,13 +650,96 @@ const BacktestPage: React.FC = () => {
           <div className="space-y-6">
             <h2 className="text-lg font-semibold text-white">回测结果</h2>
             
-            {/* 保存的图片 - 优先显示 */}
-            {Object.keys(backtestImages).length > 0 && (
+            {/* QuantStats 专业分析报告 - 优先显示 */}
+            {quantstatsHtml && (
+              <div className="space-y-4">
+                <Card padding="md">
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-sm font-semibold text-white">QuantStats 专业分析报告</h3>
+                    <a
+                      href={`/${quantstatsHtml}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-xs text-blue-400 hover:text-blue-300 underline"
+                    >
+                      在新标签页打开
+                    </a>
+                  </div>
+                  <iframe
+                    src={`/${quantstatsHtml}`}
+                    title="QuantStats Report"
+                    className="w-full h-[800px] rounded-lg border border-white/10"
+                    sandbox="allow-scripts allow-same-origin"
+                  />
+                </Card>
+                
+                {/* QuantStats 指标显示 */}
+                {quantstatsMetrics && (
+                  <Card padding="md">
+                    <h3 className="text-sm font-semibold text-white mb-4">QuantStats 关键指标</h3>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                      {Object.entries(quantstatsMetrics).map(([key, value]) => (
+                        <div key={key} className="p-3 rounded-lg bg-white/5">
+                          <div className="text-xs text-muted truncate">{key}</div>
+                          <div className="text-sm font-semibold text-white mt-1">
+                            {typeof value === 'number' 
+                              ? (key.toLowerCase().includes('pct') || key.toLowerCase().includes('rate') || key.toLowerCase().includes('ratio'))
+                                ? `${(value * 100).toFixed(2)}%`
+                                : value.toFixed(4)
+                              : String(value)
+                            }
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </Card>
+                )}
+                
+                {/* QuantStats 图表 */}
+                <div className="space-y-4">
+                  {backtestImages['qs_equity_curve'] && (
+                    <Card padding="md">
+                      <h3 className="text-sm font-semibold text-white mb-2">净值曲线</h3>
+                      <img
+                        src={`/${backtestImages['qs_equity_curve']}`}
+                        alt="净值曲线"
+                        className="w-full rounded-lg"
+                      />
+                    </Card>
+                  )}
+                  
+                  {backtestImages['qs_drawdown_curve'] && (
+                    <Card padding="md">
+                      <h3 className="text-sm font-semibold text-white mb-2">回撤曲线</h3>
+                      <img
+                        src={`/${backtestImages['qs_drawdown_curve']}`}
+                        alt="回撤曲线"
+                        className="w-full rounded-lg"
+                      />
+                    </Card>
+                  )}
+                  
+                  {backtestImages['qs_monthly_heatmap'] && (
+                    <Card padding="md">
+                      <h3 className="text-sm font-semibold text-white mb-2">月度收益热力图</h3>
+                      <img
+                        src={`/${backtestImages['qs_monthly_heatmap']}`}
+                        alt="月度收益热力图"
+                        className="w-full rounded-lg"
+                      />
+                    </Card>
+                  )}
+                </div>
+              </div>
+            )}
+            
+            {/* 传统图表 - 如果没有 QuantStats 或有额外图表 */}
+            {(!quantstatsHtml || (backtestImages['equity_curve'] || backtestImages['drawdown_curve'] || backtestImages['metrics_heatmap'] || backtestImages['metrics_radar'])) && (
               <div className="space-y-4">
                 {/* 净值曲线 */}
                 {backtestImages['equity_curve'] && (
                   <Card padding="md">
-                    <h3 className="text-sm font-semibold text-white mb-2">净值曲线</h3>
+                    <h3 className="text-sm font-semibold text-white mb-2">净值曲线 (原始)</h3>
                     <img
                       src={`/${backtestImages['equity_curve']}`}
                       alt="净值曲线"
@@ -650,7 +751,7 @@ const BacktestPage: React.FC = () => {
                 {/* 回撤曲线 */}
                 {backtestImages['drawdown_curve'] && (
                   <Card padding="md">
-                    <h3 className="text-sm font-semibold text-white mb-2">回撤曲线</h3>
+                    <h3 className="text-sm font-semibold text-white mb-2">回撤曲线 (原始)</h3>
                     <img
                       src={`/${backtestImages['drawdown_curve']}`}
                       alt="回撤曲线"
@@ -662,7 +763,7 @@ const BacktestPage: React.FC = () => {
                 {/* 指标热力图 */}
                 {backtestImages['metrics_heatmap'] && (
                   <Card padding="md">
-                    <h3 className="text-sm font-semibold text-white mb-2">指标热力图</h3>
+                    <h3 className="text-sm font-semibold text-white mb-2">指标热力图 (原始)</h3>
                     <img
                       src={`/${backtestImages['metrics_heatmap']}`}
                       alt="指标热力图"
@@ -674,7 +775,7 @@ const BacktestPage: React.FC = () => {
                 {/* 指标雷达图 */}
                 {backtestImages['metrics_radar'] && (
                   <Card padding="md">
-                    <h3 className="text-sm font-semibold text-white mb-2">指标雷达图</h3>
+                    <h3 className="text-sm font-semibold text-white mb-2">指标雷达图 (原始)</h3>
                     <img
                       src={`/${backtestImages['metrics_radar']}`}
                       alt="指标雷达图"

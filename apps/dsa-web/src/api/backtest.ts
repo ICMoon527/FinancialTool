@@ -30,6 +30,8 @@ export const backtestApi = {
         };
         has_data?: boolean;
         data?: any;
+        quantstats_html?: string;
+        quantstats_metrics?: any;
     }> => {
         const response = await apiClient.get('/api/v1/backtest/strategy/results/latest');
         return response.data;

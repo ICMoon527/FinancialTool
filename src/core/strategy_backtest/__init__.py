@@ -37,7 +37,7 @@ from .engine import (
     OrderStatus,
 )
 from .metrics import PerformanceMetrics
-from .visualization import BacktestVisualizer
+from .quantstats_visualization import QuantStatsVisualizer
 from .report import BacktestReportGenerator
 from .sensitivity import ParameterSensitivityTest
 from .orchestrator import BacktestOrchestrator
@@ -52,7 +52,7 @@ __all__ = [
     "OrderType",
     "OrderStatus",
     "PerformanceMetrics",
-    "BacktestVisualizer",
+    "QuantStatsVisualizer",
     "BacktestReportGenerator",
     "ParameterSensitivityTest",
     "BacktestOrchestrator",
