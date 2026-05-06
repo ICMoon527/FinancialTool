@@ -131,18 +131,23 @@ export interface StrategyBacktestRunAsyncRequest {
 export interface StrategyBacktestRunAsyncResponse {
   success: boolean;
   message: string;
-  task_id: string;
+  task_id?: string;
+  taskId?: string;
 }
 
 export interface StrategyBacktestTaskStatusResponse {
   success: boolean;
   message: string;
   task?: {
-    task_id: string;
+    task_id?: string;
+    taskId?: string;
     status: 'pending' | 'running' | 'completed' | 'failed' | 'stopped';
-    created_at: string;
+    created_at?: string;
+    createdAt?: string;
     started_at?: string;
+    startedAt?: string;
     completed_at?: string;
+    completedAt?: string;
     result?: Record<string, any>;
     error?: string;
   };

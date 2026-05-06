@@ -118,30 +118,15 @@ def get_latest_backtest_results():
                 "message": "没有找到回测结果目录"
             }
         
-        # 如果是根目录的回测结果，直接在这个目录查找文件
+        # 回测结果保存在根目录（不是子目录）
         latest_dir = results_dir
         dir_name = ""
+        logger.info(f"找到回测结果目录: {latest_dir}")
         
-        # 检查是否有子目录或者直接在根目录有文件
-        has_subdirs = False
-        result_dirs = []
+        # 收集图片路径 - 支持原始文件名和新的 QuantStats 文件名，添加时间戳
+        import time
+        current_timestamp = int(time.time())
         
-        for item in results_dir.iterdir():
-            if item.is_dir():
-                # 检查子目录是否有报告或图片
-                if (item / "backtest_report.md").exists() or (item / "equity_curve.png").exists():
-                    has_subdirs = True
-                    result_dirs.append(item)
-        
-        # 如果有子目录，取最新的
-        if has_subdirs:
-            result_dirs.sort(key=lambda x: x.stat().st_mtime, reverse=True)
-            latest_dir = result_dirs[0]
-            dir_name = latest_dir.name
-        
-        logger.info(f"找到最近回测结果: {latest_dir}")
-        
-        # 收集图片路径 - 支持原始文件名和新的 QuantStats 文件名
         image_paths = {}
         image_files = [
             "equity_curve.png", "drawdown_curve.png", "metrics_heatmap.png", "metrics_radar.png",
@@ -151,22 +136,31 @@ def get_latest_backtest_results():
         for img_name in image_files:
             img_path = latest_dir / img_name
             if img_path.exists():
-                # 返回相对路径，用于静态文件服务
+                # 获取文件修改时间
+                img_mtime = img_path.stat().st_mtime
+                # 返回相对路径，用于静态文件服务，添加时间戳参数
                 if dir_name:
                     relative_path = f"{results_dir.name}/{dir_name}/{img_name}"
                 else:
                     relative_path = f"{results_dir.name}/{img_name}"
-                image_paths[img_name.replace('.png', '')] = relative_path
+                # 添加时间戳
+                image_with_timestamp = f"{relative_path}?t={current_timestamp}"
+                image_paths[img_name.replace('.png', '')] = image_with_timestamp
+                logger.info(f"找到图片: {img_path}, 修改时间: {img_mtime}")
         
         # 收集 QuantStats HTML 报告
         html_report = None
         html_filename = "quantstats_report.html"
         html_path = latest_dir / html_filename
         if html_path.exists():
+            html_mtime = html_path.stat().st_mtime
             if dir_name:
-                html_report = f"{results_dir.name}/{dir_name}/{html_filename}"
+                relative_html_path = f"{results_dir.name}/{dir_name}/{html_filename}"
             else:
-                html_report = f"{results_dir.name}/{html_filename}"
+                relative_html_path = f"{results_dir.name}/{html_filename}"
+            # 添加时间戳
+            html_report = f"{relative_html_path}?t={current_timestamp}"
+            logger.info(f"找到HTML报告: {html_path}, 修改时间: {html_mtime}")
         
         # 收集 QuantStats metrics JSON
         quantstats_metrics = None
@@ -193,6 +187,14 @@ def get_latest_backtest_results():
                         break
                 except Exception as e:
                     logger.warning(f"无法读取 {json_filename}: {e}")
+        
+        # 打印调试信息
+        logger.info(f"准备返回数据:")
+        logger.info(f"  - 包含图片: {list(image_paths.keys())}")
+        logger.info(f"  - 包含HTML报告: {html_report is not None}")
+        logger.info(f"  - 包含Metrics: {quantstats_metrics is not None}")
+        if results_data:
+            logger.info(f"  - 包含Results数据")
         
         return {
             "success": True,

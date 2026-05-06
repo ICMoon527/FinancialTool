@@ -22,9 +22,9 @@ export default defineConfig({
     // 强制生成完全唯一的文件名，彻底避免缓存问题
     rollupOptions: {
       output: {
-        entryFileNames: `assets/[name]-v2-[hash].js`,
-        chunkFileNames: `assets/[name]-v2-[hash].js`,
-        assetFileNames: `assets/[name]-v2-[hash].[ext]`
+        entryFileNames: `assets/[name]-v9-[hash].js`,
+        chunkFileNames: `assets/[name]-v9-[hash].js`,
+        assetFileNames: `assets/[name]-v9-[hash].[ext]`
       }
     }
   },

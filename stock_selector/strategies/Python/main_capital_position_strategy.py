@@ -39,7 +39,7 @@ class MainCapitalPositionStrategy(StockSelectorStrategy):
     """
 
     # 默认阈值参数
-    ABSORPTION_THRESHOLD = 5.0
+    ABSORPTION_THRESHOLD = 10.0
 
     def __init__(self):
         metadata = StrategyMetadata(

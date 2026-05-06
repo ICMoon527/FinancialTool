@@ -24,17 +24,21 @@ export const backtestApi = {
      */
     getLatestBacktestResults: async (): Promise<{
         success: boolean;
+        resultDir?: string;
         result_dir?: string;
         images?: {
             [key: string]: string;
         };
+        hasData?: boolean;
         has_data?: boolean;
         data?: any;
+        quantstatsHtml?: string;
         quantstats_html?: string;
+        quantstatsMetrics?: any;
         quantstats_metrics?: any;
     }> => {
         const response = await apiClient.get('/api/v1/backtest/strategy/results/latest');
-        return response.data;
+        return toCamelCase(response.data);
     },
 
     /**

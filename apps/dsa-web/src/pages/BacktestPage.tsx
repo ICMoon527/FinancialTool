@@ -211,47 +211,89 @@ const BacktestPage: React.FC = () => {
 
   // 获取最近回测结果的函数
   const fetchLatestBacktestResults = useCallback(async () => {
-    if (!isMountedRef.current) return;
+    console.log('=== fetchLatestBacktestResults 被调用 ===');
+    console.log('⏳ 调用时间:', new Date().toISOString());
+    
+    if (!isMountedRef.current) {
+      console.warn('组件已卸载，跳过');
+      return;
+    }
     
     try {
-      console.log('正在获取最近回测结果...');
+      console.log('📡 正在请求API获取最近回测结果...');
       const response = await backtestApi.getLatestBacktestResults();
       
-      if (!isMountedRef.current) return;
+      if (!isMountedRef.current) {
+        console.warn('收到响应时组件已卸载，跳过');
+        return;
+      }
       
-      console.log('最近回测结果响应:', response);
+      console.log('✅ 收到API响应:', response);
+      console.log('  - success:', response.success);
+      console.log('  - images keys:', Object.keys(response.images || {}));
+      console.log('  - quantstatsHtml:', response.quantstatsHtml);
+      console.log('  - quantstatsMetrics:', response.quantstatsMetrics ? '有' : '无');
       
       if (response.success) {
-        // 如果有保存的图片
+        console.log('🔄 更新前端状态...');
+        
+        // 更新图片
+        console.log('  - 设置 backtestImages:', response.images);
         setBacktestImages(response.images || {});
         
-        // 如果有保存的数据
+        // 更新数据
         if (response.data) {
+          console.log('  - 设置 latestBacktestData');
           setLatestBacktestData(response.data);
         }
         
-        // QuantStats 数据
-        if (response.quantstats_html) {
-          setQuantstatsHtml(response.quantstats_html);
+        // 更新 QuantStats HTML
+        if (response.quantstatsHtml) {
+          console.log('  - 设置 quantstatsHtml:', response.quantstatsHtml);
+          setQuantstatsHtml(response.quantstatsHtml);
         }
-        if (response.quantstats_metrics) {
-          setQuantstatsMetrics(response.quantstats_metrics);
+        
+        // 更新 QuantStats Metrics
+        if (response.quantstatsMetrics) {
+          console.log('  - 设置 quantstatsMetrics');
+          setQuantstatsMetrics(response.quantstatsMetrics);
         }
+        
+        console.log('✅ 所有状态已更新！');
+      } else {
+        console.warn('API返回success=false:', response);
       }
     } catch (err) {
-      console.error('获取最近回测结果失败:', err);
+      console.error('❌ 获取最近回测结果失败:', err);
     }
-  }, []);
+  }, []); // 移除所有依赖项！
 
   // 获取任务状态的函数
   const fetchTaskStatus = useCallback(async (currentTaskId: string) => {
-    if (!isMountedRef.current || !currentTaskId) return;
+    console.log('=== fetchTaskStatus 被调用 ===');
+    console.log('currentTaskId:', currentTaskId);
+    console.log('isMountedRef.current:', isMountedRef.current);
+    
+    if (!isMountedRef.current) {
+      console.log('组件已卸载，跳过');
+      return;
+    }
+    
+    if (!currentTaskId) {
+      console.log('taskId 无效，跳过');
+      return;
+    }
     
     try {
       console.log('正在获取任务状态:', currentTaskId);
       const response = await backtestApi.getBacktestTaskStatus(currentTaskId);
       
-      if (!isMountedRef.current) return;
+      console.log('收到任务状态响应:', response);
+      
+      if (!isMountedRef.current) {
+        console.log('收到响应时组件已卸载，跳过');
+        return;
+      }
       
       console.log('任务状态响应:', response);
       setTaskStatus(response.task);
@@ -262,6 +304,7 @@ const BacktestPage: React.FC = () => {
         
         // 任务结束
         if (status === 'completed' || status === 'failed' || status === 'stopped') {
+          console.log('任务结束，停止轮询');
           setIsRunning(false);
           setIsStopping(false);
           
@@ -277,16 +320,30 @@ const BacktestPage: React.FC = () => {
           
           // 如果任务成功完成，刷新最新的回测结果
           if (status === 'completed') {
-            console.log('回测完成，等待报告生成...');
-            // 稍微延迟1.5秒，确保 QuantStats 报告完全生成好
-            await new Promise(resolve => setTimeout(resolve, 1500));
-            console.log('刷新最新回测结果...');
+            console.log('✅ 回测完成！等待报告文件完全写入磁盘...');
+            // 延迟2.5秒，确保所有文件完全写入（包括QuantStats的HTML、图片和JSON）
+            console.log('⌛ 等待 2.5 秒...');
+            await new Promise(resolve => setTimeout(resolve, 2500));
+            console.log('🔄 开始刷新最新回测结果...');
             await fetchLatestBacktestResults();
+            console.log('✅ 刷新完成！');
           }
         }
       }
     } catch (err) {
       console.error('获取任务状态失败:', err);
+      // 如果出错，清理掉无效的 taskId 和轮询
+      setTaskId(null);
+      setIsRunning(false);
+      setIsStopping(false);
+      setTaskStatus(null);
+      // 清理 localStorage
+      localStorage.removeItem('backtest_task_id');
+      // 清理轮询定时器
+      if (pollTimerRef.current) {
+        clearInterval(pollTimerRef.current);
+        pollTimerRef.current = null;
+      }
     }
   }, [fetchLatestBacktestResults]);
 
@@ -401,10 +458,22 @@ const BacktestPage: React.FC = () => {
         maxPositions: typeof maxPositions === 'number' ? maxPositions : 3,
       });
       
-      setTaskId(response.task_id);
+      console.log('=== API 响应完整数据 ===');
+      console.log('response:', response);
+      console.log('response.taskId:', response.taskId);
+      console.log('response.task_id:', (response as any).task_id);
+      console.log('Object.keys(response):', Object.keys(response));
+      
+      const actualTaskId = (response.taskId || (response as any).task_id) as string;
+      
+      if (!actualTaskId) {
+        throw new Error('API 没有返回有效的 taskId');
+      }
+      
+      setTaskId(actualTaskId);
       // 保存taskId到localStorage
-      localStorage.setItem('backtest_task_id', response.task_id);
-      console.log(`回测任务已提交: ${response.task_id}`);
+      localStorage.setItem('backtest_task_id', actualTaskId);
+      console.log(`回测任务已提交: ${actualTaskId}`);
       
       // 清理之前的轮询
       if (pollTimerRef.current) {
@@ -414,11 +483,11 @@ const BacktestPage: React.FC = () => {
       
       // 开始轮询任务状态
       pollTimerRef.current = setInterval(() => {
-        pollTaskStatus(response.task_id);
+        pollTaskStatus(actualTaskId);
       }, 3000);
       
       // 立即查询一次
-      pollTaskStatus(response.task_id);
+      pollTaskStatus(actualTaskId);
       
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : '回测任务提交失败';
@@ -441,7 +510,7 @@ const BacktestPage: React.FC = () => {
     }
   };
 
-  // 获取结果数据
+  // 获取结果数据（备用数据）
   const resultData = taskStatus?.result;
   const metrics = resultData?.metrics as Record<string, unknown> | undefined;
   
@@ -450,11 +519,12 @@ const BacktestPage: React.FC = () => {
   console.log('  - taskStatus:', taskStatus);
   console.log('  - taskStatus 完整类型:', typeof taskStatus);
   console.log('  - taskStatus 所有键:', taskStatus ? Object.keys(taskStatus) : '无');
-  console.log('  - resultData:', resultData);
-  console.log('  - resultData 类型:', typeof resultData);
-  console.log('  - resultData 所有键:', resultData ? Object.keys(resultData) : '无');
-  console.log('  - metrics:', metrics);
-  console.log('  - resultData?.results:', resultData?.results);
+  console.log('  - latestBacktestData:', latestBacktestData ? '有数据' : '无数据');
+  console.log('  - latestBacktestData 类型:', typeof latestBacktestData);
+  console.log('  - latestBacktestData 所有键:', latestBacktestData ? Object.keys(latestBacktestData) : '无');
+  console.log('  - backtestImages keys:', Object.keys(backtestImages).join(', '));
+  console.log('  - quantstatsHtml:', quantstatsHtml ? '有数据' : '无数据');
+  console.log('  - quantstatsMetrics:', quantstatsMetrics ? '有数据' : '无数据');
 
   // 获取已选策略的显示文本
   const getSelectedStrategiesText = useCallback(() => {
@@ -631,7 +701,7 @@ const BacktestPage: React.FC = () => {
           {/* 调试信息 */}
           <div className="mb-4">
             <Card padding="sm">
-              <div className="text-xs text-muted">
+              <div className="text-xs text-muted h-[200px] overflow-y-auto">
                 <p>调试信息:</p>
                 <p>taskStatus.status: {JSON.stringify(taskStatus?.status)}</p>
                 <p>taskStatus 完整对象: {JSON.stringify(taskStatus, null, 2)}</p>
