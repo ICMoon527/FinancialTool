@@ -30,6 +30,9 @@ const KlineChart: React.FC<{
   const [cursorValues, setCursorValues] = useState<{
     closePrice?: number;
     mainCost?: number;
+    mainNetBuyWan?: number;
+    mainDirection?: 'inflow' | 'outflow';
+    turnoverRatio?: number;
   }>({});
 
   const subChartContainerRefs = useRef<{ [key: string]: HTMLDivElement | null }>({});
@@ -523,6 +526,9 @@ const KlineChart: React.FC<{
             if (param.time) {
               let closePrice: number | undefined;
               let mainCost: number | undefined;
+              let mainNetBuyWan: number | undefined;
+              let mainDirection: 'inflow' | 'outflow' | undefined;
+              let turnoverRatio: number | undefined;
               
               const klinePoint = klineDataRef.current?.find((item: any) => item.time === param.time);
               if (klinePoint) {
@@ -532,11 +538,17 @@ const KlineChart: React.FC<{
               const mainCostDataPoint = getIndicatorDataItem('main_cost', param.time);
               if (mainCostDataPoint) {
                 mainCost = mainCostDataPoint.main_cost || mainCostDataPoint.cost;
+                mainNetBuyWan = mainCostDataPoint.main_net_buy_wan;
+                mainDirection = mainCostDataPoint.main_direction;
+                turnoverRatio = mainCostDataPoint.turnover_ratio;
               }
               
               setCursorValues({
                 closePrice,
                 mainCost,
+                mainNetBuyWan,
+                mainDirection,
+                turnoverRatio,
               });
               
               if (mainChartRef.current && candlestickSeriesRef.current) {
@@ -662,6 +674,24 @@ const KlineChart: React.FC<{
                   {cursorValues.mainCost.toFixed(2)}
                 </span>
               )}
+              {(() => {
+                const buyWan = cursorValues.mainNetBuyWan;
+                const ratio = cursorValues.turnoverRatio;
+                const isInflow = cursorValues.mainDirection === 'inflow';
+                if (buyWan == null || isNaN(buyWan)) return null;
+                return (
+                  <span className="flex items-center gap-2 ml-2">
+                    <span className={`text-xs font-mono ${isInflow ? 'text-[#FF4444]' : 'text-[#44AA44]'}`}>
+                      {isInflow ? '▲' : '▼'}净{isInflow ? '买' : '卖'}{Math.abs(buyWan).toFixed(0)}万
+                    </span>
+                    {ratio != null && !isNaN(ratio) && (
+                      <span className="text-xs font-mono text-muted">
+                        占比{ratio.toFixed(1)}%
+                      </span>
+                    )}
+                  </span>
+                );
+              })()}
             </div>
             <div
               ref={el => { subChartContainerRefs.current['main_cost'] = el; }}

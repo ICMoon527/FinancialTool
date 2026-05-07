@@ -81,6 +81,9 @@ const VisualizationPage: React.FC = () => {
     strongDetonation?: number;
     resonanceChase?: number;
     closePrice?: number;
+    mainNetBuyWan?: number;
+    mainDirection?: 'inflow' | 'outflow';
+    turnoverRatio?: number;
   }>({});
 
   useEffect(() => {
@@ -250,6 +253,9 @@ const VisualizationPage: React.FC = () => {
       momentum2?: number;
       strongDetonation?: number;
       resonanceChase?: number;
+      mainNetBuyWan?: number;
+      mainDirection?: 'inflow' | 'outflow';
+      turnoverRatio?: number;
     } = {};
 
     const bankerData = getIndicatorDataItem('banker_control', time);
@@ -265,6 +271,9 @@ const VisualizationPage: React.FC = () => {
     const mainCostData = getIndicatorDataItem('main_cost', time);
     if (mainCostData) {
       values.mainCost = mainCostData.main_cost || mainCostData.cost;
+      values.mainNetBuyWan = mainCostData.main_net_buy_wan;
+      values.mainDirection = mainCostData.main_direction;
+      values.turnoverRatio = mainCostData.turnover_ratio;
     }
 
     const momentum2Data = getIndicatorDataItem('momentum_2', time);
@@ -597,6 +606,9 @@ const VisualizationPage: React.FC = () => {
                 momentum2,
                 strongDetonation,
                 resonanceChase,
+                mainNetBuyWan: indicatorValues.mainNetBuyWan,
+                mainDirection: indicatorValues.mainDirection,
+                turnoverRatio: indicatorValues.turnoverRatio,
               });
             } else {
               const dataPoint = mainTradingDataRef.current.data.find((item: any) => item.date === param.time);
@@ -653,6 +665,9 @@ const VisualizationPage: React.FC = () => {
                   strongDetonation,
                   resonanceChase,
                   closePrice: klinePoint.close,
+                  mainNetBuyWan: indicatorValues.mainNetBuyWan,
+                  mainDirection: indicatorValues.mainDirection,
+                  turnoverRatio: indicatorValues.turnoverRatio,
                 });
               } else {
                 const klinePoint = klineDataRef.current.find((item: any) => item.time === param.time);
@@ -664,6 +679,9 @@ const VisualizationPage: React.FC = () => {
                   strongDetonation,
                   resonanceChase,
                   closePrice: klinePoint?.close,
+                  mainNetBuyWan: indicatorValues.mainNetBuyWan,
+                  mainDirection: indicatorValues.mainDirection,
+                  turnoverRatio: indicatorValues.turnoverRatio,
                 });
               }
             }
@@ -1658,6 +1676,9 @@ const VisualizationPage: React.FC = () => {
                     strongDetonation: indicatorValues.strongDetonation,
                     resonanceChase: indicatorValues.resonanceChase,
                     closePrice: klinePoint.close,
+                    mainNetBuyWan: indicatorValues.mainNetBuyWan,
+                    mainDirection: indicatorValues.mainDirection,
+                    turnoverRatio: indicatorValues.turnoverRatio,
                   });
                 } else {
                   // 即使没有主图数据，也要更新所有子图指标的值
@@ -1670,6 +1691,9 @@ const VisualizationPage: React.FC = () => {
                     strongDetonation: indicatorValues.strongDetonation,
                     resonanceChase: indicatorValues.resonanceChase,
                     closePrice: klinePoint?.close,
+                    mainNetBuyWan: indicatorValues.mainNetBuyWan,
+                    mainDirection: indicatorValues.mainDirection,
+                    turnoverRatio: indicatorValues.turnoverRatio,
                   });
                 }
               }
@@ -2297,27 +2321,45 @@ const VisualizationPage: React.FC = () => {
                           style={{ backgroundColor: indicatorOption.color }}
                         />
                         {indicatorOption.name}
-                        {/* 主力成本指标显示资金流向数据 */}
+                        {/* 主力成本指标显示资金流向数据，跟随十字线更新，没有十字线时显示最新值 */}
                         {indicatorId === 'main_cost' && indicatorData && (
                           <span className="text-xs text-muted/80 ml-2">
                             {(() => {
-                              console.log('main_cost indicatorData:', indicatorData);
-                              console.log('main_cost metadata:', (indicatorData as any).metadata);
-                              const metadata = (indicatorData as any).metadata;
-                              if (!metadata) {
+                              let mainNetBuyWan = cursorValues.mainNetBuyWan;
+                              let mainDirection = cursorValues.mainDirection;
+                              let turnoverRatio = cursorValues.turnoverRatio;
+                              
+                              // 如果十字线没有数据，回退到 metadata 的最新值
+                              if (mainNetBuyWan === undefined || mainNetBuyWan === null || isNaN(mainNetBuyWan)) {
+                                const metadata = (indicatorData as any).metadata;
+                                if (metadata) {
+                                  mainNetBuyWan = metadata.main_net_buy_wan;
+                                  mainDirection = metadata.main_direction;
+                                  turnoverRatio = metadata.turnover_ratio;
+                                }
+                              }
+                              
+                              if (mainNetBuyWan === undefined || mainNetBuyWan === null || isNaN(mainNetBuyWan)) {
                                 return null;
                               }
+                              
                               const formatAmount = (amount: number) => {
-                                if (Math.abs(amount) >= 10000) {
-                                  return `${(amount / 10000).toFixed(2)}万`;
-                                }
-                                return amount.toFixed(2);
+                                return `${Math.abs(amount).toFixed(2)}万`;
                               };
-                              const mainNetInflow = metadata.main_net_inflow || 0;
-                              const color = mainNetInflow > 0 ? '#FF4444' : mainNetInflow < 0 ? '#44AA44' : '#666666';
+                              
+                              const isInflow = mainDirection === 'inflow';
+                              const color = isInflow ? '#FF4444' : '#44AA44';
+                              
                               return (
-                                <span style={{ color }}>
-                                  主力: {formatAmount(mainNetInflow)}
+                                <span className="flex items-center gap-2">
+                                  <span style={{ color }}>
+                                    主力: {isInflow ? '+' : '-'}{formatAmount(mainNetBuyWan)}
+                                  </span>
+                                  {turnoverRatio !== undefined && turnoverRatio !== null && !isNaN(turnoverRatio) && (
+                                    <span className="text-xs text-muted/70">
+                                      占比: {turnoverRatio.toFixed(2)}%
+                                    </span>
+                                  )}
                                 </span>
                               );
                             })()}

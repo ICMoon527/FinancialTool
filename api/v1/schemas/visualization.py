@@ -18,6 +18,7 @@ class VisualizationIndicatorData(BaseModel):
     
     indicator_type: str = Field(..., description="指标类型")
     data: List[Dict[str, Any]] = Field(..., description="指标数据列表")
+    metadata: Optional[Dict[str, Any]] = Field(default=None, description="指标元数据（如主力资金流向等额外信息）")
 
 
 class VisualizationResponse(BaseModel):

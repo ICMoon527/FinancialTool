@@ -465,7 +465,14 @@ class VisualizationService:
                         # 添加指标特定字段
                         for col in result_df.columns:
                             if col != 'date':
-                                item[col] = float(row[col]) if pd.notna(row[col]) else None
+                                # 特殊处理字符串类型的字段（如 main_direction）
+                                if pd.notna(row[col]):
+                                    if isinstance(row[col], str):
+                                        item[col] = row[col]
+                                    else:
+                                        item[col] = float(row[col])
+                                else:
+                                    item[col] = None
                         indicator_data_list.append(item)
                     
                     # 如果是主力成本指标且有资金流向数据，添加资金流向信息
@@ -474,15 +481,31 @@ class VisualizationService:
                         try:
                             # 获取最新一天的资金流向数据
                             latest_fund_flow = fund_flow_data.iloc[-1]
+                            super_in = float(latest_fund_flow.get('super_net_inflow', 0))
+                            big_in = float(latest_fund_flow.get('big_net_inflow', 0))
+                            main_net_buy_wan = (super_in + big_in) / 10000
+                            # 兼容 amount/Amount 大小写列名
+                            latest_amount = 0
+                            if 'amount' in df.columns and pd.notna(df['amount'].iloc[-1]):
+                                latest_amount = float(df['amount'].iloc[-1])
+                            elif 'Amount' in df.columns and pd.notna(df['Amount'].iloc[-1]):
+                                latest_amount = float(df['Amount'].iloc[-1])
+                            turnover_ratio = (main_net_buy_wan * 10000) / latest_amount * 100 if latest_amount > 0 else 0
                             indicator_metadata = {
                                 'main_net_inflow': float(latest_fund_flow.get('main_net_inflow', 0)),
-                                'super_net_inflow': float(latest_fund_flow.get('super_net_inflow', 0)),
-                                'big_net_inflow': float(latest_fund_flow.get('big_net_inflow', 0)),
+                                'super_net_inflow': super_in,
+                                'big_net_inflow': big_in,
                                 'medium_net_inflow': float(latest_fund_flow.get('medium_net_inflow', 0)),
                                 'small_net_inflow': float(latest_fund_flow.get('small_net_inflow', 0)),
+                                'main_net_buy_wan': round(main_net_buy_wan, 2),
+                                'turnover_ratio': round(turnover_ratio, 2),
+                                'main_direction': 'inflow' if main_net_buy_wan > 0 else 'outflow',
                             }
+                            logger.info(f"主力成本 metadata 计算完成: main_net_buy_wan={main_net_buy_wan:.2f}, turnover_ratio={turnover_ratio:.2f}")
                         except Exception as e:
                             logger.warning(f"获取最新资金流向数据失败: {e}")
+                    else:
+                        logger.info(f"主力成本未添加资金流向 metadata: fund_flow_data is None={fund_flow_data is None}")
                     
                     indicators_data.append({
                         'indicator_type': indicator_type,

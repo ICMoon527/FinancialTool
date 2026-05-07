@@ -25,6 +25,9 @@ export type IndicatorData = {
     big_net_inflow?: number;
     medium_net_inflow?: number;
     small_net_inflow?: number;
+    main_net_buy_wan?: number;
+    turnover_ratio?: number;
+    main_direction?: 'inflow' | 'outflow';
     [key: string]: any;
   };
 };

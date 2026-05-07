@@ -11,7 +11,7 @@ class MainCost(BaseIndicator):
     """
     主力成本指标
 
-    该指标基于资金流向数据计算主力资金成本，支持真实资金流向数据和模拟数据两种模式。
+    该指标基于真实资金流向数据计算主力资金成本。
 
     公式：
     - main_buy（万元）：(超大单净流入 + 大单净流入) / 10000
@@ -26,46 +26,12 @@ class MainCost(BaseIndicator):
     - net_buy：净买入金额（万元）
     - cum_net_buy：累计净买入金额（万元）
     - main_cost：主力资金成本价
+    - main_net_buy_wan：主力净买入（万元）
+    - main_direction：主力方向（inflow/outflow）
+    - turnover_ratio：主力成交占比（%）
     """
 
-    def _simulate_capital_flow(self, data: pd.DataFrame) -> pd.DataFrame:
-        """
-        模拟资金流向数据，当真实数据不可用时使用。
 
-        Args:
-            data: 包含OHLCV数据的输入DataFrame
-
-        Returns:
-            包含模拟资金流向数据的DataFrame
-        """
-        result = data.copy()
-
-        np.random.seed(42)
-
-        volume = data["Volume"]
-        close = data["Close"]
-
-        volume_ratio = np.random.uniform(0.1, 0.6, size=len(data))
-        main_volume = volume * volume_ratio
-
-        buy_ratio = np.random.uniform(0.3, 0.7, size=len(data))
-
-        super_in = main_volume * buy_ratio * 0.4
-        big_in = main_volume * buy_ratio * 0.6
-        super_out = main_volume * (1 - buy_ratio) * 0.4
-        big_out = main_volume * (1 - buy_ratio) * 0.6
-
-        result["SYS_SUPERIN_TICK"] = super_in * close
-        result["SYS_BIGIN_TICK"] = big_in * close
-        result["SYS_SUPEROUT_TICK"] = super_out * close
-        result["SYS_BIGOUT_TICK"] = big_out * close
-
-        result["buy_count"] = np.random.randint(5, 50, size=len(data))
-        result["sell_count"] = np.random.randint(5, 50, size=len(data))
-        result["buy_total_price"] = (super_in + big_in) * close
-        result["sell_total_price"] = (super_out + big_out) * close
-
-        return result
 
     def calculate(self, data: pd.DataFrame, fund_flow_data: pd.DataFrame = None) -> pd.DataFrame:
         """
@@ -109,6 +75,22 @@ class MainCost(BaseIndicator):
                 df.loc[mask, "main_sell"] = df.loc[mask, "main_sell"].clip(lower=0)
                 df.loc[mask, "net_buy"] = df.loc[mask, "main_buy"] - df.loc[mask, "main_sell"]
                 df.loc[mask, "cum_net_buy"] = df.loc[mask, "net_buy"].cumsum()
+                
+                # 追加主力资金相关数据，供前端十字线使用
+                df.loc[mask, "main_net_buy_wan"] = df.loc[mask, "net_buy"]
+                
+                # 更高效的向量化方向计算
+                df["main_direction"] = None
+                df.loc[mask & (df["net_buy"] > 0), "main_direction"] = "inflow"
+                df.loc[mask & (df["net_buy"] < 0), "main_direction"] = "outflow"
+                
+                # 计算成交占比
+                amount_col = "amount" if "amount" in df.columns else "Amount" if "Amount" in df.columns else None
+                if amount_col:
+                    df.loc[mask, "turnover_ratio"] = (
+                        (df.loc[mask, "main_net_inflow"].abs() / df.loc[mask, amount_col] * 100)
+                        .round(2)
+                    )
             
             # 按策略公式计算主力成本
             df = self._calculate_by_strategy(df)
@@ -126,16 +108,8 @@ class MainCost(BaseIndicator):
             result["avg_price"] = np.nan
             return result
 
-        result = data.copy()
-        result["main_buy"] = df["main_buy"]
-        result["main_sell"] = df["main_sell"]
-        result["net_buy"] = df["net_buy"]
-        result["cum_net_buy"] = df["cum_net_buy"]
-        result["buy_avg_price"] = df["buy_avg_price"]
-        result["sell_avg_price"] = df["sell_avg_price"]
-        result["main_cost"] = df["main_cost"]
-        result["avg_price"] = df["avg_price"]
-
+        # 直接从 df 复制所有数据（包含所有原始 K 线列和我们新增的指标列）
+        result = df.copy()
         return result
     
     def _calculate_by_strategy(self, df: pd.DataFrame) -> pd.DataFrame:
