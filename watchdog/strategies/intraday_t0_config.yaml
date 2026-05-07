@@ -1,0 +1,83 @@
+# 分时做T策略配置文件
+# 修改此文件可实时调整策略参数，无需修改代码
+
+# 数据缓冲区配置
+data:
+  max_window: 200
+  kline_freq: "1min"  # 可选: "1min" / "5min"
+
+# 指标参数配置（分时适配）
+indicators:
+  # 主力吸筹
+  absorption:
+    llv_period: 10        # 日线38 → 分时10（1分钟）/ 15（5分钟）
+    hhv_period: 10
+    var7_period: 20       # 日线90 → 分时20（1分钟）/ 30（5分钟）
+    filter_threshold: 0.5 # 日线1.01 → 分时0.5
+
+  # 主力进出
+  main_in_out:
+    hhv_llv_period: 10   # 日线30 → 分时10
+    ema_period1: 2        # 日线3 → 分时2
+    ema_period2: 3        # 日线5 → 分时3
+
+  # 龙虎动力
+  dragon_tiger_power:
+    ema_period: 4         # 保持不变
+
+  # CYW 主力控盘
+  cyw:
+    period: 5             # 日线10 → 分时5
+    ma_period: 5
+
+  # 量能
+  volume:
+    ma_period: 5
+    surge_ratio: 1.5      # 放量阈值（成交量 / MA5）
+
+# 信号配置
+signals:
+  buy:
+    thresholds:
+      strong: 7   # 强买入 >= 7分
+      medium: 5   # 中买入 >= 5分
+      weak: 3     # 弱买入 >= 3分
+    positions:
+      strong: "全仓"
+      medium: "半仓"
+      weak: "1/3仓"
+    confidence:
+      strong: 0.85
+      medium: 0.65
+      weak: 0.40
+    weights:
+      absorption_active: 3   # 主力吸筹活跃
+      cyw_cross_ma_up: 2     # CYW上穿MA
+      power_recovery: 2      # 龙虎动力复苏
+      main_in_signal: 2      # 主力进出金叉
+      volume_surge: 1         # 量能放大
+
+  sell:
+    thresholds:
+      strong: 7
+      medium: 5
+      weak: 3
+    positions:
+      strong: "全仓卖出"
+      medium: "半仓卖出"
+      weak: "1/3仓卖出"
+    confidence:
+      strong: 0.85
+      medium: 0.65
+      weak: 0.40
+    weights:
+      main_out_signal: 2           # 主力进出死叉
+      cyw_cross_ma_down: 2         # CYW下穿MA
+      power_decay_or_depression: 2 # 龙虎动力衰减/萧条
+      absorption_inactive: 1       # 主力吸筹归零
+      volume_stagnation: 1         # 放量滞涨
+
+# 运营参数
+operation:
+  signal_cooldown_bars: 5   # 同类型信号冷却K线数
+  log_signals: true         # 是否日志输出信号
