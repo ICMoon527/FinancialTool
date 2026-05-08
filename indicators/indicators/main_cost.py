@@ -77,20 +77,24 @@ class MainCost(BaseIndicator):
                 df.loc[mask, "cum_net_buy"] = df.loc[mask, "net_buy"].cumsum()
                 
                 # 追加主力资金相关数据，供前端十字线使用
-                df.loc[mask, "main_net_buy_wan"] = df.loc[mask, "net_buy"]
+                # 优先用原始 main_net_inflow，保证数据准确
+                df.loc[mask, "main_net_buy_wan"] = df.loc[mask, "main_net_inflow"] / 10000
                 
-                # 更高效的向量化方向计算
+                # 更高效的向量化方向计算 - 用原始数据判断
                 df["main_direction"] = None
-                df.loc[mask & (df["net_buy"] > 0), "main_direction"] = "inflow"
-                df.loc[mask & (df["net_buy"] < 0), "main_direction"] = "outflow"
+                df.loc[mask & (df["main_net_inflow"] > 0), "main_direction"] = "inflow"
+                df.loc[mask & (df["main_net_inflow"] < 0), "main_direction"] = "outflow"
                 
-                # 计算成交占比
-                amount_col = "amount" if "amount" in df.columns else "Amount" if "Amount" in df.columns else None
-                if amount_col:
-                    df.loc[mask, "turnover_ratio"] = (
-                        (df.loc[mask, "main_net_inflow"].abs() / df.loc[mask, amount_col] * 100)
-                        .round(2)
-                    )
+                # 计算成交占比 - 优先用东方财富现成的 main_net_ratio，没有的话自己算
+                if "main_net_ratio" in df.columns:
+                    df.loc[mask, "turnover_ratio"] = df.loc[mask, "main_net_ratio"].round(2)
+                else:
+                    amount_col = "amount" if "amount" in df.columns else "Amount" if "Amount" in df.columns else None
+                    if amount_col:
+                        df.loc[mask, "turnover_ratio"] = (
+                            (df.loc[mask, "main_net_inflow"].abs() / df.loc[mask, amount_col] * 100)
+                            .round(2)
+                        )
             
             # 按策略公式计算主力成本
             df = self._calculate_by_strategy(df)

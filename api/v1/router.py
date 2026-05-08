@@ -11,7 +11,7 @@ API v1 路由聚合
 
 from fastapi import APIRouter
 
-from api.v1.endpoints import health, analysis, auth, history, stocks, backtest, system_config, agent, stock_selector, visualization
+from api.v1.endpoints import health, analysis, auth, history, stocks, backtest, system_config, agent, stock_selector, visualization, intraday
 
 # 创建 v1 版本主路由
 router = APIRouter(prefix="/api/v1")
@@ -70,4 +70,10 @@ router.include_router(
     visualization.router,
     prefix="/visualization",
     tags=["Visualization"]
+)
+
+router.include_router(
+    intraday.router,
+    prefix="/intraday",
+    tags=["Intraday"]
 )

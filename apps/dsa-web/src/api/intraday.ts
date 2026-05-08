@@ -1,0 +1,128 @@
+/**
+ * 分时做T API 模块
+ *
+ * 封装分时K线数据获取、做T信号和参考线的请求接口。
+ */
+
+const API_BASE = '/api/v1/intraday';
+
+// ============================================================
+// TypeScript 类型定义
+// ============================================================
+
+export interface IntradayKlinePoint {
+  Open: number;
+  High: number;
+  Low: number;
+  Close: number;
+  Volume: number;
+  Amount?: number;
+  timestamp: string;
+  time?: string;
+}
+
+export interface IntradaySignal {
+  stock_code: string;
+  signal_type: 'buy' | 'sell';
+  trigger_time: string;
+  price: number;
+  score: number;
+  max_score: number;
+  confidence: number;
+  position_advice: string;
+  reasoning?: string;
+  gravity_adjustment?: number;
+  support_force?: number;
+  pressure_force?: number;
+}
+
+export interface ReferenceLine {
+  id: string;
+  label: string;
+  price: number;
+  category: string;
+  color: string;
+  style: string;
+  base_weight: number;
+}
+
+export interface IntradayDataResponse {
+  stock_code: string;
+  stock_name: string;
+  date: string;
+  kline_data: IntradayKlinePoint[];
+  signals: IntradaySignal[];
+  reference_lines: ReferenceLine[];
+  signal_summary: {
+    buy_signals: number;
+    sell_signals: number;
+    total_signals: number;
+    strong_signals: number;
+    medium_signals: number;
+    weak_signals: number;
+    simulated_return_pct: number;
+  };
+}
+
+export interface SearchHistoryItem {
+  id: number;
+  stock_code: string;
+  stock_name: string;
+  date: string;
+  search_time: string;
+}
+
+export interface SearchHistoryResponse {
+  items: SearchHistoryItem[];
+  total: number;
+}
+
+// ============================================================
+// API 函数
+// ============================================================
+
+export async function getIntradayData(
+  stockCode: string,
+  date?: string,
+): Promise<IntradayDataResponse> {
+  const params = new URLSearchParams();
+  if (date) {
+    params.set('date', date.replace(/-/g, ''));
+  }
+  const query = params.toString();
+  const url = `${API_BASE}/data/${stockCode}${query ? `?${query}` : ''}`;
+
+  const resp = await fetch(url);
+  if (!resp.ok) {
+    const error = await resp.json().catch(() => ({ message: resp.statusText }));
+    throw new Error(error.detail?.message || error.message || `请求失败 (${resp.status})`);
+  }
+  return resp.json();
+}
+
+export async function getSearchHistory(
+  limit: number = 20,
+): Promise<SearchHistoryResponse> {
+  const resp = await fetch(`${API_BASE}/history?limit=${limit}`);
+  if (!resp.ok) return { items: [], total: 0 };
+  return resp.json();
+}
+
+export async function saveSearchHistory(
+  stockCode: string,
+  stockName: string = '',
+  date: string = '',
+): Promise<SearchHistoryItem> {
+  const resp = await fetch(`${API_BASE}/history`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ stock_code: stockCode, stock_name: stockName, date }),
+  });
+  if (!resp.ok) throw new Error('保存搜索历史失败');
+  return resp.json();
+}
+
+export async function deleteSearchHistory(id: number): Promise<boolean> {
+  const resp = await fetch(`${API_BASE}/history/${id}`, { method: 'DELETE' });
+  return resp.ok;
+}
