@@ -70,9 +70,19 @@ class MainCost(BaseIndicator):
             mask = df['main_net_inflow'].notna()
             if mask.any():
                 logger.info(f"[主力成本指标] 使用 {mask.sum()} 天真实资金流向数据")
-                df.loc[mask, "main_buy"] = (df.loc[mask, "super_net_inflow"] + df.loc[mask, "big_net_inflow"]) / 10000
-                df.loc[mask, "main_sell"] = (-df.loc[mask, "super_net_inflow"] - df.loc[mask, "big_net_inflow"]) / 10000
-                df.loc[mask, "main_sell"] = df.loc[mask, "main_sell"].clip(lower=0)
+                
+                # 优先使用原始主力净流入数据，降级使用超大单+大单计算
+                # 这样既保证了数据准确性，又增强了容错性
+                if "main_net_inflow" in df.columns and df["main_net_inflow"].notna().any():
+                    logger.info("[主力成本指标] 使用原始主力净流入数据")
+                    df.loc[mask, "main_buy"] = np.where(df.loc[mask, "main_net_inflow"] > 0, df.loc[mask, "main_net_inflow"] / 10000, 0)
+                    df.loc[mask, "main_sell"] = np.where(df.loc[mask, "main_net_inflow"] < 0, -df.loc[mask, "main_net_inflow"] / 10000, 0)
+                else:
+                    logger.warning("[主力成本指标] 原始主力净流入数据不可用，降级使用超大单+大单计算")
+                    df.loc[mask, "main_buy"] = (df.loc[mask, "super_net_inflow"] + df.loc[mask, "big_net_inflow"]) / 10000
+                    df.loc[mask, "main_sell"] = (-df.loc[mask, "super_net_inflow"] - df.loc[mask, "big_net_inflow"]) / 10000
+                    df.loc[mask, "main_sell"] = df.loc[mask, "main_sell"].clip(lower=0)
+                
                 df.loc[mask, "net_buy"] = df.loc[mask, "main_buy"] - df.loc[mask, "main_sell"]
                 df.loc[mask, "cum_net_buy"] = df.loc[mask, "net_buy"].cumsum()
                 

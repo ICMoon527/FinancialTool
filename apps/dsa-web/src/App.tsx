@@ -8,6 +8,7 @@ import NotFoundPage from './pages/NotFoundPage';
 import ChatPage from './pages/ChatPage';
 import StockSelectorPage from './pages/StockSelectorPage';
 import VisualizationPage from './pages/VisualizationPage';
+import IntradayPage from './pages/IntradayPage';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import './App.css';
 
@@ -55,6 +56,13 @@ const VisualizationIcon: React.FC<{ active?: boolean }> = ({active}) => (
     </svg>
 );
 
+const IntradayIcon: React.FC<{ active?: boolean }> = ({active}) => (
+    <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={active ? 2 : 1.5}
+              d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+    </svg>
+);
+
 const LogoutIcon: React.FC = () => (
     <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
@@ -93,6 +101,12 @@ const NAV_ITEMS: DockItem[] = [
         label: '可视化',
         to: '/visualization',
         icon: VisualizationIcon,
+    },
+    {
+        key: 'intraday',
+        label: '分时',
+        to: '/intraday',
+        icon: IntradayIcon,
     },
     {
         key: 'backtest',
@@ -205,6 +219,7 @@ const AppContent: React.FC = () => {
                     <Route path="/chat" element={<ChatPage/>}/>
                     <Route path="/stock-selector" element={<StockSelectorPage/>}/>
                     <Route path="/visualization" element={<VisualizationPage/>}/>
+                    <Route path="/intraday" element={<IntradayPage/>}/>
                     <Route path="/backtest" element={<BacktestPage/>}/>
                     <Route path="/settings" element={<SettingsPage/>}/>
                     <Route path="/login" element={<LoginPage/>}/>

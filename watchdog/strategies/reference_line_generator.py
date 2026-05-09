@@ -55,20 +55,31 @@ class ReferenceLineGenerator:
     # ---------- 主力操盘三线 ----------
 
     def _calc_main_trading_lines(self) -> List[Dict[str, Any]]:
-        """计算主力操盘三线：攻击线、操盘线、防守线"""
+        """计算主力操盘三线：攻击线、操盘线、防守线
+
+        公式与 indicators/indicators/main_trading.py 完全一致：
+        - 攻击线 = EMA(Close, 6)
+        - 操盘线 = IF(EMA26 < B, B, EMA26)  其中 B = EMA26 + (EMA26 - REF(EMA26, 1))
+        - 防守线 = 操盘线 - (攻击线 - 操盘线)
+        """
         if len(self.daily_data) < 6:
             return []
+
+        import numpy as np
 
         close = self.daily_data["Close"]
 
         ema6 = self._ema(close, 6)
-        ema12 = self._ema(close, 12)
         ema26 = self._ema(close, 26)
 
+        ema26_diff = ema26 - ema26.shift(1)
+        B = ema26 + ema26_diff
+
+        trading_line_series = np.where(ema26 < B, B, ema26)
+        trading_line_series = pd.Series(trading_line_series, index=self.daily_data.index)
+
         attack_line = float(ema6.iloc[-1])
-        trade_line_base = float(ema26.iloc[-1])
-        diff = ema26 - ema26.shift(1)
-        trade_line = trade_line_base + float(diff.iloc[-1]) if float(diff.iloc[-1]) < 0 else trade_line_base
+        trade_line = float(trading_line_series.iloc[-1])
         defense_line = trade_line - (attack_line - trade_line)
 
         return [
@@ -76,7 +87,7 @@ class ReferenceLineGenerator:
                 "id": "attack_line",
                 "label": "主力攻击线",
                 "price": round(attack_line, 2),
-                "category": "主力操盘",
+                "category": "main_trading",
                 "color": "#FF4444",
                 "style": "dashed",
                 "base_weight": 1.0,
@@ -85,7 +96,7 @@ class ReferenceLineGenerator:
                 "id": "trading_line",
                 "label": "主力操盘线",
                 "price": round(trade_line, 2),
-                "category": "主力操盘",
+                "category": "main_trading",
                 "color": "#FFAA00",
                 "style": "dashed",
                 "base_weight": 1.0,
@@ -94,7 +105,7 @@ class ReferenceLineGenerator:
                 "id": "defense_line",
                 "label": "主力防守线",
                 "price": round(defense_line, 2),
-                "category": "主力操盘",
+                "category": "main_trading",
                 "color": "#44AA44",
                 "style": "dashed",
                 "base_weight": 1.5,
@@ -125,7 +136,7 @@ class ReferenceLineGenerator:
                         "id": f"ma_{period}",
                         "label": label,
                         "price": round(ma_val, 2),
-                        "category": "均线",
+                        "category": "moving_average",
                         "color": color,
                         "style": style,
                         "base_weight": weight,
@@ -152,7 +163,7 @@ class ReferenceLineGenerator:
                 "id": "previous_high_30",
                 "label": "前高（30日）",
                 "price": round(prev_high, 2),
-                "category": "前高/前低",
+                "category": "extreme_price",
                 "color": "#FF4444",
                 "style": "solid",
                 "base_weight": 1.0,
@@ -161,7 +172,7 @@ class ReferenceLineGenerator:
                 "id": "previous_low_30",
                 "label": "前低（30日）",
                 "price": round(prev_low, 2),
-                "category": "前高/前低",
+                "category": "extreme_price",
                 "color": "#44AA44",
                 "style": "solid",
                 "base_weight": 1.0,
@@ -224,7 +235,7 @@ class ReferenceLineGenerator:
                     "id": "chip_dense_lower",
                     "label": "筹码密集区下沿",
                     "price": round(lower_edge, 2),
-                    "category": "筹码分布",
+                    "category": "chip_dense",
                     "color": "#AA44FF",
                     "style": "dashed",
                     "base_weight": 1.5,
@@ -233,7 +244,7 @@ class ReferenceLineGenerator:
                     "id": "chip_dense_upper",
                     "label": "筹码密集区上沿",
                     "price": round(upper_edge, 2),
-                    "category": "筹码分布",
+                    "category": "chip_dense",
                     "color": "#AA44FF",
                     "style": "dashed",
                     "base_weight": 1.5,
@@ -261,7 +272,7 @@ class ReferenceLineGenerator:
                 "id": "prev_close",
                 "label": "昨收",
                 "price": round(prev_close, 2),
-                "category": "昨收",
+                "category": "prev_close",
                 "color": "#FFCC00",
                 "style": "solid",
                 "base_weight": 1.0,

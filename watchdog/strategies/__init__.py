@@ -31,6 +31,10 @@ from watchdog.strategies.simulator import (
     TradeRecord,
     generate_simulated_intraday_data,
 )
+from watchdog.strategies.reference_line_generator import (
+    ReferenceLineGenerator,
+    apply_gravitational_field,
+)
 
 
 def get_builtin_strategies() -> List[WatchdogStrategy]:

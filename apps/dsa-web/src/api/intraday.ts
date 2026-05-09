@@ -17,6 +17,7 @@ export interface IntradayKlinePoint {
   Close: number;
   Volume: number;
   Amount?: number;
+  AvgPrice?: number;
   timestamp: string;
   time?: string;
 }
@@ -46,6 +47,26 @@ export interface ReferenceLine {
   base_weight: number;
 }
 
+export interface IndicatorLinePoint {
+  time: string;
+  value: number;
+}
+
+export interface IndicatorLine {
+  name: string;
+  label: string;
+  color: string;
+  data: IndicatorLinePoint[];
+}
+
+export interface IndicatorSubChart {
+  id: string;
+  label: string;
+  height: number;
+  lines: IndicatorLine[];
+  signal_text: string;
+}
+
 export interface IntradayDataResponse {
   stock_code: string;
   stock_name: string;
@@ -53,6 +74,7 @@ export interface IntradayDataResponse {
   kline_data: IntradayKlinePoint[];
   signals: IntradaySignal[];
   reference_lines: ReferenceLine[];
+  indicator_sub_charts: IndicatorSubChart[];
   signal_summary: {
     buy_signals: number;
     sell_signals: number;

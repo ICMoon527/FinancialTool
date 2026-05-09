@@ -10,10 +10,10 @@ data:
 indicators:
   # 主力吸筹
   absorption:
-    llv_period: 10        # 日线38 → 分时10（1分钟）/ 15（5分钟）
-    hhv_period: 10
-    var7_period: 20       # 日线90 → 分时20（1分钟）/ 30（5分钟）
-    filter_threshold: 0.5 # 日线1.01 → 分时0.5
+    llv_period: 38        # 日线38 → 增加周期过滤噪声
+    hhv_period: 38
+    var7_period: 90       # 日线90 → 更长EMA平滑
+    filter_threshold: 1.01 # 日线1.01 → 提高阈值减少伪信号
 
   # 主力进出
   main_in_out:

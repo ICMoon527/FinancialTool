@@ -345,17 +345,35 @@ class IntradayIndicatorEngine:
     # ---------- CYW ----------
 
     def calc_cyw(self, data: pd.DataFrame) -> pd.DataFrame:
-        """计算CYW主力控盘分时版本"""
+        """计算CYW主力控盘指标（自动适配tick数据）
+
+        当检测到High=Low=Close（腾讯1分钟tick数据特征，spread=0占比>80%），
+        自动切换为tick版资金流向计算：使用价格涨跌方向×成交量，替代原生MFM公式。
+        """
         result = data.copy()
 
         high_low = data["High"] - data["Low"]
-        mfm = ((data["Close"] - data["Low"]) - (data["High"] - data["Close"])) / high_low.replace(0, np.nan)
-        mfm = mfm.fillna(0)
-        mfv = mfm * data["Volume"]
-        cyw = mfv.rolling(window=self.cyw_period, min_periods=1).sum() / data["Volume"].rolling(
-            window=self.cyw_period, min_periods=1
-        ).sum().replace(0, np.nan)
-        cyw = cyw.fillna(0)
+        tick_ratio = (high_low == 0).sum() / max(len(data), 1)
+        is_tick_data = tick_ratio > 0.8
+
+        if is_tick_data:
+            price_change = data["Close"].diff()
+            tick_mfm = np.sign(price_change)
+            tick_mfm = tick_mfm.fillna(0)
+            tick_mfv = tick_mfm * data["Volume"]
+            sum_mfv = tick_mfv.rolling(window=self.cyw_period, min_periods=1).sum()
+            sum_vol = data["Volume"].rolling(window=self.cyw_period, min_periods=1).sum().replace(0, np.nan)
+            cyw = sum_mfv / sum_vol
+            cyw = cyw.fillna(0)
+        else:
+            mfm = ((data["Close"] - data["Low"]) - (data["High"] - data["Close"])) / high_low.replace(0, np.nan)
+            mfm = mfm.fillna(0)
+            mfv = mfm * data["Volume"]
+            cyw = mfv.rolling(window=self.cyw_period, min_periods=1).sum() / data["Volume"].rolling(
+                window=self.cyw_period, min_periods=1
+            ).sum().replace(0, np.nan)
+            cyw = cyw.fillna(0)
+
         cyw_ma = self._sma(cyw, self.cyw_ma_period)
 
         result["CYW"] = cyw

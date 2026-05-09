@@ -18,6 +18,7 @@ const INDICATOR_OPTIONS = [
   { id: 'momentum_2', name: '动能二号', description: '动能二号指标，四种颜色表示不同动能状态', color: '#FF4444' },
   { id: 'strong_detonation', name: '强势起爆', description: '强势起爆指标，识别强势起爆阶段', color: '#AA44FF' },
   { id: 'resonance_chase', name: '共振追涨', description: '共振追涨指标，识别共振追涨机会', color: '#AA44FF' },
+  { id: 'dmi', name: 'DMI', description: '方向移动指数，显示趋势方向和强度', color: '#44AA44' },
 ];
 
 // 子图高度
@@ -80,6 +81,9 @@ const VisualizationPage: React.FC = () => {
     momentum2?: number;
     strongDetonation?: number;
     resonanceChase?: number;
+    dmiPdi?: number;
+    dmiMdi?: number;
+    dmiAdx?: number;
     closePrice?: number;
     mainNetBuyWan?: number;
     mainDirection?: 'inflow' | 'outflow';
@@ -253,6 +257,9 @@ const VisualizationPage: React.FC = () => {
       momentum2?: number;
       strongDetonation?: number;
       resonanceChase?: number;
+      dmiPdi?: number;
+      dmiMdi?: number;
+      dmiAdx?: number;
       mainNetBuyWan?: number;
       mainDirection?: 'inflow' | 'outflow';
       turnoverRatio?: number;
@@ -292,6 +299,13 @@ const VisualizationPage: React.FC = () => {
       const originalHeight = Math.abs(resonanceChaseData.OUT1 || 0);
       const topValue = originalHeight - 0.5;
       values.resonanceChase = topValue > 0 ? topValue : undefined;
+    }
+
+    const dmiData = getIndicatorDataItem('dmi', time);
+    if (dmiData) {
+      values.dmiPdi = dmiData.PDI;
+      values.dmiMdi = dmiData.MDI;
+      values.dmiAdx = dmiData.ADX;
     }
 
     return values;
@@ -543,6 +557,9 @@ const VisualizationPage: React.FC = () => {
             const momentum2 = indicatorValues.momentum2;
             const strongDetonation = indicatorValues.strongDetonation;
             const resonanceChase = indicatorValues.resonanceChase;
+            const dmiPdi = indicatorValues.dmiPdi;
+            const dmiMdi = indicatorValues.dmiMdi;
+            const dmiAdx = indicatorValues.dmiAdx;
             
             // 同步十字线位置到所有子图
             Object.entries(subChartRefs.current).forEach(([indicatorId, subChart]) => {
@@ -581,6 +598,10 @@ const VisualizationPage: React.FC = () => {
                           const topValue = originalHeight - 0.5;
                           price = topValue > 0 ? topValue : undefined;
                         }
+                      } else if (indicatorId === 'dmi') {
+                        if (dataPoint.PDI !== undefined && dataPoint.PDI !== null) {
+                          price = dataPoint.PDI;
+                        }
                       }
                     }
                   }
@@ -606,6 +627,9 @@ const VisualizationPage: React.FC = () => {
                 momentum2,
                 strongDetonation,
                 resonanceChase,
+                dmiPdi,
+                dmiMdi,
+                dmiAdx,
                 mainNetBuyWan: indicatorValues.mainNetBuyWan,
                 mainDirection: indicatorValues.mainDirection,
                 turnoverRatio: indicatorValues.turnoverRatio,
@@ -664,6 +688,9 @@ const VisualizationPage: React.FC = () => {
                   momentum2,
                   strongDetonation,
                   resonanceChase,
+                  dmiPdi,
+                  dmiMdi,
+                  dmiAdx,
                   closePrice: klinePoint.close,
                   mainNetBuyWan: indicatorValues.mainNetBuyWan,
                   mainDirection: indicatorValues.mainDirection,
@@ -678,6 +705,9 @@ const VisualizationPage: React.FC = () => {
                   momentum2,
                   strongDetonation,
                   resonanceChase,
+                  dmiPdi,
+                  dmiMdi,
+                  dmiAdx,
                   closePrice: klinePoint?.close,
                   mainNetBuyWan: indicatorValues.mainNetBuyWan,
                   mainDirection: indicatorValues.mainDirection,
@@ -1480,6 +1510,70 @@ const VisualizationPage: React.FC = () => {
             out2LineSeries.setData(out2Data);
           }
 
+        } else if (indicatorId === 'dmi' && indicatorData) {
+          const filteredIndicatorData = filterDataByTimeRange(indicatorData.data, 'date');
+
+          const pdiData = filteredIndicatorData.map((item: any) => ({
+            time: item.date,
+            value: Number((item.PDI || 0).toFixed(2)),
+          })).filter((d: any) => d.value !== null && d.value !== undefined);
+
+          const mdiData = filteredIndicatorData.map((item: any) => ({
+            time: item.date,
+            value: Number((item.MDI || 0).toFixed(2)),
+          })).filter((d: any) => d.value !== null && d.value !== undefined);
+
+          const adxData = filteredIndicatorData.map((item: any) => ({
+            time: item.date,
+            value: Number((item.ADX || 0).toFixed(2)),
+          })).filter((d: any) => d.value !== null && d.value !== undefined);
+
+          if (pdiData.length > 0) {
+            const pdiSeries = chart.addSeries(lightweightCharts.LineSeries, {
+              color: '#FF4444',
+              lineWidth: 1,
+              priceLineVisible: false,
+              lastValueVisible: true,
+              crosshairMarkerVisible: false,
+              priceFormat: {
+                type: 'price',
+                precision: 2,
+              },
+            });
+            pdiSeries.setData(pdiData);
+            subChartSeriesRefs.current[indicatorId] = pdiSeries;
+          }
+
+          if (mdiData.length > 0) {
+            const mdiSeries = chart.addSeries(lightweightCharts.LineSeries, {
+              color: '#44AA44',
+              lineWidth: 1,
+              priceLineVisible: false,
+              lastValueVisible: false,
+              crosshairMarkerVisible: false,
+              priceFormat: {
+                type: 'price',
+                precision: 2,
+              },
+            });
+            mdiSeries.setData(mdiData);
+          }
+
+          if (adxData.length > 0) {
+            const adxSeries = chart.addSeries(lightweightCharts.LineSeries, {
+              color: '#AA44FF',
+              lineWidth: 1,
+              priceLineVisible: false,
+              lastValueVisible: false,
+              crosshairMarkerVisible: false,
+              priceFormat: {
+                type: 'price',
+                precision: 2,
+              },
+            });
+            adxSeries.setData(adxData);
+          }
+
         }
 
         // 处理窗口大小变化
@@ -1603,6 +1697,10 @@ const VisualizationPage: React.FC = () => {
                               const topValue = originalHeight - 0.5;
                               otherPrice = topValue > 0 ? topValue : undefined;
                             }
+                          } else if (otherIndicatorId === 'dmi') {
+                            if (otherDataPoint.PDI !== undefined && otherDataPoint.PDI !== null) {
+                              otherPrice = otherDataPoint.PDI;
+                            }
                           }
                         }
                       }
@@ -1675,6 +1773,9 @@ const VisualizationPage: React.FC = () => {
                     momentum2: indicatorValues.momentum2,
                     strongDetonation: indicatorValues.strongDetonation,
                     resonanceChase: indicatorValues.resonanceChase,
+                    dmiPdi: indicatorValues.dmiPdi,
+                    dmiMdi: indicatorValues.dmiMdi,
+                    dmiAdx: indicatorValues.dmiAdx,
                     closePrice: klinePoint.close,
                     mainNetBuyWan: indicatorValues.mainNetBuyWan,
                     mainDirection: indicatorValues.mainDirection,
@@ -1690,6 +1791,9 @@ const VisualizationPage: React.FC = () => {
                     momentum2: indicatorValues.momentum2,
                     strongDetonation: indicatorValues.strongDetonation,
                     resonanceChase: indicatorValues.resonanceChase,
+                    dmiPdi: indicatorValues.dmiPdi,
+                    dmiMdi: indicatorValues.dmiMdi,
+                    dmiAdx: indicatorValues.dmiAdx,
                     closePrice: klinePoint?.close,
                     mainNetBuyWan: indicatorValues.mainNetBuyWan,
                     mainDirection: indicatorValues.mainDirection,
@@ -2447,6 +2551,13 @@ const VisualizationPage: React.FC = () => {
                       {indicatorId === 'resonance_chase' && cursorValues.resonanceChase !== undefined && cursorValues.resonanceChase !== null && !isNaN(cursorValues.resonanceChase) && (
                         <span className="text-xs font-mono text-cyan">
                           {Math.floor(cursorValues.resonanceChase)}
+                        </span>
+                      )}
+                      {indicatorId === 'dmi' && cursorValues.dmiPdi !== undefined && cursorValues.dmiPdi !== null && !isNaN(cursorValues.dmiPdi) && (
+                        <span className="flex items-center gap-2">
+                          <span className="text-xs font-mono text-[#FF4444]">+DI:{cursorValues.dmiPdi.toFixed(2)}</span>
+                          <span className="text-xs font-mono text-[#44AA44]">-DI:{cursorValues.dmiMdi?.toFixed(2)}</span>
+                          <span className="text-xs font-mono text-[#AA44FF]">ADX:{cursorValues.dmiAdx?.toFixed(2)}</span>
                         </span>
                       )}
                     </div>

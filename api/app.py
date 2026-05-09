@@ -101,6 +101,8 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
     allowed_origins = [
         "http://localhost:5173",
         "http://127.0.0.1:5173",
+        "http://localhost:5188",
+        "http://127.0.0.1:5188",
         "http://localhost:3000",
         "http://127.0.0.1:3000",
     ]

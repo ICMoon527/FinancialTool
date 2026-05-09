@@ -26,6 +26,7 @@ from indicators.indicators.main_trading import MainTrading
 from indicators.indicators.momentum_2 import Momentum2
 from indicators.indicators.strong_detonation import StrongDetonation
 from indicators.indicators.resonance_chase import ResonanceChase
+from indicators.indicators.dmi import DMI
 from indicators.indicators.chip_distribution import ChipDistribution
 from src.storage import DatabaseManager, get_db
 from src.core.trading_calendar import get_start_date_by_trading_days, get_market_for_stock
@@ -155,7 +156,8 @@ AVAILABLE_INDICATORS = [
     'main_trading',
     'momentum_2',
     'strong_detonation',
-    'resonance_chase'
+    'resonance_chase',
+    'dmi'
 ]
 
 # 指标计算器映射
@@ -166,7 +168,8 @@ INDICATOR_CALCULATORS = {
     'main_trading': MainTrading,
     'momentum_2': Momentum2,
     'strong_detonation': StrongDetonation,
-    'resonance_chase': ResonanceChase
+    'resonance_chase': ResonanceChase,
+    'dmi': DMI
 }
 
 

@@ -152,5 +152,5 @@ class DMI(BaseIndicator):
         df['pdi_cross_mdi_down'] = (df['PDI'] < df['MDI']) & (df['PDI'].shift(1) >= df['MDI'].shift(1))
         df['adx_trending'] = df['ADX'] > 25
 
-        return df[['TR', 'PDI', 'MDI', 'DX', 'ADX', 'pdi_cross_mdi_up', 
+        return df[['date', 'TR', 'PDI', 'MDI', 'DX', 'ADX', 'pdi_cross_mdi_up', 
                    'pdi_cross_mdi_down', 'adx_trending']]

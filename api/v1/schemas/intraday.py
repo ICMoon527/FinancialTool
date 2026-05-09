@@ -16,6 +16,7 @@ class IntradayKlinePoint(BaseModel):
     Close: float
     Volume: float
     Amount: Optional[float] = None
+    AvgPrice: Optional[float] = None  # 累计分时均价（成交额/成交量）
     timestamp: str  # ISO格式时间字符串
 
 
@@ -49,6 +50,35 @@ class ReferenceLine(BaseModel):
     base_weight: float = 1.0
 
 
+# ── 指标子图模型 ──
+
+
+class IndicatorLinePoint(BaseModel):
+    """指标线数据点"""
+
+    time: str  # 时间标签 "HH:MM"
+    value: float
+
+
+class IndicatorLine(BaseModel):
+    """指标图中的一条线"""
+
+    name: str
+    label: str
+    color: str
+    data: List[IndicatorLinePoint] = Field(default_factory=list)
+
+
+class IndicatorSubChart(BaseModel):
+    """单个指标子图"""
+
+    id: str  # "absorption" / "main_in_out" / "dragon_tiger_power" / "cyw"
+    label: str  # 中文标题 "主力吸筹"
+    height: int = 120
+    lines: List[IndicatorLine] = Field(default_factory=list)
+    signal_text: str = ""  # 最新信号文本，如 "正T买入 ↑"、"卖出 ↓" 等
+
+
 class IntradayDataResponse(BaseModel):
     """分时数据完整响应"""
 
@@ -58,6 +88,7 @@ class IntradayDataResponse(BaseModel):
     kline_data: List[IntradayKlinePoint] = Field(default_factory=list)
     signals: List[IntradaySignal] = Field(default_factory=list)
     reference_lines: List[ReferenceLine] = Field(default_factory=list)
+    indicator_sub_charts: List[IndicatorSubChart] = Field(default_factory=list)
     signal_summary: Dict[str, Any] = Field(default_factory=dict)
 
 

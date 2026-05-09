@@ -2,34 +2,57 @@
 """
 分时做T API 端点
 
-提供分时K线数据获取、做T信号计算和支撑/压力参考线生成服务。
+提供分时K线数据获取和做T信号计算服务。
+支持多数据源 fallback 机制，提高数据获取成功率。
 """
 
 import logging
+import os
+import yaml
 from datetime import datetime, timedelta
-from typing import Optional
+from pathlib import Path
+from typing import Optional, Callable, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from requests.exceptions import (
+    ConnectionError,
+    ReadTimeout,
+    ConnectTimeout,
+    RequestException,
+)
+from sqlalchemy import text
 
 from api.deps import get_database_manager
 from api.v1.schemas.intraday import (
     DeleteHistoryResponse,
+    IndicatorLine,
+    IndicatorLinePoint,
+    IndicatorSubChart,
     IntradayDataResponse,
     IntradayKlinePoint,
     IntradaySignal,
-    ReferenceLine,
     SearchHistoryItem,
     SearchHistoryRequest,
     SearchHistoryResponse,
 )
 from api.v1.schemas.common import ErrorResponse
 from src.storage import DatabaseManager
-from watchdog.strategies.reference_line_generator import (
-    ReferenceLineGenerator,
-    apply_gravitational_field,
-)
+from watchdog.strategies.intraday_t0_strategy import IntradayIndicatorEngine
 
 logger = logging.getLogger(__name__)
+
+CONFIG_PATH = Path(__file__).resolve().parent.parent.parent.parent / "watchdog" / "strategies" / "intraday_t0_config.yaml"
+
+
+def _load_indicator_config() -> dict:
+    """每次调用时重新加载YAML配置，支持热更新"""
+    try:
+        if CONFIG_PATH.exists():
+            with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
+                return yaml.safe_load(f) or {}
+    except Exception as e:
+        logger.warning(f'加载指标配置文件失败，使用默认参数: {e}')
+    return {}
 
 router = APIRouter()
 
@@ -43,11 +66,62 @@ def _normalize_stock_code(code: str) -> str:
     return code
 
 
-def _get_intraday_klines(stock_code: str, date_str: Optional[str] = None) -> list:
-    """通过 akshare 获取分时K线数据
+def _try_multiple_sources(
+    fetch_functions: list[tuple[str, Callable]],
+    data_type: str = "数据"
+) -> Any:
+    """
+    尝试多个数据源获取数据，直到成功或全部失败
 
     Args:
-        stock_code: 股票代码（如 000001, 600519）
+        fetch_functions: 数据源函数列表，格式为 [(source_name, fetch_func), ...]
+        data_type: 数据类型描述，用于日志
+
+    Returns:
+        获取到的数据
+
+    Raises:
+        Exception: 当所有数据源都失败时抛出异常
+    """
+    last_exception = None
+
+    for source_name, fetch_func in fetch_functions:
+        try:
+            logger.info(f"尝试使用 {source_name} 获取{data_type}...")
+            result = fetch_func()
+
+            # 检查结果是否有效
+            if result is not None and (not hasattr(result, "empty") or not result.empty):
+                logger.info(f"使用 {source_name} 成功获取{data_type}")
+                return result
+            else:
+                logger.warning(f"{source_name} 返回空数据，尝试下一个数据源")
+                continue
+
+        except Exception as e:
+            logger.warning(f"{source_name} 获取{data_type}失败: {type(e).__name__}: {e}")
+            last_exception = e
+            continue
+
+    # 所有数据源都失败
+    error_msg = f"所有数据源获取{data_type}均失败"
+    if last_exception:
+        error_msg += f"，最后失败原因: {type(last_exception).__name__}: {last_exception}"
+    logger.error(error_msg)
+    raise Exception(error_msg)
+
+
+def _get_intraday_klines(stock_code: str, date_str: Optional[str] = None) -> list:
+    """通过多数据源获取分时K线数据
+
+    支持的数据源（按优先级）:
+    1. 腾讯财经1分钟分时 (高粒度，首选)
+    2. 新浪财经5分钟K线 (标准OHLC，降级备选)
+    3. 东方财富 (stock_zh_a_hist_min_em)
+    4. 其他 akshare 分时接口
+
+    Args:
+        stock_code: 股票代码（如 000001，600519）
         date_str: 日期字符串 YYYYMMDD 或 YYYY-MM-DD，None 为当日
 
     Returns:
@@ -55,71 +129,178 @@ def _get_intraday_klines(stock_code: str, date_str: Optional[str] = None) -> lis
     """
     try:
         import akshare as ak
+        import requests
+
+        code = _normalize_stock_code(stock_code)
 
         if date_str is not None:
             date_str = date_str.replace("-", "")
-
-        # 判断市场
-        code = _normalize_stock_code(stock_code)
-        if code.startswith("6"):
-            full_code = f"1.{code}" if len(code) == 6 else f"sh{code}"
-        else:
-            full_code = f"0.{code}" if len(code) == 6 else f"sz{code}"
-
-        # 尝试使用 stock_intraday_em 获取分时数据
-        try:
-            if date_str:
-                df = ak.stock_intraday_em(symbol=code, period="1", start_date=date_str, end_date=date_str)
+            if len(date_str) == 8:
+                target_date = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
             else:
-                df = ak.stock_intraday_em(symbol=code, period="1")
-        except Exception as e1:
-            logger.warning(f"stock_intraday_em 失败: {e1}，尝试备选方案")
-            try:
-                df = ak.stock_bid_ask_em(symbol=code)
-                logger.info("使用 stock_bid_ask_em 作为备选")
-            except Exception as e2:
-                logger.error(f"所有分时数据获取方案均失败: {e2}")
-                raise HTTPException(
-                    status_code=500,
-                    detail={"error": "data_fetch_failed", "message": f"获取分时数据失败: {str(e2)}"},
-                )
+                target_date = datetime.now().strftime("%Y-%m-%d")
+        else:
+            target_date = datetime.now().strftime("%Y-%m-%d")
 
-        if df is None or df.empty:
+        # 定义多个数据源函数
+        fetch_functions = []
+
+        # 数据源 1: 腾讯财经1分钟分时 (高粒度，首选)
+        def fetch_tencent_1min():
+            import pandas as pd
+
+            market = "sh" if code.startswith("6") else "sz"
+            url = f"https://web.ifzq.gtimg.cn/appstock/app/minute/query?code={market}{code}"
+            r = requests.get(url, timeout=15)
+            data = r.json()
+            point_list = (
+                data.get("data", {})
+                .get(f"{market}{code}", {})
+                .get("data", {})
+                .get("data", [])
+            )
+            if not point_list:
+                return None
+            records = []
+            prev_vol = 0.0
+            for line in point_list:
+                parts = line.split()
+                if len(parts) < 3:
+                    continue
+                hour = parts[0][:2]
+                minute = parts[0][2:]
+                price = float(parts[1])
+                cur_vol = float(parts[2])
+                per_vol = max(cur_vol - prev_vol, 0.0)
+                prev_vol = cur_vol
+                records.append({
+                    "timestamp": f"{target_date}T{hour}:{minute}:00",
+                    "Open": price,
+                    "High": price,
+                    "Low": price,
+                    "Close": price,
+                    "Volume": per_vol,
+                })
+            if not records:
+                return None
+            return pd.DataFrame(records)
+
+        fetch_functions.append(("腾讯财经1分钟分时", fetch_tencent_1min))
+
+        # 数据源 2: 新浪财经5分钟K线 (标准OHLC，降级备选)
+        def fetch_sina_5min():
+            import pandas as pd
+
+            market = "sh" if code.startswith("6") else "sz"
+            symbol_str = f"{market}{code}"
+            url = (
+                "https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/"
+                "CN_MarketData.getKLineData"
+                f"?symbol={symbol_str}&scale=5&ma=no&datalen=250"
+            )
+            headers = {"Referer": "https://finance.sina.com.cn"}
+            r = requests.get(url, headers=headers, timeout=15)
+            data = r.json()
+            if not data or not isinstance(data, list):
+                return None
+            records = []
+            for item in data:
+                day_str = item.get("day", "")
+                if not day_str.startswith(target_date):
+                    continue
+                time_part = day_str.split()[-1] if " " in day_str else ""
+                records.append({
+                    "Open": float(item["open"]),
+                    "High": float(item["high"]),
+                    "Low": float(item["low"]),
+                    "Close": float(item["close"]),
+                    "Volume": float(item["volume"]),
+                    "timestamp": f"{target_date}T{time_part}",
+                })
+            if not records:
+                return None
+            return pd.DataFrame(records)
+
+        fetch_functions.append(("新浪财经5分钟K线", fetch_sina_5min))
+
+        # 数据源 3: 东方财富 (stock_zh_a_hist_min_em)
+        if hasattr(ak, 'stock_zh_a_hist_min_em'):
+            def fetch_em():
+                df = ak.stock_zh_a_hist_min_em(
+                    symbol=code,
+                    period="1",
+                    adjust="",
+                )
+                return df
+
+            fetch_functions.append(("东方财富接口", fetch_em))
+
+        # 数据源 4: 尝试 akshare 的其他可能的分时接口
+        for attr_name in dir(ak):
+            if 'hist_min' in attr_name and (attr_name.startswith('stock') or attr_name.startswith('ak')):
+                try:
+                    func = getattr(ak, attr_name)
+
+                    def create_fetch_func(f):
+                        def fetch_func():
+                            try:
+                                return f(symbol=code, period="1", adjust="")
+                            except:
+                                try:
+                                    return f(symbol=code)
+                                except:
+                                    try:
+                                        return f(code)
+                                    except:
+                                        raise
+                        return fetch_func
+
+                    fetch_functions.append((attr_name, create_fetch_func(func)))
+                except:
+                    continue
+
+        if not fetch_functions:
             raise HTTPException(
-                status_code=404,
-                detail={"error": "no_data", "message": f"未找到股票 {stock_code} 的分时数据"},
+                status_code=500,
+                detail={"error": "no_data_source", "message": "没有可用的数据源"},
             )
 
-        # 标准化列名（akshare 不同接口返回的列名可能不同）
+        # 尝试所有数据源
+        df = _try_multiple_sources(fetch_functions, "分时K线数据")
+
+        # 按目标日期筛选（如果有时间字段）
+        if '时间' in df.columns:
+            df = df[df['时间'].astype(str).str.startswith(target_date)].copy()
+        elif 'datetime' in df.columns:
+            df = df[df['datetime'].astype(str).str.startswith(target_date)].copy()
+
+        if df.empty:
+            raise HTTPException(
+                status_code=404,
+                detail={"error": "no_data", "message": f"股票 {stock_code} 在 {target_date} 无分时数据"},
+            )
+
+        # 标准化列名
         column_mapping = {
-            "开盘": "Open",
-            "最高": "High",
-            "最低": "Low",
-            "收盘": "Close",
-            "成交量": "Volume",
-            "成交额": "Amount",
-            "时间": "timestamp",
-            "open": "Open",
-            "high": "High",
-            "low": "Low",
-            "close": "Close",
-            "volume": "Volume",
-            "amount": "Amount",
+            '开盘': 'Open', '最高': 'High', '最低': 'Low', '收盘': 'Close',
+            '成交量': 'Volume', '成交额': 'Amount', '时间': 'timestamp',
+            'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close',
+            'volume': 'Volume', 'amount': 'Amount', 'datetime': 'timestamp',
         }
         df = df.rename(columns={k: v for k, v in column_mapping.items() if k in df.columns})
 
         # 添加缺失列
-        if "Amount" not in df.columns:
-            if "Close" in df.columns and "Volume" in df.columns:
-                df["Amount"] = df["Close"] * df["Volume"]
+        if 'Amount' not in df.columns:
+            if 'Close' in df.columns and 'Volume' in df.columns:
+                df['Amount'] = df['Close'] * df['Volume']
             else:
-                df["Amount"] = 0.0
+                df['Amount'] = 0.0
 
         # 转换时间戳
         klines = []
         for _, row in df.iterrows():
             try:
-                ts = row.get("timestamp", row.get("时间", ""))
+                ts = row.get('timestamp', row.get('时间', row.get('datetime', '')))
                 if isinstance(ts, (datetime,)):
                     ts_str = ts.isoformat()
                 elif isinstance(ts, str):
@@ -127,19 +308,19 @@ def _get_intraday_klines(stock_code: str, date_str: Optional[str] = None) -> lis
                 else:
                     ts_str = str(ts)
             except Exception:
-                ts_str = ""
+                ts_str = ''
 
             kline = {
-                "Open": float(row.get("Open", row.get("open", 0))),
-                "High": float(row.get("High", row.get("high", 0))),
-                "Low": float(row.get("Low", row.get("low", 0))),
-                "Close": float(row.get("Close", row.get("close", 0))),
-                "Volume": float(row.get("Volume", row.get("volume", 0))),
-                "Amount": float(row.get("Amount", row.get("amount", 0))),
-                "timestamp": ts_str,
+                'Open': float(row.get('Open', row.get('open', 0))),
+                'High': float(row.get('High', row.get('high', 0))),
+                'Low': float(row.get('Low', row.get('low', 0))),
+                'Close': float(row.get('Close', row.get('close', 0))),
+                'Volume': float(row.get('Volume', row.get('volume', 0))),
+                'Amount': float(row.get('Amount', row.get('amount', 0))),
+                'timestamp': ts_str,
             }
             # 跳过价格为0的无效数据
-            if kline["Close"] <= 0:
+            if kline['Close'] <= 0:
                 continue
             klines.append(kline)
 
@@ -161,75 +342,11 @@ def _get_intraday_klines(stock_code: str, date_str: Optional[str] = None) -> lis
         )
 
 
-def _get_daily_history(stock_code: str, days: int = 120) -> list:
-    """获取历史日线数据，用于参考线计算
-
-    Args:
-        stock_code: 股票代码
-        days: 获取天数
-
-    Returns:
-        日线K线数据列表，每项为字典
-    """
-    try:
-        import akshare as ak
-
-        code = _normalize_stock_code(stock_code)
-        market = "sh" if code.startswith("6") else "sz"
-        full_code = f"{market}{code}"
-
-        start_date = (datetime.now() - timedelta(days=days + 30)).strftime("%Y%m%d")
-        end_date = datetime.now().strftime("%Y%m%d")
-
-        df = ak.stock_zh_a_hist(symbol=code, period="daily", start_date=start_date, end_date=end_date, adjust="qfq")
-
-        if df is None or df.empty:
-            logger.warning(f"日线历史数据为空，stock_code={stock_code}")
-            return []
-
-        column_mapping = {
-            "日期": "date",
-            "开盘": "Open",
-            "最高": "High",
-            "最低": "Low",
-            "收盘": "Close",
-            "成交量": "Volume",
-            "成交额": "Amount",
-            "换手率": "turnover_rate",
-        }
-        df = df.rename(columns={k: v for k, v in column_mapping.items() if k in df.columns})
-
-        daily_data = []
-        for _, row in df.iterrows():
-            daily_data.append(
-                {
-                    "date": str(row.get("date", "")),
-                    "Open": float(row.get("Open", 0)),
-                    "High": float(row.get("High", 0)),
-                    "Low": float(row.get("Low", 0)),
-                    "Close": float(row.get("Close", 0)),
-                    "Volume": float(row.get("Volume", 0)),
-                    "Amount": float(row.get("Amount", 0)) if "Amount" in df.columns else 0.0,
-                    "turnover_rate": float(row.get("turnover_rate", 0)) if "turnover_rate" in df.columns else 0.0,
-                }
-            )
-
-        return daily_data
-
-    except ImportError:
-        logger.warning("akshare 未安装，无法获取日线数据")
-        return []
-    except Exception as e:
-        logger.warning(f"获取日线数据失败: {e}")
-        return []
-
-
-def _run_t0_strategy(klines: list, reference_lines: list = None) -> tuple:
+def _run_t0_strategy(klines: list) -> tuple:
     """对分时K线数据运行做T策略，生成信号列表
 
     Args:
         klines: 分时K线字典列表
-        reference_lines: 参考线列表（用于引力场置信度修正）
 
     Returns:
         (signals_list, signal_summary_dict)
@@ -255,49 +372,12 @@ def _run_t0_strategy(klines: list, reference_lines: list = None) -> tuple:
         last_buy_price = None
 
         for sig in signals:
-            base_conf = sig.confidence
-
-            # 应用引力场模型
-            gravity_adjust = 0.0
-            support_f = 0.0
-            pressure_f = 0.0
-            if reference_lines and sig.price > 0:
-                adj_conf = apply_gravitational_field(
-                    current_price=sig.price,
-                    reference_lines=reference_lines,
-                    signal_type=sig.signal_type,
-                    base_confidence=base_conf,
-                )
-                gravity_adjust = round(adj_conf - base_conf, 4)
-                # 近似计算support/pressure force
-                for line in reference_lines:
-                    lp = line.get("price", 0)
-                    bw = line.get("base_weight", 1.0)
-                    if lp <= 0:
-                        continue
-                    rd = (lp - sig.price) / sig.price
-                    ad = abs(rd)
-                    if ad > 0.03:
-                        continue
-                    inf = bw / (1.0 + ad / 0.01)
-                    if rd < 0:
-                        support_f += inf
-                    else:
-                        pressure_f += inf
-                support_f = round(support_f, 4)
-                pressure_f = round(pressure_f, 4)
-                # 重新计算置信度
-                final_conf = base_conf + gravity_adjust
-                final_conf = max(0.0, min(1.0, final_conf))
-            else:
-                final_conf = base_conf
-
-            # 仓位建议（根据最终置信度）
-            if final_conf >= 0.80:
+            # 仓位建议（根据置信度）
+            if sig.confidence >= 0.80:
                 pos = "全仓"
-            elif final_conf >= 0.55:
+            elif sig.confidence >= 0.55:
                 pos = "半仓"
-            elif final_conf >= 0.30:
+            elif sig.confidence >= 0.30:
                 pos = "1/3仓"
             else:
                 pos = "观望"
@@ -313,9 +393,9 @@ def _run_t0_strategy(klines: list, reference_lines: list = None) -> tuple:
                     total_return += trade_return
                     last_buy_price = None
 
-            if final_conf >= 0.75:
+            if sig.confidence >= 0.75:
                 strong_count += 1
-            elif final_conf >= 0.50:
+            elif sig.confidence >= 0.50:
                 medium_count += 1
             else:
                 weak_count += 1
@@ -328,33 +408,526 @@ def _run_t0_strategy(klines: list, reference_lines: list = None) -> tuple:
                     price=round(sig.price, 2),
                     score=sig.score,
                     max_score=sig.max_score,
-                    confidence=round(final_conf, 4),
+                    confidence=round(sig.confidence, 4),
                     position_advice=pos,
                     reasoning=sig.reasoning,
-                    gravity_adjustment=round(gravity_adjust, 4),
-                    support_force=support_f,
-                    pressure_f=pressure_f,
                 )
             )
 
         summary = {
-            "buy_signals": buy_count,
-            "sell_signals": sell_count,
-            "total_signals": buy_count + sell_count,
-            "strong_signals": strong_count,
-            "medium_signals": medium_count,
-            "weak_signals": weak_count,
-            "simulated_return_pct": round(total_return, 2),
+            'buy_signals': buy_count,
+            'sell_signals': sell_count,
+            'total_signals': buy_count + sell_count,
+            'strong_signals': strong_count,
+            'medium_signals': medium_count,
+            'weak_signals': weak_count,
+            'simulated_return_pct': round(total_return, 2),
         }
 
         return result_signals, summary
 
     except ImportError as e:
         logger.warning(f"导入做T策略失败: {e}，返回空信号")
-        return [], {"buy_signals": 0, "sell_signals": 0, "total_signals": 0}
+        return [], {'buy_signals': 0, 'sell_signals': 0, 'total_signals': 0}
     except Exception as e:
         logger.error(f"运行做T策略失败: {e}", exc_info=True)
-        return [], {"buy_signals": 0, "sell_signals": 0, "total_signals": 0, "error": str(e)}
+        return [], {'buy_signals': 0, 'sell_signals': 0, 'total_signals': 0, 'error': str(e)}
+
+
+def _cross_up(a_series, b_series, lookback: int = 3) -> bool:
+    """检测 a 上穿 b（最近 lookback 根K线内发生过交叉）"""
+    import pandas as pd
+
+    if len(a_series) < 2 or len(b_series) < 2:
+        return False
+    start = max(0, len(a_series) - lookback)
+    for i in range(start, len(a_series)):
+        if i == 0:
+            continue
+        a_prev = a_series.iloc[i - 1]
+        b_prev = b_series.iloc[i - 1]
+        a_cur = a_series.iloc[i]
+        b_cur = b_series.iloc[i]
+        if pd.isna(a_prev) or pd.isna(b_prev) or pd.isna(a_cur) or pd.isna(b_cur):
+            continue
+        if a_prev <= b_prev and a_cur > b_cur:
+            return True
+    return False
+
+
+def _cross_down(a_series, b_series, lookback: int = 3) -> bool:
+    """检测 a 下穿 b（最近 lookback 根K线内发生过交叉）"""
+    import pandas as pd
+
+    if len(a_series) < 2 or len(b_series) < 2:
+        return False
+    start = max(0, len(a_series) - lookback)
+    for i in range(start, len(a_series)):
+        if i == 0:
+            continue
+        a_prev = a_series.iloc[i - 1]
+        b_prev = b_series.iloc[i - 1]
+        a_cur = a_series.iloc[i]
+        b_cur = b_series.iloc[i]
+        if pd.isna(a_prev) or pd.isna(b_prev) or pd.isna(a_cur) or pd.isna(b_cur):
+            continue
+        if a_prev >= b_prev and a_cur < b_cur:
+            return True
+    return False
+
+
+def _compute_dragon_tiger_signal(result) -> str:
+    """计算龙虎动力信号：基于 dominant_power 阈值判断"""
+    try:
+        if 'dominant_power' not in result.columns:
+            return ''
+        vals = result['dominant_power'].dropna()
+        if len(vals) == 0:
+            return ''
+        last = float(vals.iloc[-1])
+        if last >= 0.3:
+            return '买入 ↑'
+        elif last >= 0.1:
+            return '持有偏多 ↗'
+        elif last > -0.1:
+            return '观望 —'
+        elif last >= -0.3:
+            return '减仓 ↘'
+        else:
+            return '卖出 ↓'
+    except Exception as e:
+        logger.warning(f'计算龙虎动力信号失败: {e}')
+        return ''
+
+
+def _compute_main_in_out_signal(result) -> str:
+    """计算主力进出信号：基于交叉与阈值判断正T/反T"""
+    try:
+        if 'main_in' not in result.columns or 'main_out' not in result.columns:
+            return ''
+        main_in = result['main_in']
+        main_out = result['main_out']
+        up = _cross_up(main_in, main_out)
+        down = _cross_down(main_in, main_out)
+        in_vals = main_in.dropna()
+        out_vals = main_out.dropna()
+        last_in = float(in_vals.iloc[-1]) if len(in_vals) > 0 else 50
+        last_out = float(out_vals.iloc[-1]) if len(out_vals) > 0 else 50
+        if up:
+            recent_min = float(in_vals.iloc[-min(5, len(in_vals)):].min())
+            if recent_min < 30:
+                return '反T买回 ↑'
+            return '正T买入 ↑'
+        if down:
+            recent_max = float(in_vals.iloc[-min(5, len(in_vals)):].max())
+            if recent_max > 70:
+                return '反T卖出 ↓'
+            return '正T卖出 ↓'
+        if last_in > last_out:
+            return '主力流入 ↗'
+        else:
+            return '主力流出 ↘'
+    except Exception as e:
+        logger.warning(f'计算主力进出信号失败: {e}')
+        return ''
+
+
+def _compute_cyw_signal(result) -> str:
+    """计算CYW控盘信号：基于数值正负与CYW/MA交叉判断"""
+    try:
+        if 'CYW' not in result.columns or 'CYW_MA' not in result.columns:
+            return ''
+        cyw = result['CYW']
+        cyw_ma = result['CYW_MA']
+        up = _cross_up(cyw, cyw_ma)
+        down = _cross_down(cyw, cyw_ma)
+        cyw_vals = cyw.dropna()
+        last = float(cyw_vals.iloc[-1]) if len(cyw_vals) > 0 else 0
+        if up:
+            prefix = '控盘中' if last > 0 else '弱控盘'
+            return f'{prefix} 买入 ↑'
+        elif down:
+            return '未控盘 卖出 ↓'
+        elif last > 0:
+            return '控盘中 ↗'
+        else:
+            return '未控盘 ↘'
+    except Exception as e:
+        logger.warning(f'计算CYW信号失败: {e}')
+        return ''
+
+
+def _generate_indicator_sub_charts(klines: list) -> list:
+    """根据分时K线计算四大指标，生成子图数据
+
+    Args:
+        klines: 分时K线字典列表
+
+    Returns:
+        List[IndicatorSubChart] 四个指标的子图数据
+    """
+    try:
+        import pandas as pd
+
+        df = pd.DataFrame(klines)
+        if 'Amount' not in df.columns:
+            df['Amount'] = df['Close'] * df['Volume'] if 'Close' in df.columns and 'Volume' in df.columns else 0.0
+
+        engine = IntradayIndicatorEngine(config=_load_indicator_config())
+        result = engine.calculate_all(df)
+
+        # 提取时间标签 "HH:MM"，尽量对齐K线的timestamp格式
+        time_labels = []
+        for _, row in result.iterrows():
+            ts = row.get('timestamp', '')
+            if isinstance(ts, str):
+                ts = ts.strip()
+            elif hasattr(ts, 'isoformat'):
+                ts = ts.isoformat()
+            else:
+                ts = str(ts)
+            # 从时间字符串中提取 HH:MM
+            import re
+            match = re.search(r'(\d{1,2}):(\d{2})', ts)
+            if match:
+                time_labels.append(f"{match.group(1).zfill(2)}:{match.group(2)}")
+            else:
+                time_labels.append("")
+
+        sub_charts = []
+
+        dt_signal = _compute_dragon_tiger_signal(result)
+        main_signal = _compute_main_in_out_signal(result)
+        cyw_signal = _compute_cyw_signal(result)
+
+        # ── 1. 主力吸筹 ──
+        if 'absorption' in result.columns:
+            absorption_data = []
+            for i, v in enumerate(result['absorption']):
+                if not pd.isna(v):
+                    absorption_data.append(IndicatorLinePoint(time=time_labels[i] if i < len(time_labels) else '', value=round(float(v), 4)))
+            sub_charts.append(
+                IndicatorSubChart(
+                    id="absorption",
+                    label="主力吸筹",
+                    height=110,
+                    lines=[
+                        IndicatorLine(
+                            name="absorption",
+                            label="吸筹",
+                            color="#44FF44",
+                            data=absorption_data,
+                        )
+                    ],
+                    signal_text="",
+                )
+            )
+
+        # ── 2. 主力进出 ──
+        main_in_data = []
+        main_out_data = []
+        in_out_line_data = []
+        if all(c in result.columns for c in ['main_in', 'main_out', 'in_out_line']):
+            for i in range(len(result)):
+                tl = time_labels[i] if i < len(time_labels) else ''
+                if not pd.isna(result['main_in'].iloc[i]):
+                    main_in_data.append(IndicatorLinePoint(time=tl, value=round(float(result['main_in'].iloc[i]), 4)))
+                if not pd.isna(result['main_out'].iloc[i]):
+                    main_out_data.append(IndicatorLinePoint(time=tl, value=round(float(result['main_out'].iloc[i]), 4)))
+                if not pd.isna(result['in_out_line'].iloc[i]):
+                    in_out_line_data.append(IndicatorLinePoint(time=tl, value=round(float(result['in_out_line'].iloc[i]), 4)))
+            sub_charts.append(
+                IndicatorSubChart(
+                    id="main_in_out",
+                    label="主力进出",
+                    height=110,
+                    lines=[
+                        IndicatorLine(name="main_in", label="主力流入", color="#FF4444", data=main_in_data),
+                        IndicatorLine(name="main_out", label="主力流出", color="#4488FF", data=main_out_data),
+                        IndicatorLine(name="in_out_line", label="进出线", color="#FFAA00", data=in_out_line_data),
+                    ],
+                    signal_text=main_signal,
+                )
+            )
+
+        # ── 3. 龙虎动力 ──
+        if 'dominant_power' in result.columns:
+            dt_data = []
+            for i, v in enumerate(result['dominant_power']):
+                if not pd.isna(v):
+                    dt_data.append(IndicatorLinePoint(time=time_labels[i] if i < len(time_labels) else '', value=round(float(v), 4)))
+            sub_charts.append(
+                IndicatorSubChart(
+                    id="dragon_tiger_power",
+                    label="龙虎动力",
+                    height=105,
+                    lines=[
+                        IndicatorLine(
+                            name="dominant_power",
+                            label="多头主导",
+                            color="#BB44FF",
+                            data=dt_data,
+                        )
+                    ],
+                    signal_text=dt_signal,
+                )
+            )
+
+        # ── 4. CYW 主力控盘 ──
+        cyw_data = []
+        cyw_ma_data = []
+        if all(c in result.columns for c in ['CYW', 'CYW_MA']):
+            for i in range(len(result)):
+                tl = time_labels[i] if i < len(time_labels) else ''
+                if not pd.isna(result['CYW'].iloc[i]):
+                    cyw_data.append(IndicatorLinePoint(time=tl, value=round(float(result['CYW'].iloc[i]), 4)))
+                if not pd.isna(result['CYW_MA'].iloc[i]):
+                    cyw_ma_data.append(IndicatorLinePoint(time=tl, value=round(float(result['CYW_MA'].iloc[i]), 4)))
+            sub_charts.append(
+                IndicatorSubChart(
+                    id="cyw",
+                    label="CYW 控盘",
+                    height=110,
+                    lines=[
+                        IndicatorLine(name="CYW", label="CYW", color="#44BBFF", data=cyw_data),
+                        IndicatorLine(name="CYW_MA", label="MA", color="#EEEEEE", data=cyw_ma_data),
+                    ],
+                    signal_text=cyw_signal,
+                )
+            )
+
+        logger.info(f"生成 {len(sub_charts)} 个指标子图")
+        return sub_charts
+
+    except ImportError as e:
+        logger.warning(f"导入指标计算依赖失败: {e}，返回空列表")
+        return []
+    except Exception as e:
+        logger.error(f"生成指标子图失败: {e}", exc_info=True)
+        return []
+
+
+def _compute_reference_lines(klines: list, code: str, db_manager=None, query_date: str = None) -> list:
+    """计算支撑/压力参考线
+
+    日内参考线（基于分时数据）：
+    - 今开 / 今日高 / 今日低 (蓝/红/绿 dotted)
+
+    日线级别参考线（需要数据库，与 ReferenceLineGenerator 保持一致）：
+    - 昨收 (黄 solid)
+    - 主力操盘三线：攻击线/操盘线/防守线 (红/橙/绿 dashed)
+    - MA5/MA10/MA20 (红/橙/绿 dotted)
+    - 前高/前低 30个自然日HHV/LLV (红/绿 solid)
+    - 筹码密集区 上下沿 (紫 dashed)
+    """
+    from api.v1.schemas.intraday import ReferenceLine
+
+    if not klines or len(klines) < 2:
+        return []
+
+    try:
+        ref_lines = []
+        highs = [k['High'] for k in klines]
+        lows = [k['Low'] for k in klines]
+
+        today_open = klines[0]['Open']
+        today_high = max(highs)
+        today_low = min(lows)
+
+        # ── 今开 ──
+        ref_lines.append(ReferenceLine(
+            id='today_open', label='今开', price=round(today_open, 2),
+            category='key_level', color='#4488FF', style='dotted', base_weight=1.5,
+        ))
+
+        # ── 今日高/今日低 ──
+        ref_lines.append(ReferenceLine(
+            id='today_high', label='今日高', price=round(today_high, 2),
+            category='key_level', color='#FF444488', style='dotted', base_weight=1.0,
+        ))
+        ref_lines.append(ReferenceLine(
+            id='today_low', label='今日低', price=round(today_low, 2),
+            category='key_level', color='#44FF4488', style='dotted', base_weight=1.0,
+        ))
+
+        # ════════════════════════════════════════
+        # 日线级别参考线（需要数据库）
+        # ════════════════════════════════════════
+        if db_manager is not None and code:
+            try:
+                from datetime import date, timedelta
+                import math
+                import pandas as pd
+
+                # 解析查询日期，排除查询日当天
+                from datetime import datetime as dt
+                try:
+                    if query_date and len(query_date) == 8:
+                        q_date = dt.strptime(query_date, '%Y%m%d').date()
+                    elif query_date:
+                        q_date = dt.strptime(query_date.replace('-', '')[:8], '%Y%m%d').date()
+                    else:
+                        q_date = date.today()
+                except (ValueError, TypeError):
+                    q_date = date.today()
+                end_date = q_date - timedelta(days=1)
+                # 取 365 自然日历史数据，确保筹码分布和各指标计算有足够数据
+                start_date = end_date - timedelta(days=365)
+                daily_data = db_manager.get_data_range(code, start_date, end_date)
+                daily_list = [d.to_dict() for d in daily_data] if daily_data else []
+
+                if daily_list and len(daily_list) >= 5:
+                    # 构建 DataFrame（按日期排序）
+                    df_rows = []
+                    for d in daily_list:
+                        if d.get('close') is not None and not (
+                            isinstance(d.get('close'), float) and math.isnan(d['close'])
+                        ):
+                            df_rows.append({
+                                'Date': d['date'],
+                                'Open': float(d['open'] or 0),
+                                'High': float(d['high'] or 0),
+                                'Low': float(d['low'] or 0),
+                                'Close': float(d['close'] or 0),
+                                'Volume': float(d.get('volume', 0) or 0),
+                            })
+                    if not df_rows:
+                        logger.info("日线数据库无有效数据，跳过日线级参考线")
+                    else:
+                        daily_df = pd.DataFrame(df_rows)
+                        daily_df['Date'] = pd.to_datetime(daily_df['Date'])
+                        daily_df = daily_df.sort_values('Date').set_index('Date')
+
+                        # 将当日分时数据转换为日线OHLC，追加到历史DataFrame
+                        today_close = klines[-1]['Close']
+                        today_vol = sum(k.get('Volume', 0) or 0 for k in klines)
+                        today_row = pd.DataFrame({
+                            'Open':  [today_open],
+                            'High':  [today_high],
+                            'Low':   [today_low],
+                            'Close': [today_close],
+                            'Volume': [today_vol],
+                        }, index=[pd.Timestamp(q_date)])
+                        daily_df = pd.concat([daily_df, today_row])
+                        daily_df = daily_df.sort_index()
+                        logger.info(
+                            f"追加当日OHLC: O={today_open} H={today_high} L={today_low} "
+                            f"C={today_close} V={today_vol}, 总计{len(daily_df)}行"
+                        )
+
+                        from watchdog.strategies.reference_line_generator import ReferenceLineGenerator
+
+                        gen = ReferenceLineGenerator(daily_df)
+                        daily_refs = gen.generate_all()
+
+                        # 映射 id 前缀与内部一致性
+                        id_map = {
+                            'attack_line': 'attack_line',
+                            'trading_line': 'operation_line',
+                            'defense_line': 'defense_line',
+                            'ma_5': 'ma5',
+                            'ma_10': 'ma10',
+                            'ma_20': 'ma20',
+                            'chip_dense_upper': 'chip_upper',
+                            'chip_dense_lower': 'chip_lower',
+                            'prev_close': 'prev_close',
+                        }
+                        # 排除 ReferenceLineGenerator 的 HHV/LLV（由 _add_30day_extreme_lines 专门计算）
+                        skip_ids = {'previous_high_30', 'previous_low_30'}
+                        for ref_dict in daily_refs:
+                            rid = ref_dict['id']
+                            if rid in skip_ids:
+                                continue
+                            mapped_id = id_map.get(rid, rid)
+                            ref_lines.append(ReferenceLine(
+                                id=mapped_id,
+                                label=ref_dict['label'],
+                                price=ref_dict['price'],
+                                category=ref_dict['category'],
+                                color=ref_dict['color'],
+                                style=ref_dict['style'],
+                                base_weight=ref_dict['base_weight'],
+                            ))
+                        logger.info(f"ReferenceLineGenerator 生成 {len(daily_refs)} 条日线级参考线")
+
+                        # ── 前高/前低 30个自然日HHV/LLV ──
+                        _add_30day_extreme_lines(ref_lines, daily_df, q_date, today_low, today_high)
+
+            except Exception as db_err:
+                logger.warning(f"从数据库获取日线数据失败，跳过日线级参考线: {db_err}", exc_info=True)
+
+        logger.info(f"生成 {len(ref_lines)} 条参考线")
+        return ref_lines
+
+    except Exception as e:
+        logger.error(f"计算参考线失败: {e}", exc_info=True)
+        return []
+
+
+def _add_30day_extreme_lines(ref_lines: list, daily_df, query_date, today_low: float, today_high: float):
+    """计算30个自然日内的最高价和最低价（HHV/LLV）
+
+    从查询日往前推30个自然日，取该区间内交易日的日线最高/最低
+    排除查询日当天的分时转换数据
+    """
+    try:
+        from datetime import timedelta
+
+        target = query_date - timedelta(days=30)
+
+        # 排除查询日当天，仅使用历史日线数据
+        hist_df = daily_df[daily_df.index.date != query_date]
+        if hist_df.empty:
+            return
+
+        # 从历史日线中找到 <= target 的最近交易日
+        eligible = hist_df[hist_df.index.date <= target]
+        if eligible.empty:
+            range_df = hist_df
+        else:
+            start_idx = eligible.index[-1]
+            range_df = hist_df.loc[start_idx:]
+
+        if range_df.empty:
+            return
+
+        hhv_30 = float(range_df['High'].max())
+        llv_30 = float(range_df['Low'].min())
+
+        from api.v1.schemas.intraday import ReferenceLine
+
+        ref_lines.append(ReferenceLine(
+            id='hhv_30', label='前高30日', price=round(hhv_30, 2),
+            category='极值', color='#FF4444', style='solid', base_weight=1.1,
+        ))
+        ref_lines.append(ReferenceLine(
+            id='llv_30', label='前低30日', price=round(llv_30, 2),
+            category='极值', color='#44FF44', style='solid', base_weight=1.1,
+        ))
+        logger.info(f"30日极值: HHV={hhv_30:.2f}, LLV={llv_30:.2f}")
+    except Exception as e:
+        logger.warning(f"计算30日极值失败: {e}", exc_info=True)
+
+
+def _inject_avg_price(klines: list):
+    """为每根K线注入累计分时均价
+
+    均价(t) = 累计成交额[0..t] / 累计成交量[0..t]
+    结果写入每根K线字典的 AvgPrice 字段
+    """
+    cum_amount = 0.0
+    cum_vol = 0.0
+    for k in klines:
+        c = k.get('Close', 0)
+        v = k.get('Volume', 0) or 0
+        if v > 0:
+            cum_amount += c * v
+            cum_vol += v
+            k['AvgPrice'] = round(cum_amount / cum_vol, 2)
+        else:
+            # 无成交时沿用上一条均价，第一条用Close
+            prev = klines[klines.index(k) - 1].get('AvgPrice') if klines.index(k) > 0 else None
+            k['AvgPrice'] = prev if prev is not None else round(c, 2)
 
 
 # ============================================================
@@ -366,19 +939,19 @@ def _run_t0_strategy(klines: list, reference_lines: list = None) -> tuple:
     "/data/{stock_code}",
     response_model=IntradayDataResponse,
     responses={
-        200: {"description": "分时K线数据 + 信号 + 参考线"},
+        200: {"description": "分时K线数据 + 信号"},
         404: {"description": "未找到数据", "model": ErrorResponse},
         500: {"description": "服务器错误", "model": ErrorResponse},
     },
     summary="获取股票分时做T数据",
-    description="获取指定股票的分时K线数据、做T买卖信号和支撑/压力参考线",
+    description="获取指定股票的分时K线数据、做T买卖信号",
 )
 def get_intraday_data(
     stock_code: str,
     date: Optional[str] = Query(None, description="日期 YYYYMMDD 或 YYYY-MM-DD，默认当日"),
     db_manager: DatabaseManager = Depends(get_database_manager),
 ) -> IntradayDataResponse:
-    """获取分时K线数据、信号和参考线"""
+    """获取分时K线数据和信号"""
     try:
         code = _normalize_stock_code(stock_code)
         date_str = date
@@ -388,25 +961,14 @@ def get_intraday_data(
         if not klines:
             raise HTTPException(status_code=404, detail={"error": "no_data", "message": "未获取到分时K线数据"})
 
-        # 获取日线历史数据并生成参考线
-        daily_raw = _get_daily_history(code, days=120)
-        reference_lines_dicts = []
-        if daily_raw:
-            import pandas as pd
+        # 运行做T策略
+        signals, summary = _run_t0_strategy(klines)
 
-            df_daily = pd.DataFrame(daily_raw)
-            if "date" in df_daily.columns:
-                df_daily["date"] = pd.to_datetime(df_daily["date"])
-                df_daily = df_daily.set_index("date").sort_index()
-            try:
-                generator = ReferenceLineGenerator(df_daily)
-                reference_lines_dicts = generator.generate_all()
-            except Exception as e:
-                logger.warning(f"参考线生成失败: {e}")
-        reference_lines = [ReferenceLine(**rl) for rl in reference_lines_dicts]
+        # 生成四大指标子图数据
+        indicator_sub_charts = _generate_indicator_sub_charts(klines)
 
-        # 运行做T策略 + 引力场修正
-        signals, summary = _run_t0_strategy(klines, reference_lines_dicts)
+        # 注入累计分时均价到每根K线
+        _inject_avg_price(klines)
 
         # 构建K线响应
         kline_points = [IntradayKlinePoint(**k) for k in klines]
@@ -415,7 +977,7 @@ def get_intraday_data(
         if date_str is None:
             date_str = datetime.now().strftime("%Y-%m-%d")
         elif len(date_str) == 8:
-            date_str = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
+            date_str = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
 
         return IntradayDataResponse(
             stock_code=code,
@@ -423,7 +985,8 @@ def get_intraday_data(
             date=date_str,
             kline_data=kline_points,
             signals=signals,
-            reference_lines=reference_lines,
+            reference_lines=_compute_reference_lines(klines, code, db_manager, date_str),
+            indicator_sub_charts=indicator_sub_charts,
             signal_summary=summary,
         )
 
@@ -448,15 +1011,14 @@ def get_search_history(
 ) -> SearchHistoryResponse:
     """获取分时搜索历史记录"""
     try:
-        rows = db_manager.execute_query(
-            """
-            SELECT id, stock_code, stock_name, search_date, search_time
-            FROM intraday_search_history
-            ORDER BY search_time DESC
-            LIMIT ?
-            """,
-            (limit,),
-        )
+        with db_manager.session_scope() as session:
+            result = session.execute(text(
+                "SELECT id, stock_code, stock_name, search_date, search_time "
+                "FROM intraday_search_history "
+                "ORDER BY search_time DESC "
+                "LIMIT :limit"
+            ), {"limit": limit})
+            rows = result.fetchall()
 
         items = []
         for row in rows:
@@ -470,14 +1032,14 @@ def get_search_history(
                 )
             )
 
-        total = db_manager.execute_query("SELECT COUNT(*) FROM intraday_search_history", ())
-        total_count = total[0][0] if total else 0
+        with db_manager.session_scope() as session:
+            result = session.execute(text("SELECT COUNT(*) FROM intraday_search_history"))
+            total_count = result.scalar() or 0
 
         return SearchHistoryResponse(items=items, total=total_count)
 
     except Exception as e:
         logger.error(f"获取搜索历史失败: {e}")
-        # 表不存在时返回空
         return SearchHistoryResponse(items=[], total=0)
 
 
@@ -494,29 +1056,29 @@ def save_search_history(
     try:
         now = datetime.now().isoformat()
 
-        db_manager.execute_query(
-            """
-            CREATE TABLE IF NOT EXISTS intraday_search_history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                stock_code TEXT NOT NULL,
-                stock_name TEXT DEFAULT '',
-                search_date TEXT DEFAULT '',
-                search_time TEXT DEFAULT ''
-            )
-            """,
-            (),
-        )
+        with db_manager.session_scope() as session:
+            session.execute(text(
+                "CREATE TABLE IF NOT EXISTS intraday_search_history ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                "stock_code TEXT NOT NULL, "
+                "stock_name TEXT DEFAULT '', "
+                "search_date TEXT DEFAULT '', "
+                "search_time TEXT DEFAULT ''"
+                ")"
+            ))
 
-        db_manager.execute_query(
-            """
-            INSERT INTO intraday_search_history (stock_code, stock_name, search_date, search_time)
-            VALUES (?, ?, ?, ?)
-            """,
-            (request.stock_code, request.stock_name or "", request.date or "", now),
-        )
+            session.execute(text(
+                "INSERT INTO intraday_search_history (stock_code, stock_name, search_date, search_time) "
+                "VALUES (:stock_code, :stock_name, :search_date, :search_time)"
+            ), {
+                "stock_code": request.stock_code,
+                "stock_name": request.stock_name or "",
+                "search_date": request.date or "",
+                "search_time": now,
+            })
 
-        last_id = db_manager.execute_query("SELECT last_insert_rowid()", ())
-        item_id = last_id[0][0] if last_id else 0
+            result = session.execute(text("SELECT last_insert_rowid()"))
+            item_id = result.scalar() or 0
 
         return SearchHistoryItem(
             id=item_id,
@@ -542,7 +1104,11 @@ def delete_search_history(
 ) -> DeleteHistoryResponse:
     """删除一条搜索历史"""
     try:
-        db_manager.execute_query("DELETE FROM intraday_search_history WHERE id = ?", (history_id,))
+        with db_manager.session_scope() as session:
+            session.execute(
+                text("DELETE FROM intraday_search_history WHERE id = :hid"),
+                {"hid": history_id},
+            )
         return DeleteHistoryResponse(success=True, message="删除成功")
     except Exception as e:
         logger.error(f"删除搜索历史失败: {e}")
