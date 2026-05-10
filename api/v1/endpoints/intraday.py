@@ -34,6 +34,7 @@ from api.v1.schemas.intraday import (
     SearchHistoryItem,
     SearchHistoryRequest,
     SearchHistoryResponse,
+    WeightContribution,
 )
 from api.v1.schemas.common import ErrorResponse
 from src.storage import DatabaseManager
@@ -342,11 +343,12 @@ def _get_intraday_klines(stock_code: str, date_str: Optional[str] = None) -> lis
         )
 
 
-def _run_t0_strategy(klines: list) -> tuple:
+def _run_t0_strategy(klines: list, reference_lines: list = None) -> tuple:
     """对分时K线数据运行做T策略，生成信号列表
 
     Args:
         klines: 分时K线字典列表
+        reference_lines: 日线级参考线列表
 
     Returns:
         (signals_list, signal_summary_dict)
@@ -354,11 +356,23 @@ def _run_t0_strategy(klines: list) -> tuple:
     try:
         from watchdog.strategies.intraday_t0_strategy import IntradayT0Strategy
 
-        strategy = IntradayT0Strategy(stock_code="temp", stock_name="")
+        config_path = os.path.join(
+            os.path.dirname(__file__), "..", "..", "..",
+            "watchdog", "strategies", "intraday_t0_config.yaml"
+        )
+        config_path = os.path.normpath(config_path)
+        strategy = IntradayT0Strategy(stock_code="temp", stock_name="", config_path=config_path)
+
+        ref_lines_raw = reference_lines or []
+        ref_lines = [
+            {"id": rl.id if hasattr(rl, "id") else rl.get("id", ""),
+             "price": rl.price if hasattr(rl, "price") else rl.get("price", 0)}
+            for rl in ref_lines_raw
+        ]
 
         signals = []
         for kline in klines:
-            sig = strategy.feed_kline(kline)
+            sig = strategy.feed_kline(kline, ref_lines)
             if sig is not None:
                 signals.append(sig)
 
@@ -372,7 +386,6 @@ def _run_t0_strategy(klines: list) -> tuple:
         last_buy_price = None
 
         for sig in signals:
-            # 仓位建议（根据置信度）
             if sig.confidence >= 0.80:
                 pos = "全仓"
             elif sig.confidence >= 0.55:
@@ -382,7 +395,6 @@ def _run_t0_strategy(klines: list) -> tuple:
             else:
                 pos = "观望"
 
-            # 信号统计
             if sig.signal_type == "buy":
                 buy_count += 1
                 last_buy_price = sig.price
@@ -400,6 +412,29 @@ def _run_t0_strategy(klines: list) -> tuple:
             else:
                 weak_count += 1
 
+            buy_details_raw = getattr(sig, "buy_weight_details", []) or []
+            sell_details_raw = getattr(sig, "sell_weight_details", []) or []
+            buy_weight_details = [
+                WeightContribution(
+                    key=d.get("key", ""),
+                    label=d.get("label", ""),
+                    weight=d.get("weight", 0),
+                    triggered=d.get("triggered", False),
+                    score=d.get("score", 0),
+                )
+                for d in buy_details_raw
+            ]
+            sell_weight_details = [
+                WeightContribution(
+                    key=d.get("key", ""),
+                    label=d.get("label", ""),
+                    weight=d.get("weight", 0),
+                    triggered=d.get("triggered", False),
+                    score=d.get("score", 0),
+                )
+                for d in sell_details_raw
+            ]
+
             result_signals.append(
                 IntradaySignal(
                     stock_code=sig.stock_code,
@@ -411,6 +446,10 @@ def _run_t0_strategy(klines: list) -> tuple:
                     confidence=round(sig.confidence, 4),
                     position_advice=pos,
                     reasoning=sig.reasoning,
+                    support_force=getattr(sig, "support_force", 0.0),
+                    pressure_force=getattr(sig, "pressure_force", 0.0),
+                    buy_weight_details=buy_weight_details,
+                    sell_weight_details=sell_weight_details,
                 )
             )
 
@@ -428,10 +467,18 @@ def _run_t0_strategy(klines: list) -> tuple:
 
     except ImportError as e:
         logger.warning(f"导入做T策略失败: {e}，返回空信号")
-        return [], {'buy_signals': 0, 'sell_signals': 0, 'total_signals': 0}
+        return [], {
+            'buy_signals': 0, 'sell_signals': 0, 'total_signals': 0,
+            'strong_signals': 0, 'medium_signals': 0, 'weak_signals': 0,
+            'simulated_return_pct': 0.0,
+        }
     except Exception as e:
         logger.error(f"运行做T策略失败: {e}", exc_info=True)
-        return [], {'buy_signals': 0, 'sell_signals': 0, 'total_signals': 0, 'error': str(e)}
+        return [], {
+            'buy_signals': 0, 'sell_signals': 0, 'total_signals': 0,
+            'strong_signals': 0, 'medium_signals': 0, 'weak_signals': 0,
+            'simulated_return_pct': 0.0, 'error': str(e),
+        }
 
 
 def _cross_up(a_series, b_series, lookback: int = 3) -> bool:
@@ -474,30 +521,6 @@ def _cross_down(a_series, b_series, lookback: int = 3) -> bool:
         if a_prev >= b_prev and a_cur < b_cur:
             return True
     return False
-
-
-def _compute_dragon_tiger_signal(result) -> str:
-    """计算龙虎动力信号：基于 dominant_power 阈值判断"""
-    try:
-        if 'dominant_power' not in result.columns:
-            return ''
-        vals = result['dominant_power'].dropna()
-        if len(vals) == 0:
-            return ''
-        last = float(vals.iloc[-1])
-        if last >= 0.3:
-            return '买入 ↑'
-        elif last >= 0.1:
-            return '持有偏多 ↗'
-        elif last > -0.1:
-            return '观望 —'
-        elif last >= -0.3:
-            return '减仓 ↘'
-        else:
-            return '卖出 ↓'
-    except Exception as e:
-        logger.warning(f'计算龙虎动力信号失败: {e}')
-        return ''
 
 
 def _compute_main_in_out_signal(result) -> str:
@@ -596,7 +619,6 @@ def _generate_indicator_sub_charts(klines: list) -> list:
 
         sub_charts = []
 
-        dt_signal = _compute_dragon_tiger_signal(result)
         main_signal = _compute_main_in_out_signal(result)
         cyw_signal = _compute_cyw_signal(result)
 
@@ -650,30 +672,7 @@ def _generate_indicator_sub_charts(klines: list) -> list:
                 )
             )
 
-        # ── 3. 龙虎动力 ──
-        if 'dominant_power' in result.columns:
-            dt_data = []
-            for i, v in enumerate(result['dominant_power']):
-                if not pd.isna(v):
-                    dt_data.append(IndicatorLinePoint(time=time_labels[i] if i < len(time_labels) else '', value=round(float(v), 4)))
-            sub_charts.append(
-                IndicatorSubChart(
-                    id="dragon_tiger_power",
-                    label="龙虎动力",
-                    height=105,
-                    lines=[
-                        IndicatorLine(
-                            name="dominant_power",
-                            label="多头主导",
-                            color="#BB44FF",
-                            data=dt_data,
-                        )
-                    ],
-                    signal_text=dt_signal,
-                )
-            )
-
-        # ── 4. CYW 主力控盘 ──
+        # ── 3. CYW 主力控盘 ──
         cyw_data = []
         cyw_ma_data = []
         if all(c in result.columns for c in ['CYW', 'CYW_MA']):
@@ -693,6 +692,52 @@ def _generate_indicator_sub_charts(klines: list) -> list:
                         IndicatorLine(name="CYW_MA", label="MA", color="#EEEEEE", data=cyw_ma_data),
                     ],
                     signal_text=cyw_signal,
+                )
+            )
+
+        # ── 4. 价格均线关系 ──
+        ma5_data = []
+        ma20_data = []
+        close_data = []
+        if all(c in result.columns for c in ['ma5', 'ma20']):
+            for i in range(len(result)):
+                tl = time_labels[i] if i < len(time_labels) else ''
+                if not pd.isna(result['ma5'].iloc[i]):
+                    ma5_data.append(IndicatorLinePoint(time=tl, value=round(float(result['ma5'].iloc[i]), 2)))
+                if not pd.isna(result['ma20'].iloc[i]):
+                    ma20_data.append(IndicatorLinePoint(time=tl, value=round(float(result['ma20'].iloc[i]), 2)))
+                if 'Close' in result.columns and not pd.isna(result['Close'].iloc[i]):
+                    close_data.append(IndicatorLinePoint(time=tl, value=round(float(result['Close'].iloc[i]), 2)))
+            sub_charts.append(
+                IndicatorSubChart(
+                    id="price_ma",
+                    label="价格均线",
+                    height=110,
+                    lines=[
+                        IndicatorLine(name="close", label="价格", color="#FFFFFF", data=close_data),
+                        IndicatorLine(name="ma5", label="MA5", color="#FF4444", data=ma5_data),
+                        IndicatorLine(name="ma20", label="MA20", color="#44FF44", data=ma20_data),
+                    ],
+                    signal_text="",
+                )
+            )
+
+        # ── 5. 均价偏离度 ──
+        deviation_data = []
+        if 'deviation_pct' in result.columns:
+            for i in range(len(result)):
+                tl = time_labels[i] if i < len(time_labels) else ''
+                if not pd.isna(result['deviation_pct'].iloc[i]):
+                    deviation_data.append(IndicatorLinePoint(time=tl, value=round(float(result['deviation_pct'].iloc[i]), 2)))
+            sub_charts.append(
+                IndicatorSubChart(
+                    id="avg_price_deviation",
+                    label="均价偏离",
+                    height=110,
+                    lines=[
+                        IndicatorLine(name="deviation_pct", label="偏离%", color="#FFAA00", data=deviation_data),
+                    ],
+                    signal_text="",
                 )
             )
 
@@ -961,14 +1006,17 @@ def get_intraday_data(
         if not klines:
             raise HTTPException(status_code=404, detail={"error": "no_data", "message": "未获取到分时K线数据"})
 
-        # 运行做T策略
-        signals, summary = _run_t0_strategy(klines)
-
-        # 生成四大指标子图数据
-        indicator_sub_charts = _generate_indicator_sub_charts(klines)
-
-        # 注入累计分时均价到每根K线
+        # 注入累计分时均价（策略需要 AvgPrice）
         _inject_avg_price(klines)
+
+        # 计算日线级参考线（引力场模型需要）
+        reference_lines = _compute_reference_lines(klines, code, db_manager, date_str)
+
+        # 运行做T策略（含引力场）
+        signals, summary = _run_t0_strategy(klines, reference_lines)
+
+        # 生成指标子图数据（含新增价格均线和均价偏离）
+        indicator_sub_charts = _generate_indicator_sub_charts(klines)
 
         # 构建K线响应
         kline_points = [IntradayKlinePoint(**k) for k in klines]
@@ -985,7 +1033,7 @@ def get_intraday_data(
             date=date_str,
             kline_data=kline_points,
             signals=signals,
-            reference_lines=_compute_reference_lines(klines, code, db_manager, date_str),
+            reference_lines=reference_lines,
             indicator_sub_charts=indicator_sub_charts,
             signal_summary=summary,
         )

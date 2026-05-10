@@ -20,6 +20,16 @@ class IntradayKlinePoint(BaseModel):
     timestamp: str  # ISO格式时间字符串
 
 
+class WeightContribution(BaseModel):
+    """单项权重贡献明细"""
+
+    key: str  # 权重键名
+    label: str  # 中文标签
+    weight: float  # 满分数
+    triggered: bool = False  # 是否触发
+    score: float = 0.0  # 实际得分
+
+
 class IntradaySignal(BaseModel):
     """做T信号"""
 
@@ -27,15 +37,16 @@ class IntradaySignal(BaseModel):
     signal_type: str  # "buy" | "sell"
     trigger_time: str
     price: float
-    score: int
+    score: float
     max_score: int = 10
     confidence: float
     position_advice: str
     reasoning: str = ""
-    # 引力场修正信息
-    gravity_adjustment: float = 0.0
+    gravity_adjustment: float = 0.0  # 引力场修正分
     support_force: float = 0.0
     pressure_force: float = 0.0
+    buy_weight_details: List[WeightContribution] = Field(default_factory=list)
+    sell_weight_details: List[WeightContribution] = Field(default_factory=list)
 
 
 class ReferenceLine(BaseModel):
@@ -72,7 +83,7 @@ class IndicatorLine(BaseModel):
 class IndicatorSubChart(BaseModel):
     """单个指标子图"""
 
-    id: str  # "absorption" / "main_in_out" / "dragon_tiger_power" / "cyw"
+    id: str  # "absorption" / "main_in_out" / "cyw"
     label: str  # 中文标题 "主力吸筹"
     height: int = 120
     lines: List[IndicatorLine] = Field(default_factory=list)

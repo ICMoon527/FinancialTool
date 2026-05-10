@@ -21,10 +21,6 @@ indicators:
     ema_period1: 2        # 日线3 → 分时2
     ema_period2: 3        # 日线5 → 分时3
 
-  # 龙虎动力
-  dragon_tiger_power:
-    ema_period: 4         # 保持不变
-
   # CYW 主力控盘
   cyw:
     period: 5             # 日线10 → 分时5
@@ -35,13 +31,23 @@ indicators:
     ma_period: 5
     surge_ratio: 1.5      # 放量阈值（成交量 / MA5）
 
+  # 价格均线关系
+  price_ma:
+    ma5_period: 5         # 分时 MA5 周期
+    ma20_period: 20       # 分时 MA20 周期
+
+  # 均价偏离度
+  avg_price_deviation:
+    oversold_threshold: -2.5    # 超卖阈值（%）
+    overbought_threshold: 2.5   # 超买阈值（%）
+
 # 信号配置
 signals:
   buy:
     thresholds:
-      strong: 7   # 强买入 >= 7分
-      medium: 5   # 中买入 >= 5分
-      weak: 3     # 弱买入 >= 3分
+      strong: 10   # 强买入 >= 10分
+      medium: 7    # 中买入 >= 7分
+      weak: 4      # 弱买入 >= 4分
     positions:
       strong: "全仓"
       medium: "半仓"
@@ -53,15 +59,17 @@ signals:
     weights:
       absorption_active: 3   # 主力吸筹活跃
       cyw_cross_ma_up: 2     # CYW上穿MA
-      power_recovery: 2      # 龙虎动力复苏
       main_in_signal: 2      # 主力进出金叉
-      volume_surge: 1         # 量能放大
+      price_cross_ma5_up: 2  # 价格上穿MA5
+      avg_price_oversold_fix: 2  # 均价超卖修复
+      price_above_ma20: 1    # 价格>MA20趋势加成
+      volume_surge: 1        # 量能放大
 
   sell:
     thresholds:
-      strong: 7
-      medium: 5
-      weak: 3
+      strong: 9    # 强卖出 >= 9分
+      medium: 6    # 中卖出 >= 6分
+      weak: 3      # 弱卖出 >= 3分
     positions:
       strong: "全仓卖出"
       medium: "半仓卖出"
@@ -73,9 +81,24 @@ signals:
     weights:
       main_out_signal: 2           # 主力进出死叉
       cyw_cross_ma_down: 2         # CYW下穿MA
-      power_decay_or_depression: 2 # 龙虎动力衰减/萧条
+      volume_stagnation: 3         # 放量滞涨
+      price_cross_ma5_down: 2      # 价格下穿MA5
+      avg_price_overbought_fix: 2  # 均价超买回落
       absorption_inactive: 1       # 主力吸筹归零
-      volume_stagnation: 1         # 放量滞涨
+
+  # 引力场模型配置（连续化版本，暂时禁用）
+  gravity:
+    enabled: false                # 是否启用引力场评分修正，false 时不参与加减分
+    weights:
+      main_trading: 3              # 主力三线权重
+      ma_line: 2                   # 均线权重
+      extreme: 2                   # 极值权重
+      chip_zone: 2                 # 筹码区权重
+      prev_close: 1.5              # 昨收权重
+    decay_sigma: 0.75              # 高斯衰减 σ（%），控制影响力随距离的衰减速度
+    smooth_width: 0.20             # 穿越软化宽度（%），参考线附近支撑/压力的平滑过渡带
+    max_adjustment: 2.0            # 引力场对评分的最大调整幅度（分）
+    tanh_scale: 1.5                # tanh 缩放系数，控制净力到评分调整的灵敏度
 
 # 运营参数
 operation:

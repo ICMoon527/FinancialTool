@@ -27,8 +27,7 @@ def test_config_env_override(monkeypatch):
     monkeypatch.setenv("REDIS_HOST", "test-host")
     monkeypatch.setenv("REDIS_PORT", "6380")
     
-    config = Config()
-    config._load_from_env()
+    config = Config._load_from_env()
     
     assert config.redis_enabled is True
     assert config.redis_host == "test-host"

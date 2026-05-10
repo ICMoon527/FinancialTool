@@ -1,5 +1,5 @@
 import type React from 'react';
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import * as lightweightCharts from 'lightweight-charts';
 import { createSeriesMarkers } from 'lightweight-charts';
 import type { Time } from 'lightweight-charts';
@@ -12,6 +12,7 @@ import {
   type IntradayKlinePoint,
   type SearchHistoryItem,
 } from '../api/intraday';
+import type { WeightContribution, IntradaySignal } from '../api/intraday';
 import { validateStockCode } from '../utils/validation';
 import { Card } from '../components/common';
 
@@ -27,6 +28,12 @@ function formatDate(d: Date): string {
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
+}
+
+function signalLevel(confidence: number): { label: string; color: string } {
+  if (confidence >= 0.75) return { label: '强', color: '#FF4444' };
+  if (confidence >= 0.50) return { label: '中', color: '#FFAA00' };
+  return { label: '弱', color: '#888888' };
 }
 
 /**
@@ -154,6 +161,19 @@ const IntradayPage: React.FC = () => {
   const [selectedDate, setSelectedDate] = useState(formatDate(new Date()));
   const [crosshairSignals, setCrosshairSignals] = useState<Record<string, string>>({});
   const [isCrosshairActive, setIsCrosshairActive] = useState(false);
+  const [hoveredWeightDetails, setHoveredWeightDetails] = useState<{
+    buy: WeightContribution[];
+    sell: WeightContribution[];
+    supportForce: number;
+    pressureForce: number;
+    signalType: string;
+  } | null>(null);
+
+  // 存储从API返回的所有信号
+  const allSignalsRef = useRef<IntradaySignal[]>([]);
+
+  // 信号筛选状态
+  const [activeFilters, setActiveFilters] = useState<Set<string>>(new Set());
 
   // ── 图表引用 ──
   const chartContainerRef = useRef<HTMLDivElement>(null);
@@ -174,11 +194,11 @@ const IntradayPage: React.FC = () => {
   const currentCrosshairTimeRef = useRef<Time | null>(null);
   const klineRawDataRef = useRef<any[]>([]);
   const crosshairSignalRef = useRef<Record<string, string>>({});
+  const crosshairSubsRef = useRef<Array<any>>([]);
 
   // 指标子图容器 refs
   const absorptionContainerRef = useRef<HTMLDivElement>(null);
   const mainInOutContainerRef = useRef<HTMLDivElement>(null);
-  const dragonTigerContainerRef = useRef<HTMLDivElement>(null);
   const cywContainerRef = useRef<HTMLDivElement>(null);
 
   // 指标子图实例管理
@@ -278,7 +298,7 @@ const IntradayPage: React.FC = () => {
         scaleMargins: { top: 0.05, bottom: 0.05 },
         borderVisible: false,
       },
-      crosshair: { mode: 1 },
+      crosshair: { mode: 0 },
       localization: {
         timeFormatter,
       },
@@ -418,17 +438,6 @@ const IntradayPage: React.FC = () => {
     const slice = snapshots.slice(0, idx + 1);
     const signals: Record<string, string> = {};
 
-    // 龙虎动力
-    const dp = slice.map((s) => s.dominant_power);
-    const lastDp = dp[dp.length - 1];
-    if (!isNaN(lastDp)) {
-      if (lastDp >= 0.3) signals.dragon_tiger_power = '买入 ↑';
-      else if (lastDp >= 0.1) signals.dragon_tiger_power = '持有偏多 ↗';
-      else if (lastDp > -0.1) signals.dragon_tiger_power = '观望 —';
-      else if (lastDp >= -0.3) signals.dragon_tiger_power = '减仓 ↘';
-      else signals.dragon_tiger_power = '卖出 ↓';
-    }
-
     // 主力进出
     const mi = slice.map((s) => s.main_in);
     const mo = slice.map((s) => s.main_out);
@@ -474,6 +483,22 @@ const IntradayPage: React.FC = () => {
     crosshairSignalRef.current = signals;
     setCrosshairSignals({ ...signals });
     setIsCrosshairActive(true);
+
+    // 查找该时间点附近的信号
+    const allSignals = allSignalsRef.current;
+    const sigAtTime = allSignals.find((s) => {
+      const sigTime = Math.floor(new Date(s.trigger_time).getTime() / 1000);
+      return sigTime === time;
+    });
+    if (sigAtTime) {
+      setHoveredWeightDetails({
+        buy: sigAtTime.buy_weight_details || [],
+        sell: sigAtTime.sell_weight_details || [],
+        supportForce: sigAtTime.support_force || 0,
+        pressureForce: sigAtTime.pressure_force || 0,
+        signalType: sigAtTime.signal_type,
+      });
+    }
   };
 
   // ── 渲染数据 ──
@@ -494,8 +519,28 @@ const IntradayPage: React.FC = () => {
         seriesMarkersRef.current = null;
       }
 
+      // 清理旧的十字线订阅
+      crosshairSubsRef.current.forEach((unsub) => {
+        try { unsub(); } catch (e) { /* ignore */ }
+      });
+      crosshairSubsRef.current = [];
+
       const klines = convertKlineData(data.kline_data, date);
       klineRawDataRef.current = klines;
+      allSignalsRef.current = data.signals || [];
+
+      // 默认显示最后一个信号的权重贡献
+      const sigs = data.signals || [];
+      if (sigs.length > 0) {
+        const lastSig = sigs[sigs.length - 1];
+        setHoveredWeightDetails({
+          buy: lastSig.buy_weight_details || [],
+          sell: lastSig.sell_weight_details || [],
+          supportForce: lastSig.support_force || 0,
+          pressureForce: lastSig.pressure_force || 0,
+          signalType: lastSig.signal_type,
+        });
+      }
 
       // 检测腾讯数据：每根K线中 Open===High===Low===Close 的比例
       const flatCount = klines.filter((k) => k.open === k.high && k.high === k.low && k.low === k.close).length;
@@ -675,7 +720,7 @@ const IntradayPage: React.FC = () => {
           setTimeout(() => { isCrosshairUpdatingRef.current = false; }, 0);
         }
       };
-      chart.subscribeCrosshairMove(mainHandleCrosshairMove);
+      crosshairSubsRef.current.push(chart.subscribeCrosshairMove(mainHandleCrosshairMove));
 
       const mainHandleTimeScaleChange = () => {
         if (isTimeSyncingRef.current) return;
@@ -718,7 +763,7 @@ const IntradayPage: React.FC = () => {
             setTimeout(() => { isCrosshairUpdatingRef.current = false; }, 0);
           }
         };
-        volChart.subscribeCrosshairMove(volHandleCrosshairMove);
+        crosshairSubsRef.current.push(volChart.subscribeCrosshairMove(volHandleCrosshairMove));
 
         const volHandleTimeScaleChange = () => {
           if (isTimeSyncingRef.current) return;
@@ -744,7 +789,6 @@ const IntradayPage: React.FC = () => {
       const containerMap: Array<{ id: string; ref: React.RefObject<HTMLDivElement | null> }> = [
         { id: 'absorption', ref: absorptionContainerRef },
         { id: 'main_in_out', ref: mainInOutContainerRef },
-        { id: 'dragon_tiger_power', ref: dragonTigerContainerRef },
         { id: 'cyw', ref: cywContainerRef },
       ];
 
@@ -901,7 +945,7 @@ const IntradayPage: React.FC = () => {
             setTimeout(() => { isCrosshairUpdatingRef.current = false; }, 0);
           }
         };
-        subChart.subscribeCrosshairMove(subHandleCrosshairMove);
+        crosshairSubsRef.current.push(subChart.subscribeCrosshairMove(subHandleCrosshairMove));
 
         const subHandleTimeScaleChange = () => {
           if (isTimeSyncingRef.current) return;
@@ -942,7 +986,7 @@ const IntradayPage: React.FC = () => {
             position: 'belowBar',
             color: '#FF2222',
             shape: 'arrowUp',
-            text: `买 ${(sig.confidence * 100).toFixed(0)}%`,
+            text: `买 ${signalLevel(sig.confidence).label}`,
             size: 2 + (sig.confidence * 2),
           });
         } else {
@@ -951,7 +995,7 @@ const IntradayPage: React.FC = () => {
             position: 'aboveBar',
             color: '#22DD44',
             shape: 'arrowDown',
-            text: `卖 ${(sig.confidence * 100).toFixed(0)}%`,
+            text: `卖 ${signalLevel(sig.confidence).label}`,
             size: 2 + (sig.confidence * 2),
           });
         }
@@ -1046,14 +1090,72 @@ const IntradayPage: React.FC = () => {
   const summary = intradayData?.signal_summary;
   const signalStats = summary
     ? [
-        { label: '买入信号', value: summary.buy_signals, color: '#FF4444' },
-        { label: '卖出信号', value: summary.sell_signals, color: '#44FF44' },
-        { label: '强信号', value: summary.strong_signals, color: '#FFFF44' },
-        { label: '中信号', value: summary.medium_signals, color: '#FFAA44' },
-        { label: '弱信号', value: summary.weak_signals, color: '#AAAAAA' },
-        { label: '模拟收益%', value: summary.simulated_return_pct, color: '#44BBFF' },
+        { label: '买入信号', value: summary.buy_signals, color: '#FF4444', filterKey: 'buy' },
+        { label: '卖出信号', value: summary.sell_signals, color: '#44FF44', filterKey: 'sell' },
+        { label: '强信号', value: summary.strong_signals, color: '#FFFF44', filterKey: 'strong' },
+        { label: '中信号', value: summary.medium_signals, color: '#FFAA44', filterKey: 'medium' },
+        { label: '弱信号', value: summary.weak_signals, color: '#AAAAAA', filterKey: 'weak' },
       ]
     : [];
+
+  const toggleFilter = (key: string) => {
+    setActiveFilters((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  };
+
+  const filteredSignals = useMemo(() => {
+    const signals = intradayData?.signals || [];
+    if (activeFilters.size === 0) return signals;
+
+    const wantBuy = activeFilters.has('buy');
+    const wantSell = activeFilters.has('sell');
+    const wantStrong = activeFilters.has('strong');
+    const wantMedium = activeFilters.has('medium');
+    const wantWeak = activeFilters.has('weak');
+
+    // 如果同时或都不选类型，不限制类型；否则按选中的类型过滤
+    const filterType = (wantBuy && wantSell) || (!wantBuy && !wantSell) ? null
+      : wantBuy ? 'buy' : 'sell';
+    // 强度同理
+    const filterStrength = (wantStrong && wantMedium && wantWeak) || (!wantStrong && !wantMedium && !wantWeak) ? null
+      : { strong: wantStrong, medium: wantMedium, weak: wantWeak };
+
+    return signals.filter((sig) => {
+      if (filterType && sig.signal_type !== filterType) return false;
+      if (filterStrength) {
+        const conf = sig.confidence;
+        if (filterStrength.strong && conf >= 0.75) return true;
+        if (filterStrength.medium && conf >= 0.50 && conf < 0.75) return true;
+        if (filterStrength.weak && conf < 0.50) return true;
+        return false;
+      }
+      return true;
+    });
+  }, [intradayData?.signals, activeFilters]);
+
+  // 根据当前筛选后的信号计算模拟收益（仅考虑显示中的做T记录）
+  const filteredSimulReturn = useMemo(() => {
+    let total = 0;
+    let lastBuyPrice: number | null = null;
+    for (const sig of filteredSignals) {
+      if (sig.signal_type === 'buy') {
+        lastBuyPrice = sig.price;
+      } else if (sig.signal_type === 'sell') {
+        if (lastBuyPrice !== null && lastBuyPrice > 0) {
+          total += ((sig.price - lastBuyPrice) / lastBuyPrice) * 100;
+          lastBuyPrice = null;
+        }
+      }
+    }
+    return total;
+  }, [filteredSignals]);
 
   // ── 侧边栏 ──
   const sidebarContent = (
@@ -1221,35 +1323,149 @@ const IntradayPage: React.FC = () => {
           )}
 
           <div className="w-full">
-            <div className="flex items-start gap-2 mb-2">
+            <div className="flex items-start gap-2 mb-2" style={{ height: 165 }}>
               {signalStats.length > 0 && (
                 <Card variant="default" padding="sm" className="w-56 flex-shrink-0">
-                  <h3 className="text-xs font-medium text-muted mb-2">信号统计</h3>
+                  <h3 className="text-xs font-medium text-muted mb-2">
+                    信号统计
+                    {activeFilters.size > 0 && (
+                      <button
+                        type="button"
+                        className="ml-2 text-[10px] text-cyan hover:text-white transition-colors"
+                        onClick={() => setActiveFilters(new Set())}
+                      >
+                        清除筛选
+                      </button>
+                    )}
+                  </h3>
                   <div className="space-y-1">
-                    {signalStats.map((s) => (
-                      <div key={s.label} className="flex items-center justify-between">
-                        <span className="text-xs text-muted">{s.label}</span>
-                        <span
-                          className="text-xs font-mono font-medium"
-                          style={{ color: s.color }}
+                    {signalStats.map((s) => {
+                      const isActive = s.filterKey && activeFilters.has(s.filterKey);
+                      const isClickable = !!s.filterKey;
+                      return (
+                        <div
+                          key={s.label}
+                          className={`flex items-center justify-between ${isClickable ? 'cursor-pointer hover:bg-white/5 rounded px-1 -mx-1 py-0.5 transition-colors' : ''}`}
+                          style={isActive ? {
+                            backgroundColor: `${s.color}18`,
+                            borderLeft: `3px solid ${s.color}`,
+                            paddingLeft: '6px',
+                            borderRadius: '2px',
+                            fontWeight: 600,
+                          } : undefined}
+                          onClick={isClickable ? () => toggleFilter(s.filterKey!) : undefined}
+                          title={isClickable ? '点击筛选' : undefined}
                         >
-                          {typeof s.value === 'number' && s.label.includes('%')
-                            ? `${s.value.toFixed(2)}%`
-                            : s.value}
-                        </span>
-                      </div>
-                    ))}
+                          <span
+                            className="text-xs"
+                            style={{ color: isActive ? s.color : undefined }}
+                          >
+                            {isActive ? '▸ ' : ''}{s.label}
+                          </span>
+                          <span
+                            className="text-xs font-mono font-medium"
+                            style={{ color: s.color }}
+                          >
+                            {typeof s.value === 'number' && s.label.includes('%')
+                              ? `${s.value.toFixed(2)}%`
+                              : s.value}
+                          </span>
+                        </div>
+                      );
+                    })}
                 </div>
                 </Card>
               )}
 
-              {intradayData && intradayData.signals.length > 0 && (
-                <div className="flex-1 max-h-64 overflow-y-auto">
-                  <div className="text-xs text-muted/60 mb-1">
-                    共 {intradayData.signals.length} 条信号
+              {hoveredWeightDetails && (
+                <>
+                  <Card variant="default" padding="sm" className="w-56 flex-shrink-0" style={{ height: 165 }}>
+                    <div className="overflow-y-auto h-full">
+                      <h3 className="text-xs font-medium text-muted mb-2">买入权重贡献</h3>
+                      <div className="space-y-0.5">
+                        <div className="text-xs font-mono mb-1" style={{ color: '#FF4444' }}>
+                          总分: {hoveredWeightDetails.buy.reduce((s, d) => s + d.score, 0)}
+                          /{hoveredWeightDetails.buy.reduce((s, d) => s + d.weight, 0)}
+                        </div>
+                        {hoveredWeightDetails.buy.map((d) => (
+                          <div key={d.key} className="flex items-center justify-between text-[11px]">
+                            <span className={d.triggered ? 'text-white/80' : 'text-muted/40'}>
+                              {d.triggered ? '✓' : '✗'} {d.label}
+                            </span>
+                            <span className={`font-mono ${d.triggered ? 'text-accent' : 'text-muted/30'}`}>
+                              +{d.score}
+                            </span>
+                          </div>
+                        ))}
+                        <div className="border-t border-white/10 pt-1 mt-1">
+                          <div className="flex items-center justify-between text-[11px]">
+                            <span className="text-white/60">支撑力</span>
+                            <span className="font-mono" style={{ color: '#FF4444' }}>
+                              {hoveredWeightDetails.supportForce.toFixed(1)}
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between text-[11px]">
+                            <span className="text-white/60">净力</span>
+                            <span className="font-mono" style={{ color: (hoveredWeightDetails.supportForce - hoveredWeightDetails.pressureForce) >= 0 ? '#FF4444' : '#44FF44' }}>
+                              {(hoveredWeightDetails.supportForce - hoveredWeightDetails.pressureForce).toFixed(1)}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </Card>
+
+                  <Card variant="default" padding="sm" className="w-56 flex-shrink-0" style={{ height: 165 }}>
+                    <div className="overflow-y-auto h-full">
+                      <h3 className="text-xs font-medium text-muted mb-2">卖出权重贡献</h3>
+                      <div className="space-y-0.5">
+                        <div className="text-xs font-mono mb-1" style={{ color: '#44FF44' }}>
+                          总分: {hoveredWeightDetails.sell.reduce((s, d) => s + d.score, 0)}
+                          /{hoveredWeightDetails.sell.reduce((s, d) => s + d.weight, 0)}
+                        </div>
+                        {hoveredWeightDetails.sell.map((d) => (
+                          <div key={d.key} className="flex items-center justify-between text-[11px]">
+                            <span className={d.triggered ? 'text-white/80' : 'text-muted/40'}>
+                              {d.triggered ? '✓' : '✗'} {d.label}
+                            </span>
+                            <span className={`font-mono ${d.triggered ? 'text-accent' : 'text-muted/30'}`}>
+                              +{d.score}
+                            </span>
+                          </div>
+                        ))}
+                        <div className="border-t border-white/10 pt-1 mt-1">
+                          <div className="flex items-center justify-between text-[11px]">
+                            <span className="text-white/60">压力力</span>
+                            <span className="font-mono" style={{ color: '#44FF44' }}>
+                              {hoveredWeightDetails.pressureForce.toFixed(1)}
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between text-[11px]">
+                            <span className="text-white/60">净力</span>
+                            <span className="font-mono" style={{ color: (hoveredWeightDetails.supportForce - hoveredWeightDetails.pressureForce) >= 0 ? '#FF4444' : '#44FF44' }}>
+                              {(hoveredWeightDetails.supportForce - hoveredWeightDetails.pressureForce).toFixed(1)}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </Card>
+                </>
+              )}
+
+              {intradayData && filteredSignals.length > 0 && (
+                <div className="flex-1 overflow-y-auto" style={{ height: 165 }}>
+                  <div className="text-xs text-muted/60 mb-1 flex items-center gap-3">
+                    <span>共 {filteredSignals.length} 条信号</span>
+                    <span className="font-mono font-medium" style={{ color: filteredSimulReturn >= 0 ? '#FF4444' : '#44FF44' }}>
+                      模拟收益 {filteredSimulReturn >= 0 ? '+' : ''}{filteredSimulReturn.toFixed(2)}%
+                    </span>
+                    {activeFilters.size > 0 && (
+                      <span className="text-cyan">（已筛选）</span>
+                    )}
                   </div>
                   <div className="space-y-1">
-                    {intradayData.signals.slice().reverse().map((sig, idx) => {
+                    {filteredSignals.slice().reverse().map((sig, idx) => {
                       const sigTimeStr = (() => {
                         const parts = sig.trigger_time.split('T');
                         const tm = parts[1] || parts[0] || '';
@@ -1278,6 +1494,13 @@ const IntradayPage: React.FC = () => {
                             ch.setCrosshairPosition(sig.price, targetSec as any, candleSeriesRef.current!);
                           }
                         } catch (e) { /* ignore */ }
+                        setHoveredWeightDetails({
+                          buy: sig.buy_weight_details || [],
+                          sell: sig.sell_weight_details || [],
+                          supportForce: sig.support_force || 0,
+                          pressureForce: sig.pressure_force || 0,
+                          signalType: sig.signal_type,
+                        });
                       };
                       return (
                         <div
@@ -1301,7 +1524,7 @@ const IntradayPage: React.FC = () => {
                         </span>
                         <span className="text-white font-mono">¥{sig.price.toFixed(2)}</span>
                         <span className="text-muted/70">
-                          置信度 {(sig.confidence * 100).toFixed(0)}%
+                          信号等级 {signalLevel(sig.confidence).label}
                         </span>
                         <span
                           className="text-[10px] px-1 py-0.5 rounded"
@@ -1333,11 +1556,10 @@ const IntradayPage: React.FC = () => {
             {/* 四大指标子图 */}
             {(intradayData?.indicator_sub_charts?.length ?? 0) > 0 && (
               <div className="space-y-2 mb-4">
-                {intradayData?.indicator_sub_charts?.map((sc) => {
+                {intradayData?.indicator_sub_charts?.filter((sc) => sc.id !== 'price_ma' && sc.id !== 'avg_price_deviation').map((sc) => {
                   const containerRefMap: Record<string, React.RefObject<HTMLDivElement | null>> = {
                     absorption: absorptionContainerRef,
                     main_in_out: mainInOutContainerRef,
-                    dragon_tiger_power: dragonTigerContainerRef,
                     cyw: cywContainerRef,
                   };
                   const ref = containerRefMap[sc.id];
@@ -1367,7 +1589,7 @@ const IntradayPage: React.FC = () => {
                           ))}
                         </div>
                       </div>
-                      <div ref={ref} style={{ width: '100%', height: sc.id === 'dragon_tiger_power' ? 105 : 115 }} />
+                      <div ref={ref} style={{ width: '100%', height: 115 }} />
                     </Card>
                   );
                 })}

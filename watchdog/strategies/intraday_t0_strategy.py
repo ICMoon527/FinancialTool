@@ -2,7 +2,7 @@
 """
 分时做T策略模块
 
-整合"主力吸筹、主力进出、龙虎动力、CYW主力控盘"四大指标，
+整合"主力吸筹、主力进出、CYW主力控盘"三大指标，
 基于评分制生成分时级别的高抛低吸买卖信号。
 
 使用示例:
@@ -18,6 +18,7 @@
 """
 
 import logging
+import math
 import os
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -39,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class IndicatorSnapshot:
-    """四指标在某一时刻的状态快照"""
+    """多指标在某一时刻的状态快照"""
 
     # 主力吸筹
     absorption_value: float = 0.0
@@ -50,14 +51,6 @@ class IndicatorSnapshot:
     main_out_value: float = 50.0
     main_in_cross_up: bool = False
     main_in_cross_down: bool = False
-
-    # 龙虎动力
-    dominant_power: float = 0.0
-    power_growth: bool = False
-    power_decay: bool = False
-    power_depression: bool = False
-    power_recovery: bool = False
-    volume_growth: bool = False
 
     # CYW 主力控盘
     cyw_value: float = 0.0
@@ -71,6 +64,22 @@ class IndicatorSnapshot:
     volume_surge: bool = False
     volume_shrink: bool = False
 
+    # 价格均线关系
+    ma5: float = 0.0
+    ma20: float = 0.0
+    price_above_ma5: bool = False
+    price_above_ma20: bool = False
+    price_cross_ma5_up: bool = False
+    price_cross_ma5_down: bool = False
+
+    # 均价偏离度
+    avg_price: float = 0.0
+    deviation_pct: float = 0.0
+    deviation_oversold: bool = False
+    deviation_narrowing: bool = False
+    deviation_overbought: bool = False
+    deviation_peaking: bool = False
+
 
 @dataclass
 class T0Signal:
@@ -80,12 +89,16 @@ class T0Signal:
     signal_type: str  # "buy" / "sell" / "hold"
     trigger_time: datetime = field(default_factory=datetime.now)
     price: float = 0.0
-    score: int = 0
+    score: float = 0.0
     max_score: int = 10
     confidence: float = 0.0
     position_advice: str = ""  # "全仓" / "半仓" / "1/3仓"
     indicator_status: IndicatorSnapshot = field(default_factory=IndicatorSnapshot)
     reasoning: str = ""
+    buy_weight_details: List[Dict[str, Any]] = field(default_factory=list)
+    sell_weight_details: List[Dict[str, Any]] = field(default_factory=list)
+    support_force: float = 0.0
+    pressure_force: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -98,6 +111,10 @@ class T0Signal:
             "confidence": self.confidence,
             "position_advice": self.position_advice,
             "reasoning": self.reasoning,
+            "buy_weight_details": self.buy_weight_details,
+            "sell_weight_details": self.sell_weight_details,
+            "support_force": self.support_force,
+            "pressure_force": self.pressure_force,
         }
 
     def __repr__(self) -> str:
@@ -221,10 +238,6 @@ class IntradayIndicatorEngine:
         self.mio_ema_period1 = mio_cfg.get("ema_period1", 2)
         self.mio_ema_period2 = mio_cfg.get("ema_period2", 3)
 
-        # 龙虎动力参数
-        dtp_cfg = indicator_cfg.get("dragon_tiger_power", {})
-        self.dtp_ema_period = dtp_cfg.get("ema_period", 4)
-
         # CYW参数
         cyw_cfg = indicator_cfg.get("cyw", {})
         self.cyw_period = cyw_cfg.get("period", 5)
@@ -234,6 +247,16 @@ class IntradayIndicatorEngine:
         volume_cfg = indicator_cfg.get("volume", {})
         self.vol_ma_period = volume_cfg.get("ma_period", 5)
         self.vol_surge_ratio = volume_cfg.get("surge_ratio", 1.5)
+
+        # 价格均线参数
+        price_ma_cfg = indicator_cfg.get("price_ma", {})
+        self.price_ma5_period = price_ma_cfg.get("ma5_period", 5)
+        self.price_ma20_period = price_ma_cfg.get("ma20_period", 20)
+
+        # 均价偏离度参数
+        dev_cfg = indicator_cfg.get("avg_price_deviation", {})
+        self.dev_oversold_threshold = dev_cfg.get("oversold_threshold", -2.5)
+        self.dev_overbought_threshold = dev_cfg.get("overbought_threshold", 2.5)
 
     # ---------- 工具函数 ----------
 
@@ -315,32 +338,7 @@ class IntradayIndicatorEngine:
         result["main_out_signal"] = (main_in < main_out) & (main_in.shift(1) >= main_out.shift(1))
         return result
 
-    # ---------- 龙虎动力 ----------
 
-    def calc_dragon_tiger_power(self, data: pd.DataFrame) -> pd.DataFrame:
-        """计算龙虎动力分时版本"""
-        result = data.copy()
-
-        tt = 2 * data["Close"] + data["Open"] + data["High"] + data["Low"]
-        ema_tt = self._ema(tt, self.dtp_ema_period)
-        ff = 100 * (tt / (ema_tt + 1e-10) - 1)
-
-        result["dominant_power"] = ff
-        result["power_growth"] = (ff > 0) & (ff > ff.shift(1))
-        result["power_decay"] = (ff > 0) & (ff <= ff.shift(1))
-        result["power_depression"] = (ff <= 0) & (ff <= ff.shift(1))
-        result["power_recovery"] = (ff <= 0) & (ff > ff.shift(1))
-
-        if "Amount" in data.columns:
-            turnover_billion = data["Amount"] / 100000000
-        else:
-            turnover_billion = data["Volume"] * data["Close"] / 100000000
-        ma3 = self._sma(turnover_billion, 2)
-        ma20 = self._sma(turnover_billion, 20)
-        volume_ratio = self._ema(ma3 / (ma20 + 1e-10), 2)
-        result["volume_ratio"] = volume_ratio
-        result["volume_growth"] = result["power_growth"] & (volume_ratio >= 1.15)
-        return result
 
     # ---------- CYW ----------
 
@@ -395,16 +393,62 @@ class IntradayIndicatorEngine:
         result["volume_shrink"] = result["Volume"] < vol_ma * 0.5
         return result
 
+    # ---------- 价格均线关系 ----------
+
+    def calc_price_ma_relation(self, data: pd.DataFrame) -> pd.DataFrame:
+        """计算分时价格与均线关系"""
+        result = data.copy()
+        close = data["Close"]
+
+        ma5 = close.rolling(window=self.price_ma5_period, min_periods=1).mean()
+        ma20 = close.rolling(window=self.price_ma20_period, min_periods=1).mean()
+
+        result["ma5"] = ma5
+        result["ma20"] = ma20
+        result["price_above_ma5"] = close > ma5
+        result["price_above_ma20"] = close > ma20
+        result["price_cross_ma5_up"] = (close > ma5) & (close.shift(1) <= ma5.shift(1))
+        result["price_cross_ma5_down"] = (close < ma5) & (close.shift(1) >= ma5.shift(1))
+        return result
+
+    # ---------- 均价偏离度 ----------
+
+    def calc_avg_price_deviation(self, data: pd.DataFrame) -> pd.DataFrame:
+        """计算均价偏离度（基于累计成交额/成交量）"""
+        result = data.copy()
+        close = data["Close"]
+        volume = data["Volume"].fillna(0)
+
+        cum_amount = (close * volume).cumsum()
+        cum_vol = volume.cumsum().replace(0, np.nan)
+        avg_price = cum_amount / cum_vol
+        avg_price = avg_price.fillna(close)
+
+        deviation_pct = (close - avg_price) / avg_price * 100
+
+        result["avg_price"] = avg_price
+        result["deviation_pct"] = deviation_pct
+        result["deviation_oversold"] = deviation_pct < self.dev_oversold_threshold
+        result["deviation_overbought"] = deviation_pct > self.dev_overbought_threshold
+        result["deviation_narrowing"] = (
+            result["deviation_oversold"] & (deviation_pct > deviation_pct.shift(1))
+        )
+        result["deviation_peaking"] = (
+            result["deviation_overbought"] & (deviation_pct < deviation_pct.shift(1))
+        )
+        return result
+
     # ---------- 综合计算 ----------
 
     def calculate_all(self, data: pd.DataFrame) -> pd.DataFrame:
-        """计算全部四个指标，返回包含所有指标列的 DataFrame"""
+        """计算全部指标，返回包含所有指标列的 DataFrame"""
         df = data.copy()
         df = self.calc_absorption(df)
         df = self.calc_main_in_out(df)
-        df = self.calc_dragon_tiger_power(df)
         df = self.calc_cyw(df)
         df = IntradayIndicatorEngine.calc_volume_surge(df, self.vol_ma_period, self.vol_surge_ratio)
+        df = self.calc_price_ma_relation(df)
+        df = self.calc_avg_price_deviation(df)
         return df
 
 
@@ -414,35 +458,64 @@ class IntradayIndicatorEngine:
 
 
 class SignalEvaluator:
-    """基于四指标评分的买卖信号评估器"""
+    """基于多指标评分的买卖信号评估器，含引力场模型"""
 
-    # 买入评分权重
     BUY_WEIGHTS = {
         "absorption_active": 3,
         "cyw_cross_ma_up": 2,
-        "power_recovery": 2,
         "main_in_signal": 2,
+        "price_cross_ma5_up": 2,
+        "avg_price_oversold_fix": 2,
+        "price_above_ma20": 1,
         "volume_surge": 1,
     }
+    BUY_LABELS = {
+        "absorption_active": "主力吸筹活跃",
+        "cyw_cross_ma_up": "CYW上穿MA",
+        "main_in_signal": "主力进出金叉",
+        "price_cross_ma5_up": "价格上穿MA5",
+        "avg_price_oversold_fix": "均价超卖修复",
+        "price_above_ma20": "价格>MA20趋势",
+        "volume_surge": "量能放大",
+    }
 
-    # 卖出评分权重
     SELL_WEIGHTS = {
         "main_out_signal": 2,
         "cyw_cross_ma_down": 2,
-        "power_decay_or_depression": 2,
+        "volume_stagnation": 3,
+        "price_cross_ma5_down": 2,
+        "avg_price_overbought_fix": 2,
         "absorption_inactive": 1,
-        "volume_stagnation": 1,
+    }
+    SELL_LABELS = {
+        "main_out_signal": "主力进出死叉",
+        "cyw_cross_ma_down": "CYW下穿MA",
+        "volume_stagnation": "放量滞涨",
+        "price_cross_ma5_down": "价格下穿MA5",
+        "avg_price_overbought_fix": "均价超买回落",
+        "absorption_inactive": "主力吸筹归零",
     }
 
-    # 买入信号分级
-    BUY_THRESHOLDS = {"strong": 7, "medium": 5, "weak": 3}
+    BUY_THRESHOLDS = {"strong": 10, "medium": 7, "weak": 4}
     BUY_POSITIONS = {"strong": "全仓", "medium": "半仓", "weak": "1/3仓"}
     BUY_CONFIDENCE = {"strong": 0.85, "medium": 0.65, "weak": 0.40}
 
-    # 卖出信号分级
-    SELL_THRESHOLDS = {"strong": 7, "medium": 5, "weak": 3}
+    SELL_THRESHOLDS = {"strong": 9, "medium": 6, "weak": 3}
     SELL_POSITIONS = {"strong": "全仓卖出", "medium": "半仓卖出", "weak": "1/3仓卖出"}
     SELL_CONFIDENCE = {"strong": 0.85, "medium": 0.65, "weak": 0.40}
+
+    # 引力场参数（连续化版本）
+    GRAVITY_ENABLED = True
+    GRAVITY_DECAY_SIGMA = 0.75
+    GRAVITY_SMOOTH_WIDTH = 0.20
+    GRAVITY_MAX_ADJUSTMENT = 2.0
+    GRAVITY_TANH_SCALE = 1.5
+    GRAVITY_LINE_WEIGHTS = {"main_trading": 3, "ma_line": 2, "extreme": 2, "chip_zone": 2, "prev_close": 1.5}
+    MAIN_TRADING_IDS = {"attack_line", "operation_line", "defense_line"}
+    MA_LINE_IDS = {"ma5", "ma10", "ma20"}
+    EXTREME_IDS = {"hhv_30", "llv_30"}
+    CHIP_IDS = {"chip_upper", "chip_lower"}
+    PREV_CLOSE_IDS = {"prev_close"}
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         cfg = config or {}
@@ -460,6 +533,14 @@ class SignalEvaluator:
         self.SELL_CONFIDENCE = sell_cfg.get("confidence", self.SELL_CONFIDENCE)
         self.SELL_WEIGHTS = sell_cfg.get("weights", self.SELL_WEIGHTS)
 
+        gravity_cfg = signal_cfg.get("gravity", {})
+        self.GRAVITY_ENABLED = gravity_cfg.get("enabled", self.GRAVITY_ENABLED)
+        self.GRAVITY_DECAY_SIGMA = gravity_cfg.get("decay_sigma", self.GRAVITY_DECAY_SIGMA)
+        self.GRAVITY_SMOOTH_WIDTH = gravity_cfg.get("smooth_width", self.GRAVITY_SMOOTH_WIDTH)
+        self.GRAVITY_MAX_ADJUSTMENT = gravity_cfg.get("max_adjustment", self.GRAVITY_MAX_ADJUSTMENT)
+        self.GRAVITY_TANH_SCALE = gravity_cfg.get("tanh_scale", self.GRAVITY_TANH_SCALE)
+        self.GRAVITY_LINE_WEIGHTS = gravity_cfg.get("weights", self.GRAVITY_LINE_WEIGHTS)
+
         operation_cfg = cfg.get("operation", {})
         self.signal_cooldown_bars = operation_cfg.get("signal_cooldown_bars", 5)
 
@@ -467,7 +548,92 @@ class SignalEvaluator:
         self._last_sell_bar: int = -999
         self._current_bar: int = 0
 
-    def _get_level(self, score: int, thresholds: Dict[str, int]) -> str:
+    # ── 引力场模型 ──
+
+    def _classify_line_weight(self, line_id: str) -> float:
+        """根据参考线 id 获取引力权重"""
+        if line_id in self.MAIN_TRADING_IDS:
+            return self.GRAVITY_LINE_WEIGHTS["main_trading"]
+        if line_id in self.MA_LINE_IDS:
+            return self.GRAVITY_LINE_WEIGHTS["ma_line"]
+        if line_id in self.EXTREME_IDS:
+            return self.GRAVITY_LINE_WEIGHTS["extreme"]
+        if line_id in self.CHIP_IDS:
+            return self.GRAVITY_LINE_WEIGHTS["chip_zone"]
+        if line_id in self.PREV_CLOSE_IDS:
+            return self.GRAVITY_LINE_WEIGHTS["prev_close"]
+        return 1.0
+
+    def compute_gravity(self, price: float,
+                        reference_lines: List[Dict[str, Any]]) -> Tuple[float, float, float]:
+        """计算引力场合力（连续化版本）
+
+        每条参考线的贡献通过两个连续函数叠加：
+        1. 高斯衰减：影响力随距离平滑衰减，无硬截断
+        2. sigmoid 软穿越：支撑/压力角色平滑过渡，无二值翻转
+
+        Args:
+            price: 当前价格
+            reference_lines: 参考线列表，每条含 price/id
+
+        Returns:
+            (net_force, support_force, pressure_force)
+        """
+        support_force = 0.0
+        pressure_force = 0.0
+
+        sigma = self.GRAVITY_DECAY_SIGMA
+        smooth_width = self.GRAVITY_SMOOTH_WIDTH
+
+        for rl in reference_lines:
+            line_price = rl.get("price", 0)
+            line_id = rl.get("id", "")
+            if line_price <= 0:
+                continue
+
+            d_pct = abs(price - line_price) / price * 100
+
+            raw_strength = math.exp(-(d_pct ** 2) / (2 * sigma ** 2))
+            line_w = self._classify_line_weight(line_id)
+            strength = raw_strength * line_w
+
+            rel_diff = (line_price - price) / price * 100
+            support_ratio = 1.0 / (1.0 + math.exp(-rel_diff / smooth_width))
+            pressure_ratio = 1.0 - support_ratio
+
+            support_force += strength * support_ratio
+            pressure_force += strength * pressure_ratio
+
+        net_force = support_force - pressure_force
+        return round(net_force, 4), round(support_force, 4), round(pressure_force, 4)
+
+    def _apply_gravity_adjustment(self, net_force: float, signal_type: str) -> Tuple[float, str]:
+        """根据净力连续调整评分（tanh 平滑版本）
+
+        Returns:
+            (adjustment, description)
+        """
+        if abs(net_force) < 0.01:
+            return 0.0, ""
+
+        raw_adj = self.GRAVITY_MAX_ADJUSTMENT * math.tanh(net_force / self.GRAVITY_TANH_SCALE)
+
+        if signal_type == "buy":
+            adj = round(raw_adj, 2)
+            if adj > 0:
+                return adj, f"多头引力(净力{net_force:.2f})+{adj:.1f}分"
+            else:
+                return adj, f"空头引力(净力{net_force:.2f}){adj:.1f}分"
+        else:  # sell
+            adj = round(-raw_adj, 2)
+            if adj > 0:
+                return adj, f"空头引力(净力{net_force:.2f})+{adj:.1f}分"
+            else:
+                return adj, f"多头引力(净力{net_force:.2f}){adj:.1f}分"
+
+    # ── 信号评估 ──
+
+    def _get_level(self, score: float, thresholds: Dict[str, int]) -> str:
         if score >= thresholds["strong"]:
             return "strong"
         elif score >= thresholds["medium"]:
@@ -476,73 +642,145 @@ class SignalEvaluator:
             return "weak"
         return "none"
 
-    def evaluate_buy(self, status: IndicatorSnapshot) -> Tuple[int, str, str, float]:
+    def evaluate_buy(self, status: IndicatorSnapshot,
+                     reference_lines: Optional[List[Dict[str, Any]]] = None,
+                     price: float = 0.0) -> Tuple[float, str, str, float, List[Dict[str, Any]]]:
         """评估买入信号
 
-        Returns:
-            (score, level, position_advice, confidence)
-        """
-        score = 0
-        details: List[str] = []
+        主力吸筹活跃为买入必备条件，吸筹不活跃时直接返回无信号。
 
-        if status.absorption_active:
-            score += self.BUY_WEIGHTS["absorption_active"]
-            details.append(f"主力吸筹活跃(+{self.BUY_WEIGHTS['absorption_active']})")
-        if status.cyw_cross_ma_up:
-            score += self.BUY_WEIGHTS["cyw_cross_ma_up"]
-            details.append(f"CYW上穿MA(+{self.BUY_WEIGHTS['cyw_cross_ma_up']})")
-        if status.power_recovery:
-            score += self.BUY_WEIGHTS["power_recovery"]
-            details.append(f"龙虎动力复苏(+{self.BUY_WEIGHTS['power_recovery']})")
-        if status.main_in_cross_up:
-            score += self.BUY_WEIGHTS["main_in_signal"]
-            details.append(f"主力进出金叉(+{self.BUY_WEIGHTS['main_in_signal']})")
-        if status.volume_surge:
-            score += self.BUY_WEIGHTS["volume_surge"]
-            details.append(f"量能放大(+{self.BUY_WEIGHTS['volume_surge']})")
+        Returns:
+            (score, level, position_advice, confidence, weight_details)
+        """
+        score = 0.0
+        weight_details: List[Dict[str, Any]] = []
+
+        if not status.absorption_active:
+            weight_details.append({
+                "key": "absorption_required",
+                "label": "主力吸筹(必备条件)",
+                "weight": 0,
+                "triggered": False,
+                "score": 0,
+            })
+            return 0.0, "none", "", 0.0, weight_details
+
+        for key, weight in self.BUY_WEIGHTS.items():
+            triggered = False
+            if key == "absorption_active":
+                triggered = status.absorption_active
+            elif key == "cyw_cross_ma_up":
+                triggered = status.cyw_cross_ma_up
+            elif key == "main_in_signal":
+                triggered = status.main_in_cross_up
+            elif key == "price_cross_ma5_up":
+                triggered = status.price_cross_ma5_up
+            elif key == "avg_price_oversold_fix":
+                triggered = status.deviation_oversold and status.deviation_narrowing
+            elif key == "price_above_ma20":
+                triggered = status.price_above_ma20
+            elif key == "volume_surge":
+                triggered = status.volume_surge
+
+            score += weight if triggered else 0
+            weight_details.append({
+                "key": key,
+                "label": self.BUY_LABELS.get(key, key),
+                "weight": weight,
+                "triggered": triggered,
+                "score": weight if triggered else 0,
+            })
+
+        gravity_adj = 0.0
+        gravity_desc = ""
+        support_f = pressure_f = net_f = 0.0
+        if self.GRAVITY_ENABLED and reference_lines and price > 0:
+            net_f, support_f, pressure_f = self.compute_gravity(price, reference_lines)
+            gravity_adj, gravity_desc = self._apply_gravity_adjustment(net_f, "buy")
+
+        score += gravity_adj
+        weight_details.append({
+            "key": "gravity",
+            "label": f"引力场({gravity_desc})" if gravity_desc else "引力场",
+            "weight": gravity_adj if gravity_adj > 0 else 0,
+            "triggered": abs(gravity_adj) > 0.001,
+            "score": gravity_adj,
+            "support_force": support_f,
+            "pressure_force": pressure_f,
+            "net_force": net_f,
+        })
 
         level = self._get_level(score, self.BUY_THRESHOLDS)
         position_advice = self.BUY_POSITIONS.get(level, "")
         confidence = self.BUY_CONFIDENCE.get(level, 0.0)
 
         if level == "none":
-            return score, level, "", 0.0
+            return score, level, "", 0.0, weight_details
 
-        return score, level, position_advice, confidence
+        return score, level, position_advice, confidence, weight_details
 
-    def evaluate_sell(self, status: IndicatorSnapshot) -> Tuple[int, str, str, float]:
+    def evaluate_sell(self, status: IndicatorSnapshot,
+                      reference_lines: Optional[List[Dict[str, Any]]] = None,
+                      price: float = 0.0) -> Tuple[float, str, str, float, List[Dict[str, Any]]]:
         """评估卖出信号
 
         Returns:
-            (score, level, position_advice, confidence)
+            (score, level, position_advice, confidence, weight_details)
         """
-        score = 0
-        details: List[str] = []
+        score = 0.0
+        weight_details: List[Dict[str, Any]] = []
 
-        if status.main_in_cross_down:
-            score += self.SELL_WEIGHTS["main_out_signal"]
-            details.append(f"主力进出死叉(+{self.SELL_WEIGHTS['main_out_signal']})")
-        if status.cyw_cross_ma_down:
-            score += self.SELL_WEIGHTS["cyw_cross_ma_down"]
-            details.append(f"CYW下穿MA(+{self.SELL_WEIGHTS['cyw_cross_ma_down']})")
-        if status.power_decay or status.power_depression:
-            score += self.SELL_WEIGHTS["power_decay_or_depression"]
-            details.append(f"龙虎动力衰减/萧条(+{self.SELL_WEIGHTS['power_decay_or_depression']})")
-        if not status.absorption_active:
-            score += self.SELL_WEIGHTS["absorption_inactive"]
-            details.append(f"主力吸筹归零(+{self.SELL_WEIGHTS['absorption_inactive']})")
-        if status.volume_surge and not status.power_growth:
-            score += self.SELL_WEIGHTS["volume_stagnation"]
-            details.append(f"放量滞涨(+{self.SELL_WEIGHTS['volume_stagnation']})")
+        for key, weight in self.SELL_WEIGHTS.items():
+            triggered = False
+            if key == "main_out_signal":
+                triggered = status.main_in_cross_down
+            elif key == "cyw_cross_ma_down":
+                triggered = status.cyw_cross_ma_down
+            elif key == "volume_stagnation":
+                triggered = status.volume_surge
+            elif key == "price_cross_ma5_down":
+                triggered = status.price_cross_ma5_down
+            elif key == "avg_price_overbought_fix":
+                triggered = status.deviation_overbought and status.deviation_peaking
+            elif key == "absorption_inactive":
+                triggered = not status.absorption_active
+
+            score += weight if triggered else 0
+            weight_details.append({
+                "key": key,
+                "label": self.SELL_LABELS.get(key, key),
+                "weight": weight,
+                "triggered": triggered,
+                "score": weight if triggered else 0,
+            })
+
+        gravity_adj = 0.0
+        gravity_desc = ""
+        support_f = pressure_f = net_f = 0.0
+        if self.GRAVITY_ENABLED and reference_lines and price > 0:
+            net_f, support_f, pressure_f = self.compute_gravity(price, reference_lines)
+            gravity_adj, gravity_desc = self._apply_gravity_adjustment(net_f, "sell")
+
+        score += gravity_adj
+        weight_details.append({
+            "key": "gravity",
+            "label": f"引力场({gravity_desc})" if gravity_desc else "引力场",
+            "weight": abs(gravity_adj) if gravity_adj > 0 else 0,
+            "triggered": abs(gravity_adj) > 0.001,
+            "score": gravity_adj,
+            "support_force": support_f,
+            "pressure_force": pressure_f,
+            "net_force": net_f,
+        })
 
         level = self._get_level(score, self.SELL_THRESHOLDS)
         position_advice = self.SELL_POSITIONS.get(level, "")
         confidence = self.SELL_CONFIDENCE.get(level, 0.0)
 
         if level == "none":
-            return score, level, "", 0.0
+            return score, level, "", 0.0, weight_details
 
-        return score, level, position_advice, confidence
+        return score, level, position_advice, confidence, weight_details
 
     def check_cooldown(self, signal_type: str) -> bool:
         """检查冷却时间"""
@@ -588,22 +826,46 @@ class IntradayT0Strategy:
         "indicators": {
             "absorption": {"llv_period": 10, "hhv_period": 10, "var7_period": 20, "filter_threshold": 0.5},
             "main_in_out": {"hhv_llv_period": 10, "ema_period1": 2, "ema_period2": 3},
-            "dragon_tiger_power": {"ema_period": 4},
             "cyw": {"period": 5, "ma_period": 5},
             "volume": {"ma_period": 5, "surge_ratio": 1.5},
+            "price_ma": {"ma5_period": 5, "ma20_period": 20},
+            "avg_price_deviation": {"oversold_threshold": -2.5, "overbought_threshold": 2.5},
         },
         "signals": {
             "buy": {
-                "thresholds": {"strong": 7, "medium": 5, "weak": 3},
+                "thresholds": {"strong": 10, "medium": 7, "weak": 4},
                 "positions": {"strong": "全仓", "medium": "半仓", "weak": "1/3仓"},
                 "confidence": {"strong": 0.85, "medium": 0.65, "weak": 0.40},
-                "weights": {"absorption_active": 3, "cyw_cross_ma_up": 2, "power_recovery": 2, "main_in_signal": 2, "volume_surge": 1},
+                "weights": {
+                    "absorption_active": 3,
+                    "cyw_cross_ma_up": 2,
+                    "main_in_signal": 2,
+                    "price_cross_ma5_up": 2,
+                    "avg_price_oversold_fix": 2,
+                    "price_above_ma20": 1,
+                    "volume_surge": 1,
+                },
             },
             "sell": {
-                "thresholds": {"strong": 7, "medium": 5, "weak": 3},
+                "thresholds": {"strong": 9, "medium": 6, "weak": 3},
                 "positions": {"strong": "全仓卖出", "medium": "半仓卖出", "weak": "1/3仓卖出"},
                 "confidence": {"strong": 0.85, "medium": 0.65, "weak": 0.40},
-                "weights": {"main_out_signal": 2, "cyw_cross_ma_down": 2, "power_decay_or_depression": 2, "absorption_inactive": 1, "volume_stagnation": 1},
+                "weights": {
+                    "main_out_signal": 2,
+                    "cyw_cross_ma_down": 2,
+                    "volume_stagnation": 3,
+                    "price_cross_ma5_down": 2,
+                    "avg_price_overbought_fix": 2,
+                    "absorption_inactive": 1,
+                },
+            },
+            "gravity": {
+                "enabled": True,
+                "decay_sigma": 0.75,
+                "smooth_width": 0.20,
+                "max_adjustment": 2.0,
+                "tanh_scale": 1.5,
+                "weights": {"main_trading": 3, "ma_line": 2, "extreme": 2, "chip_zone": 2, "prev_close": 1.5},
             },
         },
         "operation": {"signal_cooldown_bars": 5, "log_signals": True},
@@ -689,12 +951,6 @@ class IntradayT0Strategy:
             main_out_value=float(row.get("main_out", 50)),
             main_in_cross_up=bool(row.get("main_in_signal", False)),
             main_in_cross_down=bool(row.get("main_out_signal", False)),
-            dominant_power=float(row.get("dominant_power", 0)),
-            power_growth=bool(row.get("power_growth", False)),
-            power_decay=bool(row.get("power_decay", False)),
-            power_depression=bool(row.get("power_depression", False)),
-            power_recovery=bool(row.get("power_recovery", False)),
-            volume_growth=bool(row.get("volume_growth", False)),
             cyw_value=float(row.get("CYW", 0)),
             cyw_ma=float(row.get("CYW_MA", 0)),
             cyw_positive=bool(row.get("CYW_positive", False)),
@@ -703,14 +959,28 @@ class IntradayT0Strategy:
             cyw_cross_ma_down=bool(row.get("CYW_cross_ma_down", False)),
             volume_surge=bool(row.get("volume_surge", False)),
             volume_shrink=bool(row.get("volume_shrink", False)),
+            ma5=float(row.get("ma5", 0)),
+            ma20=float(row.get("ma20", 0)),
+            price_above_ma5=bool(row.get("price_above_ma5", False)),
+            price_above_ma20=bool(row.get("price_above_ma20", False)),
+            price_cross_ma5_up=bool(row.get("price_cross_ma5_up", False)),
+            price_cross_ma5_down=bool(row.get("price_cross_ma5_down", False)),
+            avg_price=float(row.get("avg_price", 0)),
+            deviation_pct=float(row.get("deviation_pct", 0)),
+            deviation_oversold=bool(row.get("deviation_oversold", False)),
+            deviation_narrowing=bool(row.get("deviation_narrowing", False)),
+            deviation_overbought=bool(row.get("deviation_overbought", False)),
+            deviation_peaking=bool(row.get("deviation_peaking", False)),
         )
 
-    def feed_kline(self, kline: Dict[str, Any]) -> Optional[T0Signal]:
+    def feed_kline(self, kline: Dict[str, Any],
+                   reference_lines: Optional[List[Dict[str, Any]]] = None) -> Optional[T0Signal]:
         """
         推送一根K线数据，返回可能触发的信号
 
         Args:
             kline: 单根K线字典，需包含 Open, High, Low, Close, Volume
+            reference_lines: 日线级参考线列表（用于引力场模型）
 
         Returns:
             触发的 T0Signal 或 None
@@ -722,7 +992,6 @@ class IntradayT0Strategy:
         if not self.buffer.is_ready:
             return None
 
-        # 计算指标
         df = self.engine.calculate_all(self.buffer.data)
         if df.empty:
             return None
@@ -733,25 +1002,38 @@ class IntradayT0Strategy:
 
         self.evaluator._current_bar = self.buffer.length
 
+        ref_lines = reference_lines or []
+
         # 先检查卖出信号（优先止盈）
-        sell_score, sell_level, sell_pos, sell_conf = self.evaluator.evaluate_sell(snapshot)
+        sell_score, sell_level, sell_pos, sell_conf, sell_details = self.evaluator.evaluate_sell(
+            snapshot, ref_lines, price
+        )
         if sell_level != "none" and self.evaluator.check_cooldown("sell"):
             self.evaluator.record_signal("sell")
+            # 计算引力详情
+            net_f, sup_f, pre_f = self.evaluator.compute_gravity(price, ref_lines) if ref_lines else (0, 0, 0)
             signal = T0Signal(
                 stock_code=self.stock_code,
                 signal_type="sell",
                 trigger_time=self.buffer.get_latest_time() or datetime.now(),
                 price=price,
                 score=sell_score,
-                max_score=9,
+                max_score=sum(self.evaluator.SELL_WEIGHTS.values()) + 2,
                 confidence=sell_conf,
                 position_advice=sell_pos,
                 indicator_status=snapshot,
-                reasoning=f"卖出信号({sell_level}级)，得分{sell_score}/9",
+                reasoning=f"卖出信号({sell_level}级)，得分{sell_score}/{sum(self.evaluator.SELL_WEIGHTS.values())+2}",
+                sell_weight_details=sell_details,
+                support_force=sup_f,
+                pressure_force=pre_f,
             )
+
+            # 同时计算买入权重明细（用于前端展示，即使未触发买入）
+            _, _, _, _, buy_details = self.evaluator.evaluate_buy(snapshot, ref_lines, price)
+            signal.buy_weight_details = buy_details
+
             self._emit_signal(signal)
 
-            # 模拟清仓
             if self._position is not None:
                 buy_price = self._position["price"]
                 pnl_pct = (price - buy_price) / buy_price * 100
@@ -761,28 +1043,36 @@ class IntradayT0Strategy:
             return signal
 
         # 检查买入信号
-        buy_score, buy_level, buy_pos, buy_conf = self.evaluator.evaluate_buy(snapshot)
+        buy_score, buy_level, buy_pos, buy_conf, buy_details = self.evaluator.evaluate_buy(
+            snapshot, ref_lines, price
+        )
         if buy_level != "none" and self.evaluator.check_cooldown("buy"):
             self.evaluator.record_signal("buy")
+            net_f, sup_f, pre_f = self.evaluator.compute_gravity(price, ref_lines) if ref_lines else (0, 0, 0)
             signal = T0Signal(
                 stock_code=self.stock_code,
                 signal_type="buy",
                 trigger_time=self.buffer.get_latest_time() or datetime.now(),
                 price=price,
                 score=buy_score,
-                max_score=10,
+                max_score=sum(self.evaluator.BUY_WEIGHTS.values()) + 2,
                 confidence=buy_conf,
                 position_advice=buy_pos,
                 indicator_status=snapshot,
-                reasoning=f"买入信号({buy_level}级)，得分{buy_score}/10",
+                reasoning=f"买入信号({buy_level}级)，得分{buy_score}/{sum(self.evaluator.BUY_WEIGHTS.values())+2}",
+                buy_weight_details=buy_details,
+                support_force=sup_f,
+                pressure_force=pre_f,
             )
-            self._emit_signal(signal)
 
-            # 模拟建仓
+            _, _, _, _, sell_details = self.evaluator.evaluate_sell(snapshot, ref_lines, price)
+            signal.sell_weight_details = sell_details
+
             if self._position is None:
-                self._position = {"price": price, "time": self.buffer.get_latest_time()}
                 logger.info(f"[模拟交易] 买入 {self.stock_code} @ {price:.2f}")
+                self._position = {"price": price, "time": self.buffer.get_latest_time()}
 
+            self._emit_signal(signal)
             return signal
 
         return None

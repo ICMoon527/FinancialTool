@@ -13,6 +13,7 @@
 """
 
 import logging
+import math
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -316,16 +317,17 @@ def apply_gravitational_field(
     reference_lines: List[Dict[str, Any]],
     signal_type: str,
     base_confidence: float,
-    effective_range: float = 0.03,
-    sensitivity: float = 0.01,
+    decay_sigma: float = 1.5,
+    smooth_width: float = 0.20,
     scale_factor: float = 0.05,
     clamp_limit: float = 0.15,
 ) -> float:
     """
-    对单个信号的置信度应用连续引力场修正
+    对单个信号的置信度应用连续引力场修正（高斯衰减 + sigmoid 软穿越）
 
     核心逻辑：
-    - 对每条参考线，计算距离加权的影响力
+    - 高斯衰减：每条参考线的影响力随距离平滑衰减，无硬截断
+    - sigmoid 软穿越：支撑/压力角色平滑过渡，无二值翻转
     - 买入信号：下方支撑越多 → 置信度上调；上方压力越多 → 置信度下调
     - 卖出信号：上方压力越多 → 置信度上调；下方支撑越多 → 置信度下调
 
@@ -334,8 +336,8 @@ def apply_gravitational_field(
         reference_lines: 参考线列表
         signal_type: 'buy' 或 'sell'
         base_confidence: 基础置信度
-        effective_range: 有效距离范围（绝对值），超出忽略
-        sensitivity: 敏感度参数
+        decay_sigma: 高斯衰减 σ（%），控制影响力随距离的衰减速度
+        smooth_width: 穿越软化宽度（%）
         scale_factor: 缩放系数
         clamp_limit: 修正幅度上下限
 
@@ -355,18 +357,16 @@ def apply_gravitational_field(
         if line_price <= 0:
             continue
 
-        relative_dist = (line_price - current_price) / current_price
-        abs_dist = abs(relative_dist)
+        rel_diff = (line_price - current_price) / current_price * 100
+        abs_dist = abs(rel_diff)
 
-        if abs_dist > effective_range:
-            continue
+        raw_influence = base_weight * math.exp(-(abs_dist ** 2) / (2 * decay_sigma ** 2))
 
-        influence = base_weight / (1.0 + abs_dist / sensitivity)
+        support_ratio = 1.0 / (1.0 + math.exp(-rel_diff / smooth_width))
+        pressure_ratio = 1.0 - support_ratio
 
-        if relative_dist < 0:
-            support_force += influence
-        else:
-            pressure_force += influence
+        support_force += raw_influence * support_ratio
+        pressure_force += raw_influence * pressure_ratio
 
     if signal_type == "buy":
         adjustment = (support_force - pressure_force) * scale_factor

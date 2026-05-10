@@ -22,19 +22,29 @@ export interface IntradayKlinePoint {
   time?: string;
 }
 
+export interface WeightContribution {
+  key: string;
+  label: string;
+  weight: number;
+  triggered: boolean;
+  score: number;
+}
+
 export interface IntradaySignal {
   stock_code: string;
-  signal_type: 'buy' | 'sell';
+  signal_type: 'buy' | 'sell' | 'hold';
   trigger_time: string;
   price: number;
   score: number;
   max_score: number;
   confidence: number;
   position_advice: string;
-  reasoning?: string;
+  reasoning: string;
   gravity_adjustment?: number;
   support_force?: number;
   pressure_force?: number;
+  buy_weight_details?: WeightContribution[];
+  sell_weight_details?: WeightContribution[];
 }
 
 export interface ReferenceLine {
