@@ -10,10 +10,17 @@ data:
 indicators:
   # 主力吸筹
   absorption:
-    llv_period: 38        # 日线38 → 增加周期过滤噪声
+    llv_period: 60        # 日线38 → 增加周期过滤噪声
     hhv_period: 38
     var7_period: 90       # 日线90 → 更长EMA平滑
-    filter_threshold: 1.01 # 日线1.01 → 提高阈值减少伪信号
+    filter_threshold: 0.5 # 日线1.01 → 提高阈值减少伪信号
+
+  # 主力出货（吸筹公式的镜像，检测高位派发）
+  distribution:
+    llv_period: 30        # 与吸筹对称，使用相同周期
+    hhv_period: 38
+    var7_period: 90
+    filter_threshold: 0.05
 
   # 主力进出
   main_in_out:
@@ -41,13 +48,25 @@ indicators:
     oversold_threshold: -2.5    # 超卖阈值（%）
     overbought_threshold: 2.5   # 超买阈值（%）
 
+  # MACD
+  macd:
+    fast_period: 12
+    slow_period: 26
+    signal_period: 9
+
+  # RSI
+  rsi:
+    period: 14
+    overbought: 65
+    oversold: 20
+
 # 信号配置
 signals:
   buy:
     thresholds:
-      strong: 10   # 强买入 >= 10分
+      strong: 9   # 强买入 >= 10分
       medium: 7    # 中买入 >= 7分
-      weak: 4      # 弱买入 >= 4分
+      weak: 5      # 弱买入 >= 4分
     positions:
       strong: "全仓"
       medium: "半仓"
@@ -57,19 +76,21 @@ signals:
       medium: 0.65
       weak: 0.40
     weights:
-      absorption_active: 3   # 主力吸筹活跃
-      cyw_cross_ma_up: 2     # CYW上穿MA
-      main_in_signal: 2      # 主力进出金叉
-      price_cross_ma5_up: 2  # 价格上穿MA5
+      absorption_active: 0   # 主力吸筹活跃
+      cyw_cross_ma_up: 1     # CYW上穿MA
+      main_in_signal: 1      # 主力进出金叉
+      price_cross_ma5_up: 1  # 价格上穿MA5
       avg_price_oversold_fix: 2  # 均价超卖修复
       price_above_ma20: 1    # 价格>MA20趋势加成
       volume_surge: 1        # 量能放大
+      macd_golden_cross: 2     # MACD金叉
+      rsi_oversold: 5          # RSI超卖
 
   sell:
     thresholds:
-      strong: 9    # 强卖出 >= 9分
-      medium: 6    # 中卖出 >= 6分
-      weak: 3      # 弱卖出 >= 3分
+      strong: 8   # 强卖出 >= 11分
+      medium: 7    # 中卖出 >= 7分
+      weak: 5      # 弱卖出 >= 4分
     positions:
       strong: "全仓卖出"
       medium: "半仓卖出"
@@ -79,12 +100,14 @@ signals:
       medium: 0.65
       weak: 0.40
     weights:
-      main_out_signal: 2           # 主力进出死叉
-      cyw_cross_ma_down: 2         # CYW下穿MA
-      volume_stagnation: 3         # 放量滞涨
-      price_cross_ma5_down: 2      # 价格下穿MA5
-      avg_price_overbought_fix: 2  # 均价超买回落
-      absorption_inactive: 1       # 主力吸筹归零
+      distribution_active: 0        # 主力出货活跃
+      main_out_signal: 0            # 主力进出死叉
+      cyw_cross_ma_down: 0          # CYW下穿MA
+      volume_stagnation: 3          # 放量滞涨
+      price_cross_ma5_down: 2       # 价格下穿MA5
+      avg_price_overbought_fix: 2   # 均价超买回落
+      macd_death_cross: 2      # MACD死叉
+      rsi_overbought: 5        # RSI超买
 
   # 引力场模型配置（连续化版本，暂时禁用）
   gravity:
@@ -102,5 +125,5 @@ signals:
 
 # 运营参数
 operation:
-  signal_cooldown_bars: 5   # 同类型信号冷却K线数
-  log_signals: true         # 是否日志输出信号
+  signal_cooldown_bars: 0   # 同类型信号冷却K线数
+  log_signals: false         # 是否日志输出信号

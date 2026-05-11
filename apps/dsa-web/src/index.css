@@ -737,3 +737,8 @@ body {
     padding-left: 88px;
   }
 }
+
+/* ============ 隐藏 TradingView 水印 ============ */
+#tv-attr-logo {
+  display: none !important;
+}

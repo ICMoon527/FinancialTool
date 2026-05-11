@@ -39,6 +39,8 @@ class RSI(BaseIndicator):
     - data: DataFrame，必须包含'Close'列
     - period: RSI周期，默认14
     - use_ema: 是否使用EMA计算平均涨跌，默认False（使用SMA）
+    - overbought: 超买阈值，默认70
+    - oversold: 超卖阈值，默认30
 
     输出参数：
     - RSI: RSI指标值
@@ -70,16 +72,20 @@ class RSI(BaseIndicator):
     10. 动态调整：根据市场状态动态调整超买超卖阈值（牛市区80-20，熊市区70-30）
     """
 
-    def __init__(self, period=14, use_ema=False):
+    def __init__(self, period=14, use_ema=False, overbought=70, oversold=30):
         """
         初始化RSI指标参数。
 
         Args:
             period: RSI周期，默认14
             use_ema: 是否使用EMA计算平均涨跌，默认False（使用SMA）
+            overbought: 超买阈值，默认70
+            oversold: 超卖阈值，默认30
         """
         self.period = period
         self.use_ema = use_ema
+        self.overbought = overbought
+        self.oversold = oversold
 
     def _sma(self, data: pd.Series, period: int) -> pd.Series:
         """
@@ -147,8 +153,8 @@ class RSI(BaseIndicator):
 
         RSI = 100 - 100 / (1 + RS)
 
-        overbought = RSI >= 70
-        oversold = RSI <= 30
+        overbought = RSI >= self.overbought
+        oversold = RSI <= self.oversold
 
         result["gain"] = gain
         result["loss"] = loss

@@ -333,6 +333,7 @@ const VisualizationPage: React.FC = () => {
         layout: {
           background: { type: 'solid', color: '#1a1a2e' } as any,
           textColor: '#d1d4dc',
+          attributionLogo: false,
         },
         grid: {
           vertLines: { color: '#2b2b43' },
@@ -993,6 +994,7 @@ const VisualizationPage: React.FC = () => {
           layout: {
             background: { type: 'solid', color: '#1a1a2e' } as any,
             textColor: '#d1d4dc',
+            attributionLogo: false,
           },
           grid: {
             vertLines: { color: '#2b2b43' },

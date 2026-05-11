@@ -21,6 +21,7 @@ from data_provider import DataFetcherManager
 from data_provider.realtime_types import UnifiedRealtimeQuote
 from indicators.indicators.banker_control import BankerControl
 from indicators.indicators.main_capital_absorption import MainCapitalAbsorption
+from indicators.indicators.main_capital_distribution import MainCapitalDistribution
 from indicators.indicators.main_cost import MainCost
 from indicators.indicators.main_trading import MainTrading
 from indicators.indicators.momentum_2 import Momentum2
@@ -152,6 +153,7 @@ AVAILABLE_INDICATORS = [
     'volume',
     'banker_control',
     'main_capital_absorption',
+    'main_capital_distribution',
     'main_cost',
     'main_trading',
     'momentum_2',
@@ -164,6 +166,7 @@ AVAILABLE_INDICATORS = [
 INDICATOR_CALCULATORS = {
     'banker_control': BankerControl,
     'main_capital_absorption': MainCapitalAbsorption,
+    'main_capital_distribution': MainCapitalDistribution,
     'main_cost': MainCost,
     'main_trading': MainTrading,
     'momentum_2': Momentum2,
@@ -441,7 +444,10 @@ class VisualizationService:
                     continue
                 
                 try:
-                    calculator = calculator_class()
+                    if indicator_type == 'main_capital_distribution':
+                        calculator = calculator_class(filter_threshold=0.05)
+                    else:
+                        calculator = calculator_class()
                     # 如果是主力成本指标且有资金流向数据，传递资金流向数据
                     # 如果是强势起爆指标且有大盘数据，传递大盘数据
                     if (indicator_type == 'main_cost') and fund_flow_data is not None:
@@ -519,7 +525,21 @@ class VisualizationService:
                     
                 except Exception as e:
                     logger.warning(f"计算 {stock_code} {indicator_type} 指标失败: {e}")
-        
+
+            # 合并主力吸筹和主力出货指标（与分时图逻辑一致：正=吸筹，负=出货）
+            has_absorption = any(e['indicator_type'] == 'main_capital_absorption' for e in indicators_data)
+            has_distribution = any(e['indicator_type'] == 'main_capital_distribution' for e in indicators_data)
+            if has_absorption and has_distribution:
+                absorption_entry = next(e for e in indicators_data if e['indicator_type'] == 'main_capital_absorption')
+                distribution_entry = next(e for e in indicators_data if e['indicator_type'] == 'main_capital_distribution')
+                dist_map = {d['date']: d.get('main_capital_distribution') or 0 for d in distribution_entry['data']}
+                for item in absorption_entry['data']:
+                    dist_val = dist_map.get(item['date'], 0)
+                    current_abs = item.get('main_capital_absorption') or 0
+                    item['main_capital_absorption'] = current_abs + dist_val
+                indicators_data = [e for e in indicators_data if e['indicator_type'] != 'main_capital_distribution']
+                logger.info(f"{stock_code} 主力吸筹与出货指标已合并: {len(absorption_entry['data'])} 条")
+
         # 预计算最新日期的筹码分布数据
         chip_distribution_data = None
         try:

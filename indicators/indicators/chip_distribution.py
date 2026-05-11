@@ -322,12 +322,6 @@ class ChipDistribution(BaseIndicator):
             if pd.isna(turnover_rate) or turnover_rate is None:
                 turnover_rate = 0
             
-            # 更新留存率：旧筹码 * (1 - 当日换手率 * 清洗系数)
-            # 这里的逻辑是：如果今天换手率高，昨天的筹码就剩得少
-            # 清洗系数 > 1.0 可以加速旧筹码衰减，形成清晰的筹码峰
-            decay_factor = min(1.0, turnover_rate * self.turnover_coeff)
-            cumulative_survival *= (1.0 - decay_factor)
-            
             # 检查成交量是否大于阈值（避免微小成交量污染筹码分布）
             volume_ratio = volume / total_volume if total_volume > 0 else 0.0
             if volume_ratio >= self.min_volume_threshold:
@@ -354,11 +348,17 @@ class ChipDistribution(BaseIndicator):
                 if vol_sum > 0:
                     volume_dist = volume_dist / vol_sum * volume
                 
-                # 累加留存下来的旧筹码
+                # 累加留存下来的旧筹码（用当前的留存率，代表之前所有交易日的累计换手效果）
                 chip_distribution += volume_dist * cumulative_survival
             else:
-                # 成交量太小，跳过，只更新留存率
                 logger.debug(f"[筹码分布] 忽略成交量极小的K线 {i}，成交量占比: {volume_ratio:.4%}")
+
+            # 更新留存率：旧筹码 * (1 - 当日换手率 * 清洗系数)
+            # 放在筹码累加后面，确保当天筹码不受当天换手率衰减
+            # 这里的逻辑是：如果今天换手率高，昨天的筹码就剩得少
+            # 清洗系数 > 1.0 可以加速旧筹码衰减，形成清晰的筹码峰
+            decay_factor = min(1.0, turnover_rate * self.turnover_coeff)
+            cumulative_survival *= (1.0 - decay_factor)
 
         current_price = df.iloc[-1]['Close']
 

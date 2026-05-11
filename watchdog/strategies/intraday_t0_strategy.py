@@ -46,6 +46,9 @@ class IndicatorSnapshot:
     absorption_value: float = 0.0
     absorption_active: bool = False
 
+    # 主力出货
+    distribution_active: bool = False
+
     # 主力进出
     main_in_value: float = 50.0
     main_out_value: float = 50.0
@@ -79,6 +82,18 @@ class IndicatorSnapshot:
     deviation_narrowing: bool = False
     deviation_overbought: bool = False
     deviation_peaking: bool = False
+
+    # MACD
+    dif: float = 0.0
+    dea: float = 0.0
+    macd_bar: float = 0.0
+    macd_golden_cross: bool = False
+    macd_death_cross: bool = False
+
+    # RSI
+    rsi_value: float = 50.0
+    rsi_oversold: bool = False
+    rsi_overbought: bool = False
 
 
 @dataclass
@@ -154,10 +169,6 @@ class IntradayDataBuffer:
     def length(self) -> int:
         return len(self._data)
 
-    @property
-    def is_ready(self) -> bool:
-        return len(self._data) >= 15
-
     def validate_kline(self, kline: Dict[str, Any]) -> Tuple[bool, str]:
         """校验单根K线数据有效性"""
         for col in self.REQUIRED_COLUMNS:
@@ -232,6 +243,13 @@ class IntradayIndicatorEngine:
         self.abs_var7_period = abs_cfg.get("var7_period", 20)
         self.abs_filter_threshold = abs_cfg.get("filter_threshold", 0.5)
 
+        # 主力出货参数
+        dist_cfg = indicator_cfg.get("distribution", {})
+        self.dist_llv_period = dist_cfg.get("llv_period", self.abs_llv_period)
+        self.dist_hhv_period = dist_cfg.get("hhv_period", self.abs_hhv_period)
+        self.dist_var7_period = dist_cfg.get("var7_period", self.abs_var7_period)
+        self.dist_filter_threshold = dist_cfg.get("filter_threshold", self.abs_filter_threshold)
+
         # 主力进出参数
         mio_cfg = indicator_cfg.get("main_in_out", {})
         self.mio_hhv_llv_period = mio_cfg.get("hhv_llv_period", 10)
@@ -257,6 +275,18 @@ class IntradayIndicatorEngine:
         dev_cfg = indicator_cfg.get("avg_price_deviation", {})
         self.dev_oversold_threshold = dev_cfg.get("oversold_threshold", -2.5)
         self.dev_overbought_threshold = dev_cfg.get("overbought_threshold", 2.5)
+
+        # MACD参数
+        macd_cfg = indicator_cfg.get("macd", {})
+        self.macd_fast = macd_cfg.get("fast_period", 12)
+        self.macd_slow = macd_cfg.get("slow_period", 26)
+        self.macd_signal = macd_cfg.get("signal_period", 9)
+
+        # RSI参数
+        rsi_cfg = indicator_cfg.get("rsi", {})
+        self.rsi_period = rsi_cfg.get("period", 14)
+        self.rsi_overbought = rsi_cfg.get("overbought", 70)
+        self.rsi_oversold = rsi_cfg.get("oversold", 30)
 
     # ---------- 工具函数 ----------
 
@@ -311,6 +341,49 @@ class IntradayIndicatorEngine:
         var8 = np.where(np.abs(var8) < threshold, 0, var8)
 
         result["absorption"] = var8
+        return result
+
+    # ---------- 主力出货（镜像公式）----------
+
+    def calc_distribution(self, data: pd.DataFrame) -> pd.DataFrame:
+        """计算主力出货分时版本（主力吸筹公式的镜像）
+
+        与吸筹公式对称，使用最高价替代最低价，HHV替代LLV，
+        检测"创新高时的下跌动能爆发"即主力高位派发行为。
+
+        计算结果存入 "distribution" 列（负值，用于与吸筹共用渲染通道）。
+        """
+        result = data.copy()
+        high = data["High"]
+        close = data["Close"]
+
+        var2 = high - high.shift(1)
+        abs_var2 = var2.abs()
+        sma_abs_var2 = self._sma(abs_var2, 3)
+        min_var2_abs = var2.clip(upper=0).abs()
+        sma_min_var2 = self._sma(min_var2_abs, 3)
+
+        denominator = sma_min_var2.replace(0, np.nan)
+        var3 = (sma_abs_var2 / denominator) * 100
+        var3 = var3.fillna(0)
+
+        var4_condition = close * 0.8
+        var4_arr = np.where(var4_condition > 0, var3 * 10, var3 / 10)
+        var4 = self._ema(pd.Series(var4_arr, index=data.index), 3)
+
+        var5 = self._hhv(high, self.dist_llv_period)
+        var6 = self._llv(var4, self.dist_hhv_period)
+
+        var7_arr = np.where(self._hhv(high, self.dist_var7_period) > 0, 1, 0)
+
+        var8_condition = high >= var5
+        var8_value = np.where(var8_condition, (var4 + var6 * 2) / 2, 0)
+        var8 = self._ema(pd.Series(var8_value, index=data.index), 3) / 618 * var7_arr
+
+        threshold = self.dist_filter_threshold
+        var8 = np.where(np.abs(var8) < threshold, 0, var8)
+
+        result["distribution"] = -var8
         return result
 
     # ---------- 主力进出 ----------
@@ -438,17 +511,44 @@ class IntradayIndicatorEngine:
         )
         return result
 
+    # ---------- MACD ----------
+
+    def calc_macd(self, data: pd.DataFrame) -> pd.DataFrame:
+        """计算MACD指标（复用 indicators.indicators.macd.MACD 类）"""
+        from indicators.indicators.macd import MACD
+        macd = MACD(fast_period=self.macd_fast, slow_period=self.macd_slow, signal_period=self.macd_signal)
+        result = macd.calculate(data)
+        result["macd_golden_cross"] = result["golden_cross"]
+        result["macd_death_cross"] = result["death_cross"]
+        return result
+
+    # ---------- RSI ----------
+
+    def calc_rsi(self, data: pd.DataFrame) -> pd.DataFrame:
+        """计算RSI指标（复用 indicators.indicators.rsi.RSI 类）"""
+        from indicators.indicators.rsi import RSI
+        rsi = RSI(period=self.rsi_period, overbought=self.rsi_overbought, oversold=self.rsi_oversold)
+        result = rsi.calculate(data)
+        result["rsi_overbought"] = result["overbought"]
+        result["rsi_oversold"] = result["oversold"]
+        return result
+
     # ---------- 综合计算 ----------
 
     def calculate_all(self, data: pd.DataFrame) -> pd.DataFrame:
         """计算全部指标，返回包含所有指标列的 DataFrame"""
         df = data.copy()
         df = self.calc_absorption(df)
+        df = self.calc_distribution(df)
+        df = self.calc_macd(df)
+        df = self.calc_rsi(df)
         df = self.calc_main_in_out(df)
         df = self.calc_cyw(df)
         df = IntradayIndicatorEngine.calc_volume_surge(df, self.vol_ma_period, self.vol_surge_ratio)
         df = self.calc_price_ma_relation(df)
         df = self.calc_avg_price_deviation(df)
+
+        df["absorption"] = df["absorption"].fillna(0) + df["distribution"].fillna(0)
         return df
 
 
@@ -461,13 +561,15 @@ class SignalEvaluator:
     """基于多指标评分的买卖信号评估器，含引力场模型"""
 
     BUY_WEIGHTS = {
-        "absorption_active": 3,
-        "cyw_cross_ma_up": 2,
-        "main_in_signal": 2,
-        "price_cross_ma5_up": 2,
+        "absorption_active": 0,
+        "cyw_cross_ma_up": 0,
+        "main_in_signal": 0,
+        "price_cross_ma5_up": 0,
         "avg_price_oversold_fix": 2,
         "price_above_ma20": 1,
         "volume_surge": 1,
+        "macd_golden_cross": 2,
+        "rsi_oversold": 2,
     }
     BUY_LABELS = {
         "absorption_active": "主力吸筹活跃",
@@ -477,30 +579,36 @@ class SignalEvaluator:
         "avg_price_oversold_fix": "均价超卖修复",
         "price_above_ma20": "价格>MA20趋势",
         "volume_surge": "量能放大",
+        "macd_golden_cross": "MACD金叉",
+        "rsi_oversold": "RSI超卖",
     }
 
     SELL_WEIGHTS = {
-        "main_out_signal": 2,
-        "cyw_cross_ma_down": 2,
+        "distribution_active": 0,
+        "main_out_signal": 0,
+        "cyw_cross_ma_down": 0,
         "volume_stagnation": 3,
         "price_cross_ma5_down": 2,
         "avg_price_overbought_fix": 2,
-        "absorption_inactive": 1,
+        "macd_death_cross": 2,
+        "rsi_overbought": 2,
     }
     SELL_LABELS = {
+        "distribution_active": "主力出货活跃",
         "main_out_signal": "主力进出死叉",
         "cyw_cross_ma_down": "CYW下穿MA",
         "volume_stagnation": "放量滞涨",
         "price_cross_ma5_down": "价格下穿MA5",
         "avg_price_overbought_fix": "均价超买回落",
-        "absorption_inactive": "主力吸筹归零",
+        "macd_death_cross": "MACD死叉",
+        "rsi_overbought": "RSI超买",
     }
 
-    BUY_THRESHOLDS = {"strong": 10, "medium": 7, "weak": 4}
+    BUY_THRESHOLDS = {"strong": 6, "medium": 5, "weak": 4}
     BUY_POSITIONS = {"strong": "全仓", "medium": "半仓", "weak": "1/3仓"}
     BUY_CONFIDENCE = {"strong": 0.85, "medium": 0.65, "weak": 0.40}
 
-    SELL_THRESHOLDS = {"strong": 9, "medium": 6, "weak": 3}
+    SELL_THRESHOLDS = {"strong": 11, "medium": 7, "weak": 4}
     SELL_POSITIONS = {"strong": "全仓卖出", "medium": "半仓卖出", "weak": "1/3仓卖出"}
     SELL_CONFIDENCE = {"strong": 0.85, "medium": 0.65, "weak": 0.40}
 
@@ -681,6 +789,10 @@ class SignalEvaluator:
                 triggered = status.price_above_ma20
             elif key == "volume_surge":
                 triggered = status.volume_surge
+            elif key == "macd_golden_cross":
+                triggered = status.macd_golden_cross
+            elif key == "rsi_oversold":
+                triggered = status.rsi_oversold
 
             score += weight if triggered else 0
             weight_details.append({
@@ -730,9 +842,21 @@ class SignalEvaluator:
         score = 0.0
         weight_details: List[Dict[str, Any]] = []
 
+        if not status.distribution_active:
+            weight_details.append({
+                "key": "distribution_required",
+                "label": "主力出货(必备条件)",
+                "weight": 0,
+                "triggered": False,
+                "score": 0,
+            })
+            return 0.0, "none", "", 0.0, weight_details
+
         for key, weight in self.SELL_WEIGHTS.items():
             triggered = False
-            if key == "main_out_signal":
+            if key == "distribution_active":
+                triggered = status.distribution_active
+            elif key == "main_out_signal":
                 triggered = status.main_in_cross_down
             elif key == "cyw_cross_ma_down":
                 triggered = status.cyw_cross_ma_down
@@ -742,8 +866,10 @@ class SignalEvaluator:
                 triggered = status.price_cross_ma5_down
             elif key == "avg_price_overbought_fix":
                 triggered = status.deviation_overbought and status.deviation_peaking
-            elif key == "absorption_inactive":
-                triggered = not status.absorption_active
+            elif key == "macd_death_cross":
+                triggered = status.macd_death_cross
+            elif key == "rsi_overbought":
+                triggered = status.rsi_overbought
 
             score += weight if triggered else 0
             weight_details.append({
@@ -847,16 +973,16 @@ class IntradayT0Strategy:
                 },
             },
             "sell": {
-                "thresholds": {"strong": 9, "medium": 6, "weak": 3},
+                "thresholds": {"strong": 11, "medium": 7, "weak": 4},
                 "positions": {"strong": "全仓卖出", "medium": "半仓卖出", "weak": "1/3仓卖出"},
                 "confidence": {"strong": 0.85, "medium": 0.65, "weak": 0.40},
                 "weights": {
+                    "distribution_active": 3,
                     "main_out_signal": 2,
                     "cyw_cross_ma_down": 2,
                     "volume_stagnation": 3,
                     "price_cross_ma5_down": 2,
                     "avg_price_overbought_fix": 2,
-                    "absorption_inactive": 1,
                 },
             },
             "gravity": {
@@ -946,7 +1072,8 @@ class IntradayT0Strategy:
         """从 DataFrame 行构建指标快照"""
         return IndicatorSnapshot(
             absorption_value=float(row.get("absorption", 0)),
-            absorption_active=bool(row.get("absorption", 0)) != 0,
+            absorption_active=float(row.get("absorption", 0)) > 0,
+            distribution_active=float(row.get("absorption", 0)) < 0,
             main_in_value=float(row.get("main_in", 50)),
             main_out_value=float(row.get("main_out", 50)),
             main_in_cross_up=bool(row.get("main_in_signal", False)),
@@ -971,6 +1098,14 @@ class IntradayT0Strategy:
             deviation_narrowing=bool(row.get("deviation_narrowing", False)),
             deviation_overbought=bool(row.get("deviation_overbought", False)),
             deviation_peaking=bool(row.get("deviation_peaking", False)),
+            dif=float(row.get("DIF", 0)),
+            dea=float(row.get("DEA", 0)),
+            macd_bar=float(row.get("MACD_Bar", 0)),
+            macd_golden_cross=bool(row.get("macd_golden_cross", False)),
+            macd_death_cross=bool(row.get("macd_death_cross", False)),
+            rsi_value=float(row.get("RSI", 50)),
+            rsi_oversold=bool(row.get("rsi_oversold", False)),
+            rsi_overbought=bool(row.get("rsi_overbought", False)),
         )
 
     def feed_kline(self, kline: Dict[str, Any],
@@ -987,9 +1122,6 @@ class IntradayT0Strategy:
         """
         success = self.buffer.append(kline)
         if not success:
-            return None
-
-        if not self.buffer.is_ready:
             return None
 
         df = self.engine.calculate_all(self.buffer.data)

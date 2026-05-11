@@ -36,6 +36,15 @@ function signalLevel(confidence: number): { label: string; color: string } {
   return { label: '弱', color: '#888888' };
 }
 
+/** 信号文本颜色：买入(红)/卖出(绿)/中性 */
+function signalColor(text: string): { fg: string; bg: string } {
+  const buy = /买入|买回|流入|金叉|控盘中|反弹/;
+  const sell = /卖出|流出|死叉|弱控盘|未控盘|出货|破位/;
+  if (buy.test(text)) return { fg: '#FF6644', bg: 'rgba(255,100,68,0.12)' };
+  if (sell.test(text)) return { fg: '#44DD44', bg: 'rgba(68,221,68,0.12)' };
+  return { fg: '#00D4FF', bg: 'rgba(0,212,255,0.10)' };
+}
+
 /**
  * 将分时K线数据转换为 lightweight-charts 可用格式
  * dateStr: 当前查询日期 "YYYY-MM-DD"
@@ -158,7 +167,8 @@ const IntradayPage: React.FC = () => {
   const [intradayData, setIntradayData] = useState<IntradayDataResponse | null>(null);
   const [searchHistory, setSearchHistory] = useState<SearchHistoryItem[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [selectedDate, setSelectedDate] = useState(formatDate(new Date()));
+  const [priceRangeEnabled, setPriceRangeEnabled] = useState(true);
+  const todayDateStr = useMemo(() => formatDate(new Date()), []);
   const [crosshairSignals, setCrosshairSignals] = useState<Record<string, string>>({});
   const [isCrosshairActive, setIsCrosshairActive] = useState(false);
   const [hoveredWeightDetails, setHoveredWeightDetails] = useState<{
@@ -171,6 +181,7 @@ const IntradayPage: React.FC = () => {
 
   // 存储从API返回的所有信号
   const allSignalsRef = useRef<IntradaySignal[]>([]);
+  const filteredSignalsRef = useRef<IntradaySignal[]>([]);
 
   // 信号筛选状态
   const [activeFilters, setActiveFilters] = useState<Set<string>>(new Set());
@@ -186,10 +197,12 @@ const IntradayPage: React.FC = () => {
   const refLinePriceLinesRef = useRef<lightweightCharts.IPriceLine[]>([]);
   const chipAreaRef = useRef<lightweightCharts.ISeriesApi<'Area'> | null>(null);
   const avgPriceLineRef = useRef<lightweightCharts.ISeriesApi<'Line'> | null>(null);
+  const priceRangeSeriesRef = useRef<lightweightCharts.ISeriesApi<'Line'> | null>(null);
   const seriesMarkersRef = useRef<any>(null);
   const timeSyncSubRef = useRef<(() => void) | null>(null);
   const isTimeSyncingRef = useRef(false);
-  const currentDateRef = useRef(selectedDate);
+  const currentDateRef = useRef(todayDateStr);
+  const priceRangeEnabledRef = useRef(true);
   const isCrosshairUpdatingRef = useRef(false);
   const currentCrosshairTimeRef = useRef<Time | null>(null);
   const klineRawDataRef = useRef<any[]>([]);
@@ -200,12 +213,15 @@ const IntradayPage: React.FC = () => {
   const absorptionContainerRef = useRef<HTMLDivElement>(null);
   const mainInOutContainerRef = useRef<HTMLDivElement>(null);
   const cywContainerRef = useRef<HTMLDivElement>(null);
+  const macdContainerRef = useRef<HTMLDivElement>(null);
+  const rsiContainerRef = useRef<HTMLDivElement>(null);
 
   // 指标子图实例管理
   const indicatorChartsRef = useRef<Map<string, lightweightCharts.IChartApi>>(new Map());
   const indicatorSeriesRef = useRef<Map<string, any[]>>(new Map());
 
-  currentDateRef.current = selectedDate;
+  currentDateRef.current = todayDateStr;
+  priceRangeEnabledRef.current = priceRangeEnabled;
 
   // 加载搜索历史
   const loadHistory = useCallback(async () => {
@@ -237,6 +253,7 @@ const IntradayPage: React.FC = () => {
       layout: {
         background: { type: 'solid', color: '#1a1a2e' } as any,
         textColor: '#d1d4dc',
+        attributionLogo: false,
       },
       grid: {
         vertLines: { color: '#2b2b43' },
@@ -289,6 +306,7 @@ const IntradayPage: React.FC = () => {
       layout: {
         background: { type: 'solid', color: '#1a1a2e' } as any,
         textColor: '#d1d4dc',
+        attributionLogo: false,
       },
       grid: {
         vertLines: { color: '#2b2b43' },
@@ -360,8 +378,8 @@ const IntradayPage: React.FC = () => {
       mainRo.disconnect();
       volRo.disconnect();
       if (timeSyncSubRef.current) timeSyncSubRef.current();
-      chart.remove();
-      volChart.remove();
+      try { chart.remove(); } catch (e) { /* ignore */ }
+      try { volChart.remove(); } catch (e) { /* ignore */ }
       chartRef.current = null;
       volumeChartRef.current = null;
       // 清理指标子图
@@ -408,6 +426,29 @@ const IntradayPage: React.FC = () => {
     main_out: number;
     CYW: number;
     CYW_MA: number;
+    absorption: number;
+    close: number;
+    ma5: number;
+    ma20: number;
+    deviation_pct: number;
+    absorption_active: boolean;
+    distribution_active: boolean;
+    price_above_ma5: boolean;
+    price_above_ma20: boolean;
+    price_cross_ma5_up: boolean;
+    price_cross_ma5_down: boolean;
+    deviation_oversold: boolean;
+    deviation_overbought: boolean;
+    deviation_narrowing: boolean;
+    deviation_peaking: boolean;
+    DIF: number;
+    DEA: number;
+    MACD_Bar: number;
+    macd_golden_cross: boolean;
+    macd_death_cross: boolean;
+    RSI: number;
+    rsi_oversold: boolean;
+    rsi_overbought: boolean;
   }>>([]);
 
   const _crossUpTs = (aArr: number[], bArr: number[], lookback: number = 3): boolean => {
@@ -477,6 +518,40 @@ const IntradayPage: React.FC = () => {
       }
     }
 
+    // MACD
+    const difArr = slice.map((s) => s.DIF);
+    const deaArr = slice.map((s) => s.DEA);
+    const lastDif = difArr[difArr.length - 1];
+    const lastDea = deaArr[deaArr.length - 1];
+    if (!isNaN(lastDif) && !isNaN(lastDea)) {
+      const up = _crossUpTs(difArr, deaArr);
+      const down = _crossDownTs(difArr, deaArr);
+      if (up) {
+        signals.macd = 'MACD金叉 \u2191';
+      } else if (down) {
+        signals.macd = 'MACD死叉 \u2193';
+      } else if (lastDif > lastDea) {
+        signals.macd = 'MACD多头 \u2197';
+      } else {
+        signals.macd = 'MACD空头 \u2198';
+      }
+    }
+
+    // RSI
+    const rsiArr = slice.map((s) => s.RSI);
+    const lastRsi = rsiArr[rsiArr.length - 1];
+    if (!isNaN(lastRsi)) {
+      if (lastRsi <= 30) {
+        signals.rsi = 'RSI超卖 \u2191';
+      } else if (lastRsi >= 70) {
+        signals.rsi = 'RSI超买 \u2193';
+      } else if (lastRsi < 50) {
+        signals.rsi = 'RSI偏弱 \u2198';
+      } else {
+        signals.rsi = 'RSI偏强 \u2197';
+      }
+    }
+
     // 主力吸筹不输出信号
     signals.absorption = '';
 
@@ -498,32 +573,223 @@ const IntradayPage: React.FC = () => {
         pressureForce: sigAtTime.pressure_force || 0,
         signalType: sigAtTime.signal_type,
       });
+    } else {
+      // 无后端信号时，基于快照数据在前端重建权重贡献
+      const sn = snapshots[idx];
+      const absActive = sn.absorption_active;
+      const distActive = sn.distribution_active;
+      const macdGoldenCross = sn.macd_golden_cross;
+      const rsiOversold = sn.rsi_oversold;
+      const macdDeathCross = sn.macd_death_cross;
+      const rsiOverbought = sn.rsi_overbought;
+      const mainInArr = slice.map((s) => s.main_in);
+      const mainOutArr = slice.map((s) => s.main_out);
+      const cywVals = slice.map((s) => s.CYW);
+      const cywMaVals = slice.map((s) => s.CYW_MA);
+
+      const mainInCrossUp = _crossUpTs(mainInArr, mainOutArr);
+      const mainInCrossDown = _crossDownTs(mainInArr, mainOutArr);
+      const cywCrossUp = _crossUpTs(cywVals, cywMaVals);
+      const cywCrossDown = _crossDownTs(cywVals, cywMaVals);
+
+      const buyWeights: WeightContribution[] = [];
+      const sellWeights: WeightContribution[] = [];
+
+      // 买入权重
+      if (!absActive) {
+        buyWeights.push({ key: 'absorption_required', label: '主力吸筹(必备条件)', weight: 0, triggered: false, score: 0 });
+      } else {
+        const factors: [string, string, number, boolean][] = [
+          ['absorption_active', '主力吸筹活跃', 0, absActive],
+          ['cyw_cross_ma_up', 'CYW上穿MA', 0, cywCrossUp],
+          ['main_in_signal', '主力进出金叉', 0, mainInCrossUp],
+          ['price_cross_ma5_up', '价格上穿MA5', 0, sn.price_cross_ma5_up],
+          ['avg_price_oversold_fix', '均价超卖修复', 2, sn.deviation_oversold && sn.deviation_narrowing],
+          ['price_above_ma20', '价格>MA20趋势', 1, sn.price_above_ma20],
+          ['volume_surge', '量能放大', 1, false],
+          ['macd_golden_cross', 'MACD金叉', 2, macdGoldenCross],
+          ['rsi_oversold', 'RSI超卖', 2, rsiOversold],
+        ];
+        let buyScore = 0;
+        for (const [key, label, w, trig] of factors) {
+          buyScore += trig ? w : 0;
+          buyWeights.push({ key, label, weight: w, triggered: trig, score: trig ? w : 0 });
+        }
+        buyWeights.push({ key: 'gravity', label: '引力场', weight: 0, triggered: false, score: 0 });
+      }
+
+      // 卖出权重
+      if (!distActive) {
+        sellWeights.push({ key: 'distribution_required', label: '主力出货(必备条件)', weight: 0, triggered: false, score: 0 });
+      } else {
+        const factors: [string, string, number, boolean][] = [
+          ['distribution_active', '主力出货活跃', 0, distActive],
+          ['main_out_signal', '主力进出死叉', 0, mainInCrossDown],
+          ['cyw_cross_ma_down', 'CYW下穿MA', 0, cywCrossDown],
+          ['volume_stagnation', '放量滞涨', 3, false],
+          ['price_cross_ma5_down', '价格下穿MA5', 2, sn.price_cross_ma5_down],
+          ['avg_price_overbought_fix', '均价超买回落', 2, sn.deviation_overbought && sn.deviation_peaking],
+          ['macd_death_cross', 'MACD死叉', 2, macdDeathCross],
+          ['rsi_overbought', 'RSI超买', 2, rsiOverbought],
+        ];
+        let sellScore = 0;
+        for (const [key, label, w, trig] of factors) {
+          sellScore += trig ? w : 0;
+          sellWeights.push({ key, label, weight: w, triggered: trig, score: trig ? w : 0 });
+        }
+        sellWeights.push({ key: 'gravity', label: '引力场', weight: 0, triggered: false, score: 0 });
+      }
+
+      setHoveredWeightDetails({
+        buy: buyWeights,
+        sell: sellWeights,
+        supportForce: 0,
+        pressureForce: 0,
+        signalType: 'none',
+      });
     }
   };
 
   // ── 渲染数据 ──
   const renderData = useCallback(
     (data: IntradayDataResponse, date: string) => {
-      const chart = chartRef.current;
-      const volChart = volumeChartRef.current;
-      const candleSeries = candleSeriesRef.current;
-      const volSeries = volumeSeriesRef.current;
-      if (!chart || !volChart || !candleSeries || !volSeries) return;
+      const container = chartContainerRef.current;
+      const volContainer = volumeContainerRef.current;
+      if (!container || !volContainer) return;
 
-      // 清理旧标记
-      if (seriesMarkersRef.current) {
-        try {
-          seriesMarkersRef.current.setMarkers([]);
-          seriesMarkersRef.current.detach();
-        } catch (e) { /* ignore */ }
+      // ── 销毁旧图表以完全重置内部状态（包括用户手动调整的 scale）──
+      if (chartRef.current) {
+        if (timeSyncSubRef.current) timeSyncSubRef.current();
+        try { chartRef.current.remove(); } catch (e) { /* ignore */ }
+        chartRef.current = null;
+        candleSeriesRef.current = null;
+        chipAreaRef.current = null;
+        avgPriceLineRef.current = null;
+        priceRangeSeriesRef.current = null;
         seriesMarkersRef.current = null;
+        refLineSeriesRef.current = [];
+        refLinePriceLinesRef.current = [];
       }
-
-      // 清理旧的十字线订阅
+      if (volumeChartRef.current) {
+        try { volumeChartRef.current.remove(); } catch (e) { /* ignore */ }
+        volumeChartRef.current = null;
+        volumeSeriesRef.current = null;
+      }
+      indicatorChartsRef.current.forEach((c) => {
+        try { c.remove(); } catch (e) { /* ignore */ }
+      });
+      indicatorChartsRef.current.clear();
+      indicatorSeriesRef.current.clear();
       crosshairSubsRef.current.forEach((unsub) => {
         try { unsub(); } catch (e) { /* ignore */ }
       });
       crosshairSubsRef.current = [];
+
+      // ── 清空所有容器DOM，确保完全干净（防御性措施，解决chart.remove()可能残留canvas的问题）──
+      try { container.innerHTML = ''; } catch (e) { /* ignore */ }
+      try { volContainer.innerHTML = ''; } catch (e) { /* ignore */ }
+      [absorptionContainerRef, mainInOutContainerRef, cywContainerRef, macdContainerRef, rsiContainerRef].forEach((ref) => {
+        if (ref.current) {
+          try { ref.current.innerHTML = ''; } catch (e) { /* ignore */ }
+        }
+      });
+
+      // ── 创建全新图表 ──
+      const chart = lightweightCharts.createChart(container, {
+        width: container.clientWidth,
+        height: CHART_HEIGHT,
+        layout: {
+          background: { type: 'solid', color: '#1a1a2e' } as any,
+          textColor: '#d1d4dc',
+          attributionLogo: false,
+        },
+        grid: {
+          vertLines: { color: '#2b2b43' },
+          horzLines: { color: '#2b2b43' },
+        },
+        rightPriceScale: {
+          scaleMargins: { top: 0.1, bottom: 0.1 },
+          borderVisible: false,
+        },
+        crosshair: {
+          mode: 1,
+          vertLine: { color: '#9B7DFF', width: 1, style: 2 },
+          horzLine: { color: '#9B7DFF', width: 1, style: 2 },
+        },
+        localization: {
+          timeFormatter,
+        },
+        timeScale: {
+          timeVisible: true,
+          secondsVisible: false,
+          tickMarkFormatter: (time: number) => {
+            const d = new Date(time * 1000);
+            const h = String(d.getHours()).padStart(2, '0');
+            const m = String(d.getMinutes()).padStart(2, '0');
+            return `${h}:${m}`;
+          },
+          barSpacing: 8,
+        },
+        handleScroll: {},
+        handleScale: {},
+      });
+      chartRef.current = chart;
+
+      const volChart = lightweightCharts.createChart(volContainer, {
+        width: volContainer.clientWidth,
+        height: 100,
+        layout: {
+          background: { type: 'solid', color: '#1a1a2e' } as any,
+          textColor: '#d1d4dc',
+          attributionLogo: false,
+        },
+        grid: {
+          vertLines: { color: '#2b2b43' },
+          horzLines: { color: '#2b2b43' },
+        },
+        rightPriceScale: {
+          borderVisible: false,
+        },
+        crosshair: {
+          mode: 0,
+        },
+        localization: {
+          timeFormatter,
+        },
+        timeScale: {
+          timeVisible: false,
+          secondsVisible: false,
+          tickMarkFormatter: () => '',
+        },
+        handleScroll: {},
+        handleScale: {},
+      });
+      const volSeries = volChart.addSeries(lightweightCharts.HistogramSeries, {
+        color: '#66666688',
+        priceFormat: { type: 'volume', precision: 0, minMove: 1 },
+      });
+      volumeChartRef.current = volChart;
+      volumeSeriesRef.current = volSeries;
+
+      // 同步主图和成交量图的时间轴范围
+      const syncTimeRange = () => {
+        if (isTimeSyncingRef.current) return;
+        isTimeSyncingRef.current = true;
+        try {
+          const range = chart.timeScale().getVisibleRange();
+          if (range) {
+            volChart.timeScale().setVisibleRange(range);
+            indicatorChartsRef.current.forEach((ic) => {
+              try { ic.timeScale().setVisibleRange(range); } catch (e) { /* ignore */ }
+            });
+          }
+        } catch (e) { /* ignore */ }
+        setTimeout(() => { isTimeSyncingRef.current = false; }, 0);
+      };
+      chart.timeScale().subscribeVisibleTimeRangeChange(syncTimeRange);
+      timeSyncSubRef.current = () => {
+        chart.timeScale().unsubscribeVisibleTimeRangeChange(syncTimeRange);
+      };
 
       const klines = convertKlineData(data.kline_data, date);
       klineRawDataRef.current = klines;
@@ -546,35 +812,11 @@ const IntradayPage: React.FC = () => {
       const flatCount = klines.filter((k) => k.open === k.high && k.high === k.low && k.low === k.close).length;
       const isTencentData = klines.length > 10 && flatCount / klines.length > 0.95;
 
-      // 设置K线：腾讯数据用白色细实线，非腾讯数据用K线
-      if (isTencentData) {
-        // 重新创建 series: 替换 Candlestick 为 Line
-        chart.removeSeries(candleSeries);
-        const lineSeries = chart.addSeries(lightweightCharts.LineSeries, {
-          color: '#EEEEEE',
-          lineWidth: 2,
-          priceLineVisible: false,
-          lastValueVisible: false,
-          crosshairMarkerVisible: false,
-        });
-        lineSeries.setData(
-          klines.map((k) => ({
-            time: k.time as any,
-            value: k.close,
-          })),
-        );
-        candleSeriesRef.current = lineSeries as any;
-      } else {
-        // 常规 K 线
-        candleSeries.setData(
-          klines.map((k) => ({
-            time: k.time as any,
-            open: k.open,
-            high: k.high,
-            low: k.low,
-            close: k.close,
-          })),
-        );
+      // 总是重建主系列以重置价格 scale，避免手动调整后切换股票 scale 不重置
+      // 注意：分时白线延迟添加，待筹码区色带先添加后再添加，使白线处于最上层
+      if (candleSeriesRef.current) {
+        try { chart.removeSeries(candleSeriesRef.current); } catch (e) { /* ignore */ }
+        candleSeriesRef.current = null;
       }
 
       volSeries.setData(
@@ -594,6 +836,10 @@ const IntradayPage: React.FC = () => {
         try { chart.removeSeries(avgPriceLineRef.current); } catch (e) { /* ignore */ }
         avgPriceLineRef.current = null;
       }
+      if (priceRangeSeriesRef.current) {
+        try { chart.removeSeries(priceRangeSeriesRef.current); } catch (e) { /* ignore */ }
+        priceRangeSeriesRef.current = null;
+      }
       const avgPriceData = klines.filter((k: any) => k.avgPrice != null).map((k: any) => ({
         time: k.time,
         value: k.avgPrice,
@@ -611,7 +857,7 @@ const IntradayPage: React.FC = () => {
         avgPriceLineRef.current = avgSeries;
       }
 
-      // ── 支撑位/压力位参考线 ──
+      // ── 支撑位/压力位参考线清理 ──
       refLineSeriesRef.current.forEach((s) => {
         try { chart.removeSeries(s); } catch (e) { /* ignore */ }
       });
@@ -620,19 +866,18 @@ const IntradayPage: React.FC = () => {
         const cs = candleSeriesRef.current;
         if (cs) {
           refLinePriceLinesRef.current.forEach((pl) => {
-            try { cs.removePriceLine(pl); } catch (e) { /* ignore */ }
+            try { (cs as any).removePriceLine(pl); } catch (e) { /* ignore */ }
           });
           refLinePriceLinesRef.current = [];
         }
       }
-      // 清理筹码区色带
       if (chipAreaRef.current) {
         try { chart.removeSeries(chipAreaRef.current); } catch (e) { /* ignore */ }
         chipAreaRef.current = null;
       }
+
+      // ── 筹码密集区色带（最先添加到底层，避免遮挡分时白线）──
       if (data.reference_lines && data.reference_lines.length > 0) {
-        const cs = candleSeriesRef.current;
-        // 筹码密集区色带（两个PriceLine之间的半透明区域）
         const chipUpper = data.reference_lines.find((rl) => rl.id === 'chip_upper');
         const chipLower = data.reference_lines.find((rl) => rl.id === 'chip_lower');
         if (chipUpper && chipLower && klines.length > 0) {
@@ -651,52 +896,185 @@ const IntradayPage: React.FC = () => {
           areaSeries.setData(areaData);
           chipAreaRef.current = areaSeries;
         }
-        if (cs) {
-          data.reference_lines.forEach((rl) => {
-            const ls: 0 | 1 | 2 | 3 | 4 = rl.style === 'dashed' ? 2 : (rl.style === 'dotted' ? 1 : 0);
-            const priceLine = cs.createPriceLine({
-              price: rl.price,
-              color: rl.color,
-              lineWidth: 1,
-              lineStyle: ls,
-              axisLabelVisible: true,
-              title: rl.label,
-            });
-            refLinePriceLinesRef.current.push(priceLine);
+      }
+
+      // ── 隐藏参考线图层：支撑/压力位 PriceLine 附着于此类（位于底层，白线在其上方）──
+      if (data.reference_lines && data.reference_lines.length > 0) {
+        const refLayer = chart.addSeries(lightweightCharts.LineSeries, {
+          lineVisible: false,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          crosshairMarkerVisible: false,
+        } as any);
+        refLayer.setData(
+          klines.map((k) => ({
+            time: k.time as any,
+            value: k.close,
+          })),
+        );
+        refLineSeriesRef.current.push(refLayer);
+
+        data.reference_lines.forEach((rl) => {
+          const ls: 0 | 1 | 2 | 3 | 4 = rl.style === 'dashed' ? 2 : (rl.style === 'dotted' ? 1 : 0);
+          const priceLine = refLayer.createPriceLine({
+            price: rl.price,
+            color: rl.color,
+            lineWidth: 1,
+            lineStyle: ls,
+            axisLabelVisible: true,
+            title: rl.label,
           });
-        }
+          refLinePriceLinesRef.current.push(priceLine);
+        });
+      }
+
+      // ── 分时白线/K线（在参考线图层之后添加，使其始终处于最上层，仅次于箭头标记）──
+      if (isTencentData) {
+        const lineSeries = chart.addSeries(lightweightCharts.LineSeries, {
+          color: '#EEEEEE',
+          lineWidth: 2,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          crosshairMarkerVisible: false,
+        });
+        lineSeries.setData(
+          klines.map((k) => ({
+            time: k.time as any,
+            value: k.close,
+          })),
+        );
+        candleSeriesRef.current = lineSeries as any;
+      } else {
+        const newCandleSeries = chart.addSeries(lightweightCharts.CandlestickSeries, {
+          upColor: '#FF4444',
+          downColor: '#44AA44',
+          borderDownColor: '#44AA44',
+          borderUpColor: '#FF4444',
+          wickDownColor: '#44AA44',
+          wickUpColor: '#FF4444',
+          priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
+        });
+        newCandleSeries.setData(
+          klines.map((k) => ({
+            time: k.time as any,
+            open: k.open,
+            high: k.high,
+            low: k.low,
+            close: k.close,
+          })),
+        );
+        candleSeriesRef.current = newCandleSeries;
       }
 
       chart.timeScale().fitContent();
 
+      // ── 设置初始价格范围为昨收的±10%（受 toggle 控制）──
+      if (priceRangeEnabledRef.current) {
+        const prevCloseRef = (data.reference_lines || []).find((rl: any) => rl.id === 'prev_close');
+        if (prevCloseRef && klines.length >= 2) {
+          const prevClose = prevCloseRef.price;
+          const ycLow = prevClose * 0.9;
+          const ycHigh = prevClose * 1.1;
+          const firstTime = klines[0].time;
+          const lastTime = klines[klines.length - 1].time;
+          if (firstTime != null && lastTime != null) {
+            const ghostSeries = chart.addSeries(lightweightCharts.LineSeries, {
+              lineVisible: false,
+              priceLineVisible: false,
+              lastValueVisible: false,
+              crosshairMarkerVisible: false,
+            } as any);
+            ghostSeries.setData([
+              { time: firstTime as any, value: ycLow },
+              { time: lastTime as any, value: ycHigh },
+            ]);
+            priceRangeSeriesRef.current = ghostSeries;
+          }
+        }
+      }
+
       // ── 构建快照数据：融合K线和指标子图 ──
       const buildSnapshot = () => {
-        const map = new Map<number, { dominant_power: number; main_in: number; main_out: number; CYW: number; CYW_MA: number }>();
+        const map = new Map<number, {
+          dominant_power: number; main_in: number; main_out: number;
+          CYW: number; CYW_MA: number; absorption: number;
+          close: number; ma5: number; ma20: number; deviation_pct: number;
+          DIF: number; DEA: number; MACD_Bar: number; RSI: number;
+        }>();
         (data.indicator_sub_charts || []).forEach((sc) => {
           (sc.lines || []).forEach((line) => {
             (line.data || []).forEach((pt: any) => {
               const ms = parseTimestamp(pt.time, date);
               const t = Math.floor(ms / 1000);
               if (t <= 0) return;
-              if (!map.has(t)) map.set(t, { dominant_power: NaN, main_in: NaN, main_out: NaN, CYW: NaN, CYW_MA: NaN });
+              if (!map.has(t)) map.set(t, {
+                dominant_power: NaN, main_in: NaN, main_out: NaN,
+                CYW: NaN, CYW_MA: NaN, absorption: NaN,
+                close: NaN, ma5: NaN, ma20: NaN, deviation_pct: NaN,
+                DIF: NaN, DEA: NaN, MACD_Bar: NaN, RSI: NaN,
+              });
               const entry = map.get(t)!;
               if (line.name === 'dominant_power') entry.dominant_power = pt.value;
               else if (line.name === 'main_in') entry.main_in = pt.value;
               else if (line.name === 'main_out') entry.main_out = pt.value;
               else if (line.name === 'CYW') entry.CYW = pt.value;
               else if (line.name === 'CYW_MA') entry.CYW_MA = pt.value;
+              else if (line.name === 'absorption') entry.absorption = pt.value;
+              else if (line.name === 'close') entry.close = pt.value;
+              else if (line.name === 'ma5') entry.ma5 = pt.value;
+              else if (line.name === 'ma20') entry.ma20 = pt.value;
+              else if (line.name === 'deviation_pct') entry.deviation_pct = pt.value;
+              else if (line.name === 'DIF') entry.DIF = pt.value;
+              else if (line.name === 'DEA') entry.DEA = pt.value;
+              else if (line.name === 'MACD_Bar') entry.MACD_Bar = pt.value;
+              else if (line.name === 'RSI') entry.RSI = pt.value;
             });
           });
         });
-        snapshotRef.current = Array.from(map.entries())
+        const OVERSOLD = -2.5;
+        const OVERBOUGHT = 2.5;
+        const RSI_OVERSOLD = 30;
+        const RSI_OVERBOUGHT = 70;
+        const raw = Array.from(map.entries())
           .sort((a, b) => a[0] - b[0])
           .map(([time, v]) => ({ time, ...v }));
+        snapshotRef.current = raw.map((cur, i) => {
+          const prev = i > 0 ? raw[i - 1] : null;
+          const absorption_val = isNaN(cur.absorption) ? 0 : cur.absorption;
+          const dev = isNaN(cur.deviation_pct) ? 0 : cur.deviation_pct;
+          const prevDev = prev && !isNaN(prev.deviation_pct) ? prev.deviation_pct : 0;
+          const curDif = isNaN(cur.DIF) ? 0 : cur.DIF;
+          const curDea = isNaN(cur.DEA) ? 0 : cur.DEA;
+          const prevDif = prev && !isNaN(prev.DIF) ? prev.DIF : 0;
+          const prevDea = prev && !isNaN(prev.DEA) ? prev.DEA : 0;
+          const curRsi = isNaN(cur.RSI) ? 50 : cur.RSI;
+          return {
+            ...cur,
+            absorption_active: absorption_val > 0,
+            distribution_active: absorption_val < 0,
+            price_above_ma5: !isNaN(cur.close) && !isNaN(cur.ma5) ? cur.close > cur.ma5 : false,
+            price_above_ma20: !isNaN(cur.close) && !isNaN(cur.ma20) ? cur.close > cur.ma20 : false,
+            price_cross_ma5_up: prev ? (prev.close <= prev.ma5 && cur.close > cur.ma5) : false,
+            price_cross_ma5_down: prev ? (prev.close >= prev.ma5 && cur.close < cur.ma5) : false,
+            deviation_oversold: dev <= OVERSOLD,
+            deviation_overbought: dev >= OVERBOUGHT,
+            deviation_narrowing: dev < 0 && dev > OVERSOLD && Math.abs(dev) < Math.abs(prevDev),
+            deviation_peaking: dev > 0 && dev < OVERBOUGHT && Math.abs(dev) < Math.abs(prevDev),
+            macd_golden_cross: prev ? (prevDif <= prevDea && curDif > curDea) : false,
+            macd_death_cross: prev ? (prevDif >= prevDea && curDif < curDea) : false,
+            rsi_oversold: curRsi <= RSI_OVERSOLD,
+            rsi_overbought: curRsi >= RSI_OVERBOUGHT,
+          };
+        });
       };
       buildSnapshot();
 
       // ── 主图十字线联动 ──
       const mainHandleCrosshairMove = (param: any) => {
-        if (isCrosshairUpdatingRef.current) return;
+        if (isCrosshairUpdatingRef.current) {
+          if (param.time) computeSignalsAtTime(param.time);
+          return;
+        }
         isCrosshairUpdatingRef.current = true;
         try {
           currentCrosshairTimeRef.current = param.time;
@@ -742,7 +1120,10 @@ const IntradayPage: React.FC = () => {
       // ── 成交量图十字线联动 ──
       if (volChart && volSeries) {
         const volHandleCrosshairMove = (param: any) => {
-          if (isCrosshairUpdatingRef.current) return;
+          if (isCrosshairUpdatingRef.current) {
+            if (param.time) computeSignalsAtTime(param.time);
+            return;
+          }
           isCrosshairUpdatingRef.current = true;
           try {
             currentCrosshairTimeRef.current = param.time;
@@ -788,6 +1169,8 @@ const IntradayPage: React.FC = () => {
       // ── 指标子图 ──
       const containerMap: Array<{ id: string; ref: React.RefObject<HTMLDivElement | null> }> = [
         { id: 'absorption', ref: absorptionContainerRef },
+        { id: 'macd', ref: macdContainerRef },
+        { id: 'rsi', ref: rsiContainerRef },
         { id: 'main_in_out', ref: mainInOutContainerRef },
         { id: 'cyw', ref: cywContainerRef },
       ];
@@ -812,6 +1195,7 @@ const IntradayPage: React.FC = () => {
           layout: {
             background: { type: 'solid', color: '#1a1a2e' } as any,
             textColor: '#d1d4dc',
+            attributionLogo: false,
           },
           grid: {
             vertLines: { color: '#2b2b43' },
@@ -840,8 +1224,8 @@ const IntradayPage: React.FC = () => {
         const lineSeriesList: any[] = [];
 
         for (const line of sc.lines) {
-          // 主力吸筹使用柱状图样式（紫色吸筹柱），与可视化标签页保持一致
           if (sc.id === 'absorption') {
+            if (!line.data || line.data.length === 0) continue;
             const hs = subChart.addSeries(lightweightCharts.HistogramSeries, {
               color: '#AA44FF',
               priceFormat: { type: 'volume' },
@@ -861,6 +1245,83 @@ const IntradayPage: React.FC = () => {
 
             hs.setData(points);
             lineSeriesList.push(hs);
+          } else if (sc.id === 'macd') {
+            if (!line.data || line.data.length === 0) continue;
+            const pts = line.data
+              .filter((pt: any) => pt.time)
+              .map((pt: any) => {
+                const ms = parseTimestamp(pt.time, date);
+                return { time: Math.floor(ms / 1000) as any, value: pt.value };
+              })
+              .sort((a: any, b: any) => (a.time as number) - (b.time as number));
+            if (line.name === 'DIF' && pts.length > 0) {
+              const ls = subChart.addSeries(lightweightCharts.LineSeries, {
+                color: '#FFFFFF',
+                lineWidth: 1,
+                priceLineVisible: false,
+                lastValueVisible: false,
+              });
+              ls.setData(pts);
+              lineSeriesList.push(ls);
+            } else if (line.name === 'DEA' && pts.length > 0) {
+              const ls = subChart.addSeries(lightweightCharts.LineSeries, {
+                color: '#FFD700',
+                lineWidth: 1,
+                priceLineVisible: false,
+                lastValueVisible: false,
+              });
+              ls.setData(pts);
+              lineSeriesList.push(ls);
+            } else if (line.name === 'MACD_Bar' && pts.length > 0) {
+              const barPoints = pts.map((p: any) => ({
+                ...p,
+                color: p.value >= 0 ? '#FF4444' : '#44FF44',
+              }));
+              const hs = subChart.addSeries(lightweightCharts.HistogramSeries, {
+                priceFormat: { type: 'volume' },
+              } as any);
+              hs.setData(barPoints);
+              lineSeriesList.push(hs);
+            }
+          } else if (sc.id === 'rsi') {
+            if (!line.data || line.data.length === 0) continue;
+            const pts = line.data
+              .filter((pt: any) => pt.time)
+              .map((pt: any) => {
+                const ms = parseTimestamp(pt.time, date);
+                return { time: Math.floor(ms / 1000) as any, value: pt.value };
+              })
+              .sort((a: any, b: any) => (a.time as number) - (b.time as number));
+            if (line.name === 'RSI' && pts.length > 0) {
+              const ls = subChart.addSeries(lightweightCharts.LineSeries, {
+                color: '#4488FF',
+                lineWidth: 1,
+                priceLineVisible: false,
+                lastValueVisible: false,
+              });
+              ls.setData(pts);
+              lineSeriesList.push(ls);
+            } else if ((line.name === 'rsi_overbought' || line.name === 'RSI_Overbought') && pts.length > 0) {
+              const ls = subChart.addSeries(lightweightCharts.LineSeries, {
+                color: '#FF444488',
+                lineWidth: 1,
+                lineStyle: 2,
+                priceLineVisible: false,
+                lastValueVisible: false,
+              });
+              ls.setData(pts);
+              lineSeriesList.push(ls);
+            } else if ((line.name === 'rsi_oversold' || line.name === 'RSI_Oversold') && pts.length > 0) {
+              const ls = subChart.addSeries(lightweightCharts.LineSeries, {
+                color: '#44FF4488',
+                lineWidth: 1,
+                lineStyle: 2,
+                priceLineVisible: false,
+                lastValueVisible: false,
+              });
+              ls.setData(pts);
+              lineSeriesList.push(ls);
+            }
           } else {
             const ls = subChart.addSeries(lightweightCharts.LineSeries, {
               color: line.color,
@@ -896,7 +1357,10 @@ const IntradayPage: React.FC = () => {
 
         // 子图十字线联动
         const subHandleCrosshairMove = (param: any) => {
-          if (isCrosshairUpdatingRef.current) return;
+          if (isCrosshairUpdatingRef.current) {
+            if (param.time) computeSignalsAtTime(param.time);
+            return;
+          }
           isCrosshairUpdatingRef.current = true;
           try {
             currentCrosshairTimeRef.current = param.time;
@@ -972,38 +1436,41 @@ const IntradayPage: React.FC = () => {
         indicatorSeriesRef.current.set(sc.id, lineSeriesList);
       }
 
-      // ── 信号标记 ──
-      const markers: lightweightCharts.SeriesMarker<lightweightCharts.Time>[] = [];
-      for (const sig of data.signals) {
-        // 将 trigger_time 转为 Unix 秒
-        const sigMs = parseTimestamp(sig.trigger_time, date);
-        const sigUnix = Math.floor(sigMs / 1000);
-        if (sigUnix <= 0) continue;
-
-        if (sig.signal_type === 'buy') {
-          markers.push({
-            time: sigUnix as any,
-            position: 'belowBar',
-            color: '#FF2222',
-            shape: 'arrowUp',
-            text: `买 ${signalLevel(sig.confidence).label}`,
-            size: 2 + (sig.confidence * 2),
-          });
-        } else {
-          markers.push({
-            time: sigUnix as any,
-            position: 'aboveBar',
-            color: '#22DD44',
-            shape: 'arrowDown',
-            text: `卖 ${signalLevel(sig.confidence).label}`,
-            size: 2 + (sig.confidence * 2),
-          });
+      // ── 直接在 renderData 中创建信号标记，避免时序问题 ──
+      const markSeries = candleSeriesRef.current;
+      if (markSeries) {
+        if (seriesMarkersRef.current) {
+          try { seriesMarkersRef.current.setMarkers([]); } catch (e) { /* ignore */ }
+          try { seriesMarkersRef.current.detach(); } catch (e) { /* ignore */ }
+          seriesMarkersRef.current = null;
         }
-      }
-
-      // 创建新标记
-      if (markers.length > 0) {
-        seriesMarkersRef.current = createSeriesMarkers(candleSeries, markers as any);
+        const signalsForMarkers = filteredSignalsRef.current;
+        const markers: lightweightCharts.SeriesMarker<lightweightCharts.Time>[] = [];
+        for (const sig of signalsForMarkers) {
+          const sigMs = parseTimestamp(sig.trigger_time, date);
+          const sigUnix = Math.floor(sigMs / 1000);
+          if (sigUnix <= 0) continue;
+          if (sig.signal_type === 'buy') {
+            markers.push({
+              time: sigUnix as any,
+              position: 'belowBar',
+              color: '#FF2222',
+              shape: 'arrowUp',
+              text: '',
+              size: 1,
+            });
+          } else {
+            markers.push({
+              time: sigUnix as any,
+              position: 'aboveBar',
+              color: '#22DD44',
+              shape: 'arrowDown',
+              text: '',
+              size: 1,
+            });
+          }
+        }
+        seriesMarkersRef.current = createSeriesMarkers(markSeries, markers as any);
       }
     },
     [],
@@ -1012,9 +1479,9 @@ const IntradayPage: React.FC = () => {
   // 当数据变更时重新渲染
   useEffect(() => {
     if (intradayData) {
-      renderData(intradayData, intradayData.date || selectedDate);
+      renderData(intradayData, intradayData.date || todayDateStr);
     }
-  }, [intradayData, selectedDate, renderData]);
+  }, [intradayData, renderData, priceRangeEnabled]);
 
   // ── 搜索 ──
   const handleSearch = useCallback(async () => {
@@ -1024,14 +1491,14 @@ const IntradayPage: React.FC = () => {
 
     setIsLoading(true);
     try {
-      const dateParam = selectedDate.replace(/-/g, '');
+      const dateParam = todayDateStr.replace(/-/g, '');
       const data = await getIntradayData(stockCode, dateParam);
       setIntradayData(data);
       setInputError(undefined);
 
       // 保存搜索历史
       try {
-        await saveSearchHistory(stockCode, data.stock_name || '', selectedDate);
+        await saveSearchHistory(stockCode, data.stock_name || '', todayDateStr);
         await loadHistory();
       } catch (e) {
         console.warn('保存搜索历史失败:', e);
@@ -1043,7 +1510,7 @@ const IntradayPage: React.FC = () => {
     } finally {
       setIsLoading(false);
     }
-  }, [stockCode, selectedDate, loadHistory]);
+  }, [stockCode, loadHistory]);
 
   // 回车搜索
   const handleKeyDown = useCallback(
@@ -1059,10 +1526,9 @@ const IntradayPage: React.FC = () => {
   const handleHistoryClick = useCallback(
     async (item: SearchHistoryItem) => {
       setStockCode(item.stock_code);
-      if (item.date) setSelectedDate(item.date);
       setIsLoading(true);
       try {
-        const dateParam = (item.date || selectedDate).replace(/-/g, '');
+        const dateParam = todayDateStr.replace(/-/g, '');
         const data = await getIntradayData(item.stock_code, dateParam);
         setIntradayData(data);
         setInputError(undefined);
@@ -1139,6 +1605,7 @@ const IntradayPage: React.FC = () => {
       return true;
     });
   }, [intradayData?.signals, activeFilters]);
+  filteredSignalsRef.current = filteredSignals;
 
   // 根据当前筛选后的信号计算模拟收益（仅考虑显示中的做T记录）
   const filteredSimulReturn = useMemo(() => {
@@ -1155,6 +1622,48 @@ const IntradayPage: React.FC = () => {
       }
     }
     return total;
+  }, [filteredSignals]);
+
+  // ── 信号标记（受筛选条件调控，随 filteredSignals 变化而更新）──
+  useEffect(() => {
+    const series = candleSeriesRef.current;
+    if (!series) return;
+
+    if (seriesMarkersRef.current) {
+      try {
+        seriesMarkersRef.current.setMarkers([]);
+        seriesMarkersRef.current.detach();
+      } catch (e) { /* ignore */ }
+      seriesMarkersRef.current = null;
+    }
+
+    const markers: lightweightCharts.SeriesMarker<lightweightCharts.Time>[] = [];
+    for (const sig of filteredSignals) {
+      const sigMs = parseTimestamp(sig.trigger_time, todayDateStr);
+      const sigUnix = Math.floor(sigMs / 1000);
+      if (sigUnix <= 0) continue;
+
+      if (sig.signal_type === 'buy') {
+        markers.push({
+          time: sigUnix as any,
+          position: 'belowBar',
+          color: '#FF2222',
+          shape: 'arrowUp',
+          text: '',
+          size: 1,
+        });
+      } else {
+        markers.push({
+          time: sigUnix as any,
+          position: 'aboveBar',
+          color: '#22DD44',
+          shape: 'arrowDown',
+          text: '',
+          size: 1,
+        });
+      }
+    }
+    seriesMarkersRef.current = createSeriesMarkers(series, markers as any);
   }, [filteredSignals]);
 
   // ── 侧边栏 ──
@@ -1257,13 +1766,22 @@ const IntradayPage: React.FC = () => {
           </div>
 
           <div className="flex-shrink-0">
-            <input
-              type="date"
-              value={selectedDate}
-              onChange={(e) => setSelectedDate(e.target.value)}
+            <button
+              type="button"
+              onClick={() => setPriceRangeEnabled((v) => !v)}
               disabled={isLoading}
-              className="input-terminal bg-[#1a1a2e] text-sm border border-white/10 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-cyan/50"
-            />
+              title={priceRangeEnabled ? '昨收±10%范围已激活，点击关闭' : '自动范围，点击激活昨收±10%'}
+              className={`text-sm border rounded-lg px-3 py-2 transition-colors flex items-center gap-1.5 ${
+                priceRangeEnabled
+                  ? 'bg-cyan/15 border-cyan/40 text-cyan hover:bg-cyan/20'
+                  : 'bg-[#1a1a2e] border-white/10 text-muted hover:border-white/20'
+              }`}
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
+              </svg>
+              <span>{priceRangeEnabled ? '昨收±10%' : '自动范围'}</span>
+            </button>
           </div>
 
           <button
@@ -1387,7 +1905,7 @@ const IntradayPage: React.FC = () => {
                           总分: {hoveredWeightDetails.buy.reduce((s, d) => s + d.score, 0)}
                           /{hoveredWeightDetails.buy.reduce((s, d) => s + d.weight, 0)}
                         </div>
-                        {hoveredWeightDetails.buy.map((d) => (
+                        {[...hoveredWeightDetails.buy].sort((a, b) => (b.triggered ? 1 : 0) - (a.triggered ? 1 : 0)).map((d) => (
                           <div key={d.key} className="flex items-center justify-between text-[11px]">
                             <span className={d.triggered ? 'text-white/80' : 'text-muted/40'}>
                               {d.triggered ? '✓' : '✗'} {d.label}
@@ -1423,7 +1941,7 @@ const IntradayPage: React.FC = () => {
                           总分: {hoveredWeightDetails.sell.reduce((s, d) => s + d.score, 0)}
                           /{hoveredWeightDetails.sell.reduce((s, d) => s + d.weight, 0)}
                         </div>
-                        {hoveredWeightDetails.sell.map((d) => (
+                        {[...hoveredWeightDetails.sell].sort((a, b) => (b.triggered ? 1 : 0) - (a.triggered ? 1 : 0)).map((d) => (
                           <div key={d.key} className="flex items-center justify-between text-[11px]">
                             <span className={d.triggered ? 'text-white/80' : 'text-muted/40'}>
                               {d.triggered ? '✓' : '✗'} {d.label}
@@ -1494,6 +2012,10 @@ const IntradayPage: React.FC = () => {
                             ch.setCrosshairPosition(sig.price, targetSec as any, candleSeriesRef.current!);
                           }
                         } catch (e) { /* ignore */ }
+                        currentCrosshairTimeRef.current = targetSec as any;
+                        syncCrosshairToSubCharts(targetSec as any);
+                        computeSignalsAtTime(targetSec as any);
+                        setIsCrosshairActive(true);
                         setHoveredWeightDetails({
                           buy: sig.buy_weight_details || [],
                           sell: sig.sell_weight_details || [],
@@ -1559,6 +2081,8 @@ const IntradayPage: React.FC = () => {
                 {intradayData?.indicator_sub_charts?.filter((sc) => sc.id !== 'price_ma' && sc.id !== 'avg_price_deviation').map((sc) => {
                   const containerRefMap: Record<string, React.RefObject<HTMLDivElement | null>> = {
                     absorption: absorptionContainerRef,
+                    macd: macdContainerRef,
+                    rsi: rsiContainerRef,
                     main_in_out: mainInOutContainerRef,
                     cyw: cywContainerRef,
                   };
@@ -1573,11 +2097,17 @@ const IntradayPage: React.FC = () => {
                             const displaySignal = isCrosshairActive
                               ? (crosshairSignals[sc.id] || '')
                               : sc.signal_text;
-                            return displaySignal ? (
-                              <span className="text-[11px] font-semibold text-accent px-1.5 py-px rounded bg-accent/10">
-                                {displaySignal}
-                              </span>
-                            ) : null;
+                            return displaySignal ? (() => {
+                              const sc = signalColor(displaySignal);
+                              return (
+                                <span
+                                  className="text-[11px] font-semibold px-1.5 py-px rounded"
+                                  style={{ color: sc.fg, backgroundColor: sc.bg }}
+                                >
+                                  {displaySignal}
+                                </span>
+                              );
+                            })() : null;
                           })()}
                         </div>
                         <div className="flex items-center gap-2">

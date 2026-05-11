@@ -65,7 +65,7 @@ const KlineChart: React.FC<{
       const response = await visualizationApi.getVisualizationData(
         code,
         defaultDays,
-        ['main_capital_absorption', 'main_cost']
+        ['main_capital_absorption', 'main_capital_distribution', 'main_cost']
       );
       setVisualizationData(response);
     } catch (err) {
@@ -124,6 +124,7 @@ const KlineChart: React.FC<{
         layout: {
           background: { type: 'solid', color: '#1a1a2e' } as any,
           textColor: '#d1d4dc',
+          attributionLogo: false,
         },
         grid: {
           vertLines: { color: '#2b2b43' },
@@ -369,6 +370,7 @@ const KlineChart: React.FC<{
           layout: {
             background: { type: 'solid', color: '#1a1a2e' } as any,
             textColor: '#d1d4dc',
+            attributionLogo: false,
           },
           grid: {
             vertLines: { color: '#2b2b43' },
@@ -650,7 +652,17 @@ const KlineChart: React.FC<{
 
           <div className="flex flex-col gap-2">
             <div className="flex items-center px-1">
-              <div className="text-sm font-medium text-white">主力吸筹</div>
+              <div className="text-sm font-medium text-white">主力进出</div>
+              <div className="flex items-center gap-2 ml-3">
+                <div className="flex items-center gap-1">
+                  <span className="w-3 h-3 rounded-sm" style={{ background: '#AA44FF' }} />
+                  <span className="text-[10px] text-muted">吸筹</span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <span className="w-3 h-3 rounded-sm" style={{ background: '#44AA44' }} />
+                  <span className="text-[10px] text-muted">出货</span>
+                </div>
+              </div>
             </div>
             <div
               ref={el => { subChartContainerRefs.current['main_capital_absorption'] = el; }}

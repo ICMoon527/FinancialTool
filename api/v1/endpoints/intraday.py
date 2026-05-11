@@ -38,6 +38,7 @@ from api.v1.schemas.intraday import (
 )
 from api.v1.schemas.common import ErrorResponse
 from src.storage import DatabaseManager
+from data_provider import DataFetcherManager
 from watchdog.strategies.intraday_t0_strategy import IntradayIndicatorEngine
 
 logger = logging.getLogger(__name__)
@@ -580,6 +581,53 @@ def _compute_cyw_signal(result) -> str:
         return ''
 
 
+def _compute_macd_signal(result) -> str:
+    """计算MACD信号文本"""
+    try:
+        if 'DIF' not in result.columns or 'DEA' not in result.columns:
+            return ''
+        dif = result['DIF']
+        dea = result['DEA']
+        up = _cross_up(dif, dea)
+        down = _cross_down(dif, dea)
+        dif_vals = dif.dropna()
+        dea_vals = dea.dropna()
+        last_dif = float(dif_vals.iloc[-1]) if len(dif_vals) > 0 else 0
+        last_dea = float(dea_vals.iloc[-1]) if len(dea_vals) > 0 else 0
+        if up:
+            return 'MACD金叉 ↑'
+        elif down:
+            return 'MACD死叉 ↓'
+        elif last_dif > last_dea:
+            return 'MACD多头 ↗'
+        else:
+            return 'MACD空头 ↘'
+    except Exception as e:
+        logger.warning(f'计算MACD信号失败: {e}')
+        return ''
+
+
+def _compute_rsi_signal(result, overbought: float = 70, oversold: float = 30) -> str:
+    """计算RSI信号文本"""
+    try:
+        if 'RSI' not in result.columns:
+            return ''
+        rsi = result['RSI']
+        rsi_vals = rsi.dropna()
+        last_rsi = float(rsi_vals.iloc[-1]) if len(rsi_vals) > 0 else 50
+        if last_rsi <= oversold:
+            return 'RSI超卖 ↑'
+        elif last_rsi >= overbought:
+            return 'RSI超买 ↓'
+        elif last_rsi < 50:
+            return 'RSI偏弱 ↘'
+        else:
+            return 'RSI偏强 ↗'
+    except Exception as e:
+        logger.warning(f'计算RSI信号失败: {e}')
+        return ''
+
+
 def _generate_indicator_sub_charts(klines: list) -> list:
     """根据分时K线计算四大指标，生成子图数据
 
@@ -621,6 +669,8 @@ def _generate_indicator_sub_charts(klines: list) -> list:
 
         main_signal = _compute_main_in_out_signal(result)
         cyw_signal = _compute_cyw_signal(result)
+        macd_signal = _compute_macd_signal(result)
+        rsi_signal = _compute_rsi_signal(result, overbought=engine.rsi_overbought, oversold=engine.rsi_oversold)
 
         # ── 1. 主力吸筹 ──
         if 'absorption' in result.columns:
@@ -637,15 +687,77 @@ def _generate_indicator_sub_charts(klines: list) -> list:
                         IndicatorLine(
                             name="absorption",
                             label="吸筹",
-                            color="#44FF44",
+                            color="#AA44FF",
                             data=absorption_data,
-                        )
+                        ),
+                        IndicatorLine(
+                            name="distribution_label",
+                            label="出货",
+                            color="#44AA44",
+                            data=[],
+                        ),
                     ],
                     signal_text="",
                 )
             )
 
-        # ── 2. 主力进出 ──
+        # ── 2. MACD ──
+        macd_dif_data = []
+        macd_dea_data = []
+        macd_bar_data = []
+        if all(c in result.columns for c in ['DIF', 'DEA', 'MACD_Bar']):
+            for i in range(len(result)):
+                tl = time_labels[i] if i < len(time_labels) else ''
+                if not pd.isna(result['DIF'].iloc[i]):
+                    macd_dif_data.append(IndicatorLinePoint(time=tl, value=round(float(result['DIF'].iloc[i]), 4)))
+                if not pd.isna(result['DEA'].iloc[i]):
+                    macd_dea_data.append(IndicatorLinePoint(time=tl, value=round(float(result['DEA'].iloc[i]), 4)))
+                if not pd.isna(result['MACD_Bar'].iloc[i]):
+                    macd_bar_data.append(IndicatorLinePoint(time=tl, value=round(float(result['MACD_Bar'].iloc[i]), 4)))
+            sub_charts.append(
+                IndicatorSubChart(
+                    id="macd",
+                    label="MACD",
+                    height=110,
+                    lines=[
+                        IndicatorLine(name="DIF", label="DIF", color="#FFFFFF", data=macd_dif_data),
+                        IndicatorLine(name="DEA", label="DEA", color="#FFD700", data=macd_dea_data),
+                        IndicatorLine(name="MACD_Bar", label="MACD柱", color="#FF4444", data=macd_bar_data),
+                    ],
+                    signal_text=macd_signal,
+                )
+            )
+
+        # ── 3. RSI ──
+        rsi_data = []
+        if 'RSI' in result.columns:
+            for i in range(len(result)):
+                tl = time_labels[i] if i < len(time_labels) else ''
+                if not pd.isna(result['RSI'].iloc[i]):
+                    rsi_data.append(IndicatorLinePoint(time=tl, value=round(float(result['RSI'].iloc[i]), 2)))
+            rsi_ob_data = []
+            rsi_os_data = []
+            rsi_ob_val = engine.rsi_overbought
+            rsi_os_val = engine.rsi_oversold
+            for i in range(len(result)):
+                tl = time_labels[i] if i < len(time_labels) else ''
+                rsi_ob_data.append(IndicatorLinePoint(time=tl, value=rsi_ob_val))
+                rsi_os_data.append(IndicatorLinePoint(time=tl, value=rsi_os_val))
+            sub_charts.append(
+                IndicatorSubChart(
+                    id="rsi",
+                    label="RSI",
+                    height=110,
+                    lines=[
+                        IndicatorLine(name="RSI", label="RSI", color="#4488FF", data=rsi_data),
+                        IndicatorLine(name="rsi_overbought", label=f"超买({rsi_ob_val})", color="#FF4444", data=rsi_ob_data),
+                        IndicatorLine(name="rsi_oversold", label=f"超卖({rsi_os_val})", color="#44FF44", data=rsi_os_data),
+                    ],
+                    signal_text=rsi_signal,
+                )
+            )
+
+        # ── 4. 主力进出 ──
         main_in_data = []
         main_out_data = []
         in_out_line_data = []
@@ -672,7 +784,7 @@ def _generate_indicator_sub_charts(klines: list) -> list:
                 )
             )
 
-        # ── 3. CYW 主力控盘 ──
+        # ── 5. CYW 主力控盘 ──
         cyw_data = []
         cyw_ma_data = []
         if all(c in result.columns for c in ['CYW', 'CYW_MA']):
@@ -695,7 +807,7 @@ def _generate_indicator_sub_charts(klines: list) -> list:
                 )
             )
 
-        # ── 4. 价格均线关系 ──
+        # ── 6. 价格均线关系 ──
         ma5_data = []
         ma20_data = []
         close_data = []
@@ -722,7 +834,7 @@ def _generate_indicator_sub_charts(klines: list) -> list:
                 )
             )
 
-        # ── 5. 均价偏离度 ──
+        # ── 7. 均价偏离度 ──
         deviation_data = []
         if 'deviation_pct' in result.columns:
             for i in range(len(result)):
@@ -1027,9 +1139,17 @@ def get_intraday_data(
         elif len(date_str) == 8:
             date_str = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
 
+        # 获取股票名称（优先从 Stock Pool 数据库）
+        try:
+            fetcher_manager = DataFetcherManager()
+            stock_name = fetcher_manager.get_stock_name(code, skip_realtime=True) or ""
+        except Exception as e:
+            logger.warning(f"获取股票名称失败 {code}: {e}")
+            stock_name = ""
+
         return IntradayDataResponse(
             stock_code=code,
-            stock_name="",
+            stock_name=stock_name,
             date=date_str,
             kline_data=kline_points,
             signals=signals,
