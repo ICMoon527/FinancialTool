@@ -8,9 +8,12 @@ import {
   getSearchHistory,
   saveSearchHistory,
   deleteSearchHistory,
+  getBatchStatus,
+  updateSearchHistoryTimestamp,
   type IntradayDataResponse,
   type IntradayKlinePoint,
   type SearchHistoryItem,
+  type StockSnapshot,
 } from '../api/intraday';
 import type { WeightContribution, IntradaySignal } from '../api/intraday';
 import { validateStockCode } from '../utils/validation';
@@ -166,11 +169,14 @@ const IntradayPage: React.FC = () => {
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [intradayData, setIntradayData] = useState<IntradayDataResponse | null>(null);
   const [searchHistory, setSearchHistory] = useState<SearchHistoryItem[]>([]);
+  const [selectedHistoryId, setSelectedHistoryId] = useState<number | null>(null);
+  const [historySnapshots, setHistorySnapshots] = useState<Record<string, StockSnapshot>>({});
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [priceRangeEnabled, setPriceRangeEnabled] = useState(true);
   const todayDateStr = useMemo(() => formatDate(new Date()), []);
   const [crosshairSignals, setCrosshairSignals] = useState<Record<string, string>>({});
   const [isCrosshairActive, setIsCrosshairActive] = useState(false);
+  const [crosshairMacdSum, setCrosshairMacdSum] = useState<number | null>(null);
   const [hoveredWeightDetails, setHoveredWeightDetails] = useState<{
     buy: WeightContribution[];
     sell: WeightContribution[];
@@ -239,6 +245,82 @@ const IntradayPage: React.FC = () => {
   useEffect(() => {
     loadHistory();
   }, [loadHistory]);
+
+  // ── 搜索历史股票实时行情轮询（仅盘中） ──
+  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const searchHistoryRef = useRef<SearchHistoryItem[]>([]);
+  searchHistoryRef.current = searchHistory;
+
+  const isTradingTime = useCallback(() => {
+    const now = new Date();
+    const day = now.getDay();
+    if (day === 0 || day === 6) return false;
+    const totalMinutes = now.getHours() * 60 + now.getMinutes();
+    return totalMinutes >= 570 && totalMinutes <= 900; // 9:30 - 15:00
+  }, []);
+
+  const fetchAndUpdate = useCallback(async () => {
+    const codes = searchHistoryRef.current.map(h => h.stock_code);
+    if (codes.length === 0) return;
+    const currentCode = intradayData?.stock_code || '';
+    try {
+      const resp = await getBatchStatus(codes, currentCode);
+      setHistorySnapshots(resp.snapshots);
+      if (resp.current_updated && resp.current_full_data && currentCode) {
+        setIntradayData(resp.current_full_data);
+      }
+    } catch {
+      // 静默失败，不打扰用户
+    }
+  }, [intradayData?.stock_code]);
+
+  const fetchAndUpdateRef = useRef(fetchAndUpdate);
+  fetchAndUpdateRef.current = fetchAndUpdate;
+
+  const stopPolling = useCallback(() => {
+    if (pollingRef.current) {
+      clearInterval(pollingRef.current);
+      pollingRef.current = null;
+    }
+  }, []);
+
+  const startPolling = useCallback(() => {
+    stopPolling();
+    if (!isTradingTime()) return; // 非交易时间不启动轮询
+    pollingRef.current = setInterval(() => {
+      if (!isTradingTime()) {
+        stopPolling(); // 收盘后自动停止
+        return;
+      }
+      fetchAndUpdateRef.current();
+    }, 30000);
+  }, [stopPolling, isTradingTime]);
+
+  // 搜索历史加载完成后首次获取行情
+  useEffect(() => {
+    if (searchHistory.length > 0) {
+      fetchAndUpdate();
+    }
+  }, [searchHistory.length, fetchAndUpdate]);
+
+  // 盘中轮询
+  useEffect(() => {
+    startPolling();
+
+    const handleVisibility = () => {
+      if (document.hidden) {
+        stopPolling();
+      } else {
+        fetchAndUpdateRef.current(); // 恢复时立即刷新
+        startPolling(); // 仅盘中会启动
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      stopPolling();
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, [startPolling, stopPolling]);
 
   // ── 初始化图表 ──
   useEffect(() => {
@@ -557,6 +639,11 @@ const IntradayPage: React.FC = () => {
 
     crosshairSignalRef.current = signals;
     setCrosshairSignals({ ...signals });
+
+    // 累计到当前时间点的MACD柱高度和
+    const macdSum = slice.reduce((sum, s) => sum + (s.MACD_Bar || 0), 0);
+    setCrosshairMacdSum(macdSum);
+
     setIsCrosshairActive(true);
 
     // 查找该时间点附近的信号
@@ -1093,6 +1180,7 @@ const IntradayPage: React.FC = () => {
           } else {
             // 离开图表，恢复最新信号
             setIsCrosshairActive(false);
+            setCrosshairMacdSum(null);
           }
         } finally {
           setTimeout(() => { isCrosshairUpdatingRef.current = false; }, 0);
@@ -1139,6 +1227,7 @@ const IntradayPage: React.FC = () => {
               computeSignalsAtTime(param.time);
             } else {
               setIsCrosshairActive(false);
+              setCrosshairMacdSum(null);
             }
           } finally {
             setTimeout(() => { isCrosshairUpdatingRef.current = false; }, 0);
@@ -1404,6 +1493,7 @@ const IntradayPage: React.FC = () => {
             } else {
               // 离开图表，恢复最新信号
               setIsCrosshairActive(false);
+              setCrosshairMacdSum(null);
             }
           } finally {
             setTimeout(() => { isCrosshairUpdatingRef.current = false; }, 0);
@@ -1526,12 +1616,20 @@ const IntradayPage: React.FC = () => {
   const handleHistoryClick = useCallback(
     async (item: SearchHistoryItem) => {
       setStockCode(item.stock_code);
+      setSelectedHistoryId(item.id);
       setIsLoading(true);
       try {
         const dateParam = todayDateStr.replace(/-/g, '');
         const data = await getIntradayData(item.stock_code, dateParam);
         setIntradayData(data);
         setInputError(undefined);
+        // 更新搜索历史时间戳，使该纪录置顶
+        try {
+          await updateSearchHistoryTimestamp(item.id);
+          await loadHistory();
+        } catch {
+          // 即使更新失败也不影响用户使用数据
+        }
       } catch (err: any) {
         console.error('获取分时数据失败:', err);
         setInputError(err.message || '获取数据失败');
@@ -1540,7 +1638,7 @@ const IntradayPage: React.FC = () => {
         setIsLoading(false);
       }
     },
-    [],
+    [todayDateStr, loadHistory],
   );
 
   // 删除历史
@@ -1642,6 +1740,17 @@ const IntradayPage: React.FC = () => {
     return { totalReturn, unsettledBuy };
   }, [filteredSignals]);
 
+  // MACD柱高度和（红柱为正，绿柱为负）
+  const macdBarSum = useMemo(() => {
+    const macdSubChart = intradayData?.indicator_sub_charts?.find(sc => sc.id === 'macd');
+    if (!macdSubChart) return 0;
+    const macdBarLine = macdSubChart.lines.find(
+      line => line.name === 'MACD柱' || line.name === 'MACD_Bar' || line.name === 'macd_bar',
+    );
+    if (!macdBarLine || !macdBarLine.data) return 0;
+    return macdBarLine.data.reduce((sum: number, pt: any) => sum + (pt.value || 0), 0);
+  }, [intradayData]);
+
   // ── 信号标记（受筛选条件调控，随 filteredSignals 变化而更新）──
   useEffect(() => {
     const series = candleSeriesRef.current;
@@ -1691,55 +1800,100 @@ const IntradayPage: React.FC = () => {
         <h3 className="text-sm font-medium text-white">搜索历史</h3>
       </div>
       <div className="overflow-y-auto px-3 py-1 h-full">
-        {isLoadingHistory && (
+        {isLoadingHistory ? (
           <div className="flex items-center justify-center py-8">
             <div className="w-5 h-5 border-2 border-cyan/20 border-t-cyan rounded-full animate-spin" />
           </div>
-        )}
-        {!isLoadingHistory && searchHistory.length === 0 && (
+        ) : searchHistory.length === 0 ? (
           <p className="text-xs text-muted text-center py-4">暂无搜索历史</p>
-        )}
-        {searchHistory.map((item) => (
-          <div
-            key={item.id}
-            className="flex items-center gap-1 py-2 border-b border-white/5 last:border-b-0 cursor-pointer hover:bg-white/5 rounded px-1"
-          >
-            <button
-              type="button"
-              className="flex-1 text-left"
-              onClick={() => handleHistoryClick(item)}
-            >
-              <div className="flex items-center justify-between gap-1.5">
-                <span className="font-medium text-white truncate text-xs">
-                  {item.stock_code}
-                </span>
-                {item.date && (
-                  <span className="flex-shrink-0 text-cyan text-xs font-medium">
-                    {item.date}
-                  </span>
-                )}
-              </div>
-              <div className="flex items-center gap-1.5 mt-0.5">
-                <span className="text-xs text-muted font-mono">
-                  {item.stock_name || '-'}
-                </span>
-              </div>
-            </button>
-            <button
-              type="button"
-              className="p-1 text-muted hover:text-danger transition-colors flex-shrink-0"
-              onClick={(e) => {
-                e.stopPropagation();
-                handleDeleteHistory(item.id);
-              }}
-              title="删除"
-            >
-              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-              </svg>
-            </button>
+        ) : (
+          <div className="space-y-2">
+            {searchHistory.map(item => {
+              const isCurrentlyDisplayed = intradayData &&
+                intradayData.stock_code === item.stock_code;
+
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => handleHistoryClick(item)}
+                  className={`history-item w-full text-left ${
+                    isCurrentlyDisplayed
+                      ? 'ring-2 ring-cyan/60 bg-cyan/10 border-transparent'
+                      : (selectedHistoryId === item.id ? 'active' : '')
+                  }`}
+                >
+                  <div className="flex items-center gap-2 w-full">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between gap-1.5">
+                        <span className="font-medium text-white truncate text-xs">
+                          {item.stock_name ? `${item.stock_name} (${item.stock_code})` : item.stock_code}
+                        </span>
+                        {isCurrentlyDisplayed && (
+                          <span className="flex-shrink-0 text-cyan text-xs font-medium">
+                            展示中
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-1.5 mt-0.5">
+                        {(() => {
+                          const snap = historySnapshots[item.stock_code];
+                          if (snap && snap.latest_price > 0) {
+                            const isUp = snap.change_pct >= 0;
+                            return (
+                              <>
+                                <span className="text-xs text-white font-mono font-medium">
+                                  ¥{snap.latest_price.toFixed(2)}
+                                </span>
+                                <span
+                                  className="text-xs font-mono font-medium"
+                                  style={{ color: isUp ? '#FF4444' : '#44FF44' }}
+                                >
+                                  {isUp ? '+' : ''}{snap.change_pct.toFixed(2)}%
+                                </span>
+                                <span className="text-xs text-muted/50">·</span>
+                                <span className="text-xs text-muted">{snap.timestamp}</span>
+                              </>
+                            );
+                          }
+                          return (
+                            <>
+                              <span className="text-xs text-muted font-mono">{item.stock_code}</span>
+                              <span className="text-xs text-muted/50">·</span>
+                              <span className="text-xs text-muted">
+                                {item.search_time ? new Date(item.search_time).toLocaleString('zh-CN') : item.date}
+                              </span>
+                            </>
+                          );
+                        })()}
+                      </div>
+                    </div>
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDeleteHistory(item.id);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.stopPropagation();
+                          handleDeleteHistory(item.id);
+                        }
+                      }}
+                      className="p-1 text-muted hover:text-danger transition-colors flex-shrink-0"
+                      title="删除"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                      </svg>
+                    </span>
+                  </div>
+                </button>
+              );
+            })}
           </div>
-        ))}
+        )}
       </div>
     </div>
   );
@@ -2140,6 +2294,20 @@ const IntradayPage: React.FC = () => {
                                 </span>
                               );
                             })() : null;
+                          })()}
+                          {sc.id === 'macd' && (() => {
+                            const displaySum = isCrosshairActive && crosshairMacdSum !== null ? crosshairMacdSum : macdBarSum;
+                            return (
+                              <span
+                                className="text-[10px] font-mono font-medium px-1.5 py-px rounded"
+                                style={{
+                                  color: displaySum >= 0 ? '#FF4444' : '#44FF44',
+                                  backgroundColor: displaySum >= 0 ? 'rgba(255,68,68,0.1)' : 'rgba(68,255,68,0.1)',
+                                }}
+                              >
+                                柱高和 {displaySum >= 0 ? '+' : ''}{displaySum.toFixed(2)}
+                              </span>
+                            );
                           })()}
                         </div>
                         <div className="flex items-center gap-2">

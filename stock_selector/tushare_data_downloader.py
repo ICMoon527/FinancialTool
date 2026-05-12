@@ -101,7 +101,7 @@ class TushareDataDownloader:
         根据日期范围动态计算 Tushare 批量大小
         
         公式：batch_size = floor(5000 / 交易日数量)
-        边界：最小 1 只，最大 100 只
+        边界：最小 1 只
         
         Args:
             start_date: 开始日期
@@ -134,27 +134,31 @@ class TushareDataDownloader:
         
         return batch_size
     
-    def _save_stock_data(self, df: pd.DataFrame, stock_code: str):
+    def _save_stock_data(self, df: pd.DataFrame, stock_code: str) -> Optional[date]:
         """
-        保存单只股票的数据到数据库
-        
+        保存单只股票的数据到数据库，返回实际保存的最大数据日期。
+
         Args:
             df: 股票数据 DataFrame
             stock_code: 股票代码
+
+        Returns:
+            实际保存的最大数据日期，若未保存任何数据则返回 None
         """
         if df is None or df.empty:
-            return
-        
+            return None
+
         saved_count = 0
-        
+        actual_max_date = None
+
         try:
             with self.db_manager.session_scope() as session:
                 record_dates = []
                 valid_rows = []
-                
+
                 for _, row in df.iterrows():
                     code = stock_code
-                    
+
                     record_date = None
                     if 'date' in row:
                         d = row['date']
@@ -164,14 +168,14 @@ class TushareDataDownloader:
                             record_date = d.date()
                         else:
                             record_date = d
-                    
+
                     if record_date:
                         record_dates.append(record_date)
                         valid_rows.append((record_date, row))
-                
+
                 if not record_dates:
-                    return
-                
+                    return None
+
                 existing_records = {
                     r.date: r for r in session.execute(
                         select(StockDaily).where(
@@ -182,13 +186,13 @@ class TushareDataDownloader:
                         )
                     ).scalars().all()
                 }
-                
+
                 for record_date, row in valid_rows:
                     try:
                         code = stock_code
-                        
+
                         existing = existing_records.get(record_date)
-                        
+
                         if existing:
                             if 'open' in row:
                                 existing.open = row.get('open')
@@ -227,11 +231,15 @@ class TushareDataDownloader:
                     except Exception as row_error:
                         logger.warning(f"Failed to process row for {stock_code} on {record_date}: {row_error}, skipping this record")
                         continue
-                
-                logger.debug(f"Saved {saved_count} records for {stock_code}")
-        
+
+                actual_max_date = max(record_dates)
+                logger.debug(f"Saved {saved_count} records for {stock_code}, 实际最新日期: {actual_max_date}")
+
         except Exception as e:
             logger.error(f"Error saving data for {stock_code}: {e}")
+            return None
+
+        return actual_max_date
     
     def _download_single_stock_from_tushare(
         self,
@@ -262,13 +270,14 @@ class TushareDataDownloader:
             )
             
             if df is not None and not df.empty:
-                self._save_stock_data(df, stock_code)
-                self.update_tracker.update_record(
-                    stock_code,
-                    data_start_date=start_date,
-                    data_end_date=end_date
-                )
-                logger.debug(f"Successfully downloaded {stock_code} from Tushare")
+                actual_max_date = self._save_stock_data(df, stock_code)
+                if actual_max_date is not None:
+                    self.update_tracker.update_record(
+                        stock_code,
+                        data_start_date=start_date,
+                        data_end_date=actual_max_date
+                    )
+                logger.debug(f"Successfully downloaded {stock_code} from Tushare, 实际最新日期: {actual_max_date}")
                 return True, len(df), "", False
             else:
                 return False, 0, "No data returned from Tushare", False
@@ -503,76 +512,153 @@ class TushareDataDownloader:
         logger.info(f"使用日历日计算（1.5倍）：日期范围 {start_date} 至 {end_date}")
         return start_date, end_date, trading_days
     
-    def _process_batch_data(self, df: pd.DataFrame, batch_stocks: List[str], start_date: date, end_date: date, stats: Dict[str, any]):
+    def _process_batch_data(self, batch_df: pd.DataFrame, batch_stocks: List[str], start_date: date, end_date: date, stats: Dict[str, any]):
         """
-        处理批量获取的数据，拆分并保存到每只股票
-        
+        批量处理数据并保存到数据库（性能优化版）。
+
+        使用单次数据库会话完成所有股票的数据保存：
+        - 一次查询获取所有已存在记录
+        - 批量插入新记录（session.add_all）
+        - SQLAlchemy 自动追踪对已有记录的修改
+        - 单次事务提交
+
         Args:
-            df: 批量获取的 DataFrame
+            batch_df: 批量获取的 DataFrame
             batch_stocks: 本批股票代码列表
             start_date: 开始日期
             end_date: 结束日期
             stats: 统计信息字典
         """
-        if df is None or df.empty:
+        if batch_df is None or batch_df.empty:
             return
-        
-        # 标准化数据
-        df = df.copy()
-        
+
+        batch_df = batch_df.copy()
+
         # 列名映射
         column_mapping = {
             'trade_date': 'date',
             'vol': 'volume',
         }
-        df = df.rename(columns=column_mapping)
-        
+        batch_df = batch_df.rename(columns=column_mapping)
+
         # 转换日期格式（YYYYMMDD -> YYYY-MM-DD）
-        if 'date' in df.columns:
-            df['date'] = pd.to_datetime(df['date'], format='%Y%m%d').dt.date
-        
+        if 'date' in batch_df.columns:
+            batch_df['date'] = pd.to_datetime(batch_df['date'], format='%Y%m%d').dt.date
+
         # 成交量单位转换（Tushare 的 vol 单位是手，需要转换为股）
-        if 'volume' in df.columns:
-            df['volume'] = df['volume'] * 100
-        
+        if 'volume' in batch_df.columns:
+            batch_df['volume'] = batch_df['volume'] * 100
+
         # 成交额单位转换（Tushare 的 amount 单位是千元，转换为元）
-        if 'amount' in df.columns:
-            df['amount'] = df['amount'] * 1000
-        
+        if 'amount' in batch_df.columns:
+            batch_df['amount'] = batch_df['amount'] * 1000
+
         # 从 ts_code 中提取股票代码（去掉 .SH/.SZ）
-        if 'ts_code' in df.columns:
-            df['code'] = df['ts_code'].apply(lambda x: x.split('.')[0])
-        
-        # 按股票代码分组处理
-        for stock_code in batch_stocks:
-            try:
-                # 筛选当前股票的数据
-                stock_df = df[df['code'] == stock_code].copy()
-                
-                if stock_df is not None and not stock_df.empty:
-                    # 保存数据
-                    self._save_stock_data(stock_df, stock_code)
-                    self.update_tracker.update_record(
-                        stock_code,
-                        data_start_date=start_date,
-                        data_end_date=end_date
+        if 'ts_code' in batch_df.columns:
+            batch_df['code'] = batch_df['ts_code'].apply(lambda x: x.split('.')[0])
+
+        # 过滤出实际存在于 DataFrame 中的股票代码
+        codes_in_df = [c for c in batch_stocks if c in batch_df['code'].values]
+
+        if not codes_in_df:
+            return
+
+        actual_max_dates = {}  # {code: max_date}
+
+        try:
+            with self.db_manager.session_scope() as session:
+                # 批量查询这批股票在日期范围内的已有记录（一次查询）
+                stmt = select(StockDaily).where(
+                    and_(
+                        StockDaily.code.in_(codes_in_df),
+                        StockDaily.date.between(start_date, end_date)
                     )
-                    stats['stocks_success'] += 1
-                    stats['total_records'] += len(stock_df)
-                    logger.debug(f"Successfully processed {stock_code} from batch")
-                else:
-                    # 批量获取没有这只股票的数据 - 可能是新股、停牌、退市等
-                    # 直接跳过，不尝试其他数据源（避免浪费时间）
-                    logger.debug(f"No data for {stock_code} in batch, skipping (may be new/stopped/delisted)")
-                    stats['stocks_skipped'] = stats.get('stocks_skipped', 0) + 1
-            except Exception as e:
-                logger.error(f"Error processing {stock_code} from batch: {e}")
-                # 异常时也直接跳过，不尝试其他数据源
-                stats['stocks_failed'] += 1
-                stats['failed_stocks'].append({
-                    'code': stock_code,
-                    'error': str(e)
-                })
+                )
+                existing_records = session.execute(stmt).scalars().all()
+                # 构建 (code, date) -> record 的快速查找字典
+                existing_dict = {(r.code, r.date): r for r in existing_records}
+
+                new_records = []  # 批量收集待插入的新记录
+
+                for stock_code in codes_in_df:
+                    stock_df = batch_df[batch_df['code'] == stock_code]
+                    if stock_df.empty:
+                        continue
+
+                    stock_max_date = None
+                    stock_saved = 0
+
+                    for _, row in stock_df.iterrows():
+                        record_date = row['date']
+                        if not isinstance(record_date, date):
+                            continue
+
+                        if stock_max_date is None or record_date > stock_max_date:
+                            stock_max_date = record_date
+
+                        key = (stock_code, record_date)
+
+                        if key in existing_dict:
+                            # 更新已有记录（SQLAlchemy 自动追踪变更）
+                            record = existing_dict[key]
+                            if 'open' in row and row['open'] is not None:
+                                record.open = row['open']
+                            if 'high' in row and row['high'] is not None:
+                                record.high = row['high']
+                            if 'low' in row and row['low'] is not None:
+                                record.low = row['low']
+                            if 'close' in row and row['close'] is not None:
+                                record.close = row['close']
+                            if 'volume' in row and row['volume'] is not None:
+                                record.volume = row['volume']
+                            if 'amount' in row and row['amount'] is not None:
+                                record.amount = row['amount']
+                            if 'pct_chg' in row and row['pct_chg'] is not None:
+                                record.pct_chg = row['pct_chg']
+                            if 'volume_ratio' in row and row['volume_ratio'] is not None:
+                                record.volume_ratio = row['volume_ratio']
+                            stock_saved += 1
+                        else:
+                            # 收集新记录，最后批量插入
+                            new_records.append(StockDaily(
+                                code=stock_code,
+                                date=record_date,
+                                open=row.get('open'),
+                                high=row.get('high'),
+                                low=row.get('low'),
+                                close=row.get('close'),
+                                volume=row.get('volume', 0),
+                                amount=row.get('amount', 0),
+                                pct_chg=row.get('pct_chg'),
+                                volume_ratio=row.get('volume_ratio') if 'volume_ratio' in row else None
+                            ))
+                            stock_saved += 1
+
+                    if stock_saved > 0 and stock_max_date is not None:
+                        actual_max_dates[stock_code] = stock_max_date
+                        stats['stocks_success'] += 1
+                        stats['total_records'] += stock_saved
+                    else:
+                        stats['stocks_skipped'] = stats.get('stocks_skipped', 0) + 1
+
+                # 批量插入所有新记录
+                if new_records:
+                    session.add_all(new_records)
+
+            # session_scope 在此自动提交
+
+            # 批量更新 tracker（使用独立的 session）
+            if actual_max_dates:
+                self.update_tracker.update_records_batch(
+                    list(actual_max_dates.keys()),
+                    data_start_date=start_date,
+                    data_end_date=end_date
+                )
+
+        except Exception as e:
+            logger.error(f"批量处理数据失败: {e}")
+            stats['stocks_failed'] += len(codes_in_df)
+            stats['failed_stocks'].extend([{'code': code, 'error': str(e)} for code in codes_in_df])
     
     def _process_efinance_batch_data(self, batch_result: Dict[str, pd.DataFrame], batch_stocks: List[str], start_date: date, end_date: date, stats: Dict[str, any]):
         """
@@ -593,16 +679,17 @@ class TushareDataDownloader:
         for stock_code, df in batch_result.items():
             if df is not None and not df.empty:
                 try:
-                    self._save_stock_data(df, stock_code)
-                    self.update_tracker.update_record(
-                        stock_code,
-                        data_start_date=start_date,
-                        data_end_date=end_date
-                    )
+                    actual_max_date = self._save_stock_data(df, stock_code)
+                    if actual_max_date is not None:
+                        self.update_tracker.update_record(
+                            stock_code,
+                            data_start_date=start_date,
+                            data_end_date=actual_max_date
+                        )
                     stats['stocks_success'] += 1
                     stats['total_records'] += len(df)
                     success_stocks.add(stock_code)
-                    logger.debug(f"Successfully processed {stock_code} from efinance batch")
+                    logger.debug(f"Successfully processed {stock_code} from efinance batch, 实际最新日期: {actual_max_date}")
                 except Exception as e:
                     logger.warning(f"Error processing {stock_code} from efinance batch: {e}, will retry with other sources")
         
@@ -623,6 +710,103 @@ class TushareDataDownloader:
                         'error': error
                     })
     
+    def _group_stocks_by_update_need(
+        self, stock_codes: List[str], target_start: date, target_end: date, full_days: int
+    ) -> Dict[str, dict]:
+        """
+        使用交易日历精确计算每只股票需要的交易日数量，按需分组下载。
+
+        分组阈值（交易日数）：
+          - skip: 0 天（最后更新 ≥ 今日）
+          - micro: 1~5 天，batch_size = 5000 // 5 = 1000
+          - small: 6~20 天，batch_size = 5000 // 20 = 250
+          - medium: 21~60 天，batch_size = 5000 // 60 = 83
+          - full: 61+ 天 / 新股票，batch_size = 5000 // full_days
+
+        Args:
+            stock_codes: 待处理的股票代码列表
+            target_start: 全量更新的目标起始日期
+            target_end: 目标结束日期（通常为今日）
+            full_days: 全量更新的交易日数量（用于计算 full 组的 batch_size）
+
+        Returns:
+            分组信息字典，key 为组名，value 包含 stocks、start_date、end_date、batch_size
+        """
+        groups = {
+            "micro":  {"stocks": [], "min_start": None, "max_trading_days": 5},
+            "small":  {"stocks": [], "min_start": None, "max_trading_days": 20},
+            "medium": {"stocks": [], "min_start": None, "max_trading_days": 60},
+            "full":   {"stocks": [], "min_start": target_start, "max_trading_days": max(full_days, 150)},
+        }
+        skipped_count = 0
+        incremental_count = 0
+        full_count = 0
+
+        for code in stock_codes:
+            try:
+                actual_start, actual_end, is_incremental = self.update_tracker.determine_update_range(
+                    code, target_start, target_end
+                )
+            except Exception as e:
+                logger.warning(f"获取 {code} 更新范围失败: {e}，回退到全量")
+                actual_start, actual_end, is_incremental = target_start, target_end, False
+
+            if actual_start is None:
+                # 已是最新，无需更新
+                skipped_count += 1
+                continue
+
+            if not is_incremental:
+                # 新股票或无记录，全量下载
+                groups["full"]["stocks"].append(code)
+                full_count += 1
+                continue
+
+            # 增量更新：用交易日历精确计算需要的交易日数量
+            try:
+                trading_days = self._estimate_trading_days(actual_start, target_end)
+            except Exception:
+                trading_days = (target_end - actual_start).days + 1
+
+            if trading_days <= 5:
+                group_key = "micro"
+            elif trading_days <= 20:
+                group_key = "small"
+            elif trading_days <= 60:
+                group_key = "medium"
+            else:
+                group_key = "full"
+
+            groups[group_key]["stocks"].append(code)
+            if groups[group_key]["min_start"] is None or actual_start < groups[group_key]["min_start"]:
+                groups[group_key]["min_start"] = actual_start
+            incremental_count += 1
+
+        # 构建返回结果
+        result = {}
+        for group_key, group_data in groups.items():
+            if not group_data["stocks"]:
+                continue
+
+            start = group_data["min_start"] if group_data["min_start"] is not None else target_start
+            max_td = group_data["max_trading_days"]
+            batch_size = max(1, 5000 // max_td)
+
+            result[group_key] = {
+                "stocks": group_data["stocks"],
+                "start_date": start,
+                "end_date": target_end,
+                "batch_size": batch_size,
+                "max_trading_days": max_td,
+            }
+
+        logger.info(
+            f"股票分组完成: skip={skipped_count}, micro={len(groups['micro']['stocks'])}, "
+            f"small={len(groups['small']['stocks'])}, medium={len(groups['medium']['stocks'])}, "
+            f"full={len(groups['full']['stocks'])}"
+        )
+        return result
+
     def download_data(
         self,
         stock_codes: Optional[List[str]] = None,
@@ -672,79 +856,122 @@ class TushareDataDownloader:
             'total_stocks': len(stock_codes),
             'stocks_success': 0,
             'stocks_failed': 0,
+            'stocks_skipped': 0,
             'total_records': 0,
             'failed_stocks': [],
             'start_time': datetime.now(),
-            'end_time': None
+            'end_time': None,
+            'group_details': {}
         }
-        
-        total_batches = (len(stock_codes) + tushare_batch_size - 1) // tushare_batch_size
-        
+
+        # 修复 tracker 中可能虚高的记录日期（对比数据库实际数据）
+        repaired = self.update_tracker.repair_invalid_dates(stock_codes)
+        if repaired > 0:
+            logger.info(f"修复了 {repaired} 条虚高的 tracker 记录")
+
+        # 按增量需求分组
+        groups = self._group_stocks_by_update_need(stock_codes, start_date, end_date, days)
+
         print("\n" + "=" * 80)
         print(f"开始下载：{len(stock_codes)} 只股票，{days} 个交易日数据")
         if filtered_count > 0:
             print(f"（已过滤 {filtered_count} 只北交所股票）")
-        print(f"Tushare批量：{tushare_batch_size} 只/批")
-        print(f"共 {total_batches} 批")
         print(f"日期范围：{start_date} 至 {end_date}")
         print(f"数据源：仅使用 Tushare 批量获取，失败则直接停止")
+        print("=" * 80)
+        for gk, gi in groups.items():
+            print(f"  [{gk}] {len(gi['stocks'])} 只，{gi['max_trading_days']} 天，{gi['batch_size']} 只/批，"
+                  f"日期: {gi['start_date']} ~ {gi['end_date']}")
         print("=" * 80 + "\n")
-        
+
         try:
+            total_batches = sum(
+                (len(gi['stocks']) + gi['batch_size'] - 1) // gi['batch_size']
+                for gi in groups.values()
+            )
             pbar = tqdm(range(total_batches), desc="总体进度", unit="batch")
-            for batch_idx in pbar:
-                # 检查停止标志
-                if self._should_stop:
-                    logger.info("下载被用户终止")
-                    break
-                
-                start_idx = batch_idx * tushare_batch_size
-                end_idx = min((batch_idx + 1) * tushare_batch_size, len(stock_codes))
-                batch_stocks = stock_codes[start_idx:end_idx]
-                
-                logger.debug(f"处理第 {batch_idx + 1}/{total_batches} 批：{len(batch_stocks)} 只股票")
-                
-                # 策略 1: 只使用 Tushare 批量获取，失败则直接停止
-                pbar.set_description(f"总体进度 | 数据源: Tushare")
-                # 检查 Tushare 是否需要等待配额
-                need_to_wait = self.tushare_fetcher.will_need_to_wait()
-                
-                if need_to_wait:
-                    logger.warning(f"Tushare 需要等待配额，跳过此批")
-                    stats['stocks_failed'] += len(batch_stocks)
-                    stats['failed_stocks'].extend([
-                        {'code': code, 'error': 'Tushare 需要等待配额'} 
-                        for code in batch_stocks
-                    ])
+            batch_count = 0
+
+            for group_name, group_info in groups.items():
+                group_stocks = group_info["stocks"]
+                group_start = group_info["start_date"]
+                group_end = group_info["end_date"]
+                group_batch_size = group_info["batch_size"]
+                group_start_str = group_start.strftime('%Y-%m-%d')
+                group_end_str = group_end.strftime('%Y-%m-%d')
+
+                if not group_stocks:
                     continue
-                
-                try:
-                    logger.debug(f"Trying Tushare batch download for {len(batch_stocks)} stocks")
-                    batch_df = self.tushare_fetcher.get_daily_data_batch(
-                        batch_stocks,
-                        start_date=start_str,
-                        end_date=end_str
-                    )
-                    
-                    if batch_df is not None and not batch_df.empty:
-                        # 成功批量获取，处理数据
-                        logger.debug(f"Tushare batch download successful, processing {len(batch_df)} records")
-                        self._process_batch_data(batch_df, batch_stocks, start_date, end_date, stats)
-                        continue
-                    else:
-                        logger.warning(f"Tushare 返回空数据，此批失败")
+
+                group_success = 0
+                group_failed = 0
+                group_batches = (len(group_stocks) + group_batch_size - 1) // group_batch_size
+
+                for batch_idx_in_group in range(group_batches):
+                    if self._should_stop:
+                        logger.info("下载被用户终止")
+                        break
+
+                    start_idx = batch_idx_in_group * group_batch_size
+                    end_idx = min((batch_idx_in_group + 1) * group_batch_size, len(group_stocks))
+                    batch_stocks = group_stocks[start_idx:end_idx]
+
+                    pbar.set_description(f"[{group_name}] {len(batch_stocks)} 只")
+                    need_to_wait = self.tushare_fetcher.will_need_to_wait()
+
+                    if need_to_wait:
+                        logger.warning(f"Tushare 需要等待配额，跳过此批")
                         stats['stocks_failed'] += len(batch_stocks)
+                        group_failed += len(batch_stocks)
                         stats['failed_stocks'].extend([
-                            {'code': code, 'error': 'Tushare 返回空数据'} 
+                            {'code': code, 'error': 'Tushare 需要等待配额'}
                             for code in batch_stocks
                         ])
-                except Exception as e:
-                    logger.warning(f"Tushare 批量获取失败: {e}，此批失败")
-                    stats['stocks_failed'] += len(batch_stocks)
-                    stats['failed_stocks'].extend([
-                        {'code': code, 'error': f'Tushare 批量获取失败: {e}'} 
-                        for code in batch_stocks
-                    ])
+                        pbar.update(1)
+                        batch_count += 1
+                        continue
+
+                    try:
+                        batch_df = self.tushare_fetcher.get_daily_data_batch(
+                            batch_stocks,
+                            start_date=group_start_str,
+                            end_date=group_end_str
+                        )
+
+                        if batch_df is not None and not batch_df.empty:
+                            before_success = stats['stocks_success']
+                            self._process_batch_data(
+                                batch_df, batch_stocks, group_start, group_end, stats
+                            )
+                            batch_added = stats['stocks_success'] - before_success
+                            group_success += batch_added
+                        else:
+                            logger.warning(f"Tushare 返回空数据，此批失败")
+                            stats['stocks_failed'] += len(batch_stocks)
+                            group_failed += len(batch_stocks)
+                            stats['failed_stocks'].extend([
+                                {'code': code, 'error': 'Tushare 返回空数据'}
+                                for code in batch_stocks
+                            ])
+                    except Exception as e:
+                        logger.warning(f"Tushare 批量获取失败: {e}，此批失败")
+                        stats['stocks_failed'] += len(batch_stocks)
+                        group_failed += len(batch_stocks)
+                        stats['failed_stocks'].extend([
+                            {'code': code, 'error': f'Tushare 批量获取失败: {e}'}
+                            for code in batch_stocks
+                        ])
+
+                    pbar.update(1)
+                    batch_count += 1
+
+                stats['group_details'][group_name] = {
+                    'stocks': len(group_stocks),
+                    'success': group_success,
+                    'failed': group_failed,
+                    'trading_days': group_info['max_trading_days'],
+                    'date_range': f"{group_start_str} ~ {group_end_str}",
+                }
         
         except KeyboardInterrupt:
             print("\n\n下载被用户中断")
@@ -760,9 +987,12 @@ class TushareDataDownloader:
         print("=" * 80)
         print(f"总股票数：{stats['total_stocks']}")
         print(f"成功：{stats['stocks_success']}")
-        print(f"跳过（无数据）：{stats.get('stocks_skipped', 0)}")
+        print(f"跳过（已最新）：{stats.get('stocks_skipped', 0)}")
         print(f"失败：{stats['stocks_failed']}")
         print(f"总记录数：{stats['total_records']}")
+        for gk, gi in stats.get('group_details', {}).items():
+            print(f"  [{gk}] {gi['stocks']} 只 ({gi['trading_days']}天) | "
+                  f"成功={gi['success']} 失败={gi['failed']} | {gi['date_range']}")
         print(f"总耗时：{duration:.2f} 秒")
         
         if stats['failed_stocks']:

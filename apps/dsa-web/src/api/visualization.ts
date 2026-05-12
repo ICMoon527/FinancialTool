@@ -1,4 +1,5 @@
 import apiClient from './index';
+import type { StockSnapshot } from './intraday';
 
 export type KLineDataPoint = {
   date: string;
@@ -150,5 +151,13 @@ export const visualizationApi = {
     });
 
     return response.data as ChipDistributionResponse;
+  },
+
+  async getBatchStatus(stockCodes: string[]): Promise<{ snapshots: Record<string, StockSnapshot> }> {
+    const response = await apiClient.post('/api/v1/intraday/batch-status', {
+      stock_codes: stockCodes,
+      current_code: '',
+    });
+    return response.data;
   },
 };

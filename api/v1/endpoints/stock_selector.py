@@ -287,7 +287,7 @@ async def _update_realtime_stock_data(stock_codes: Optional[list[str]], service:
     
     # 处理股票代码列表
     if stock_codes is None:
-        stock_code_name_pairs = get_all_stock_code_name_pairs()
+        stock_code_name_pairs = get_all_stock_code_name_pairs(force_refresh=True)
         # 过滤ST股票
         stock_code_name_pairs = filter_st_stocks(stock_code_name_pairs)
         # 过滤特定板块的股票代码（科创板、创业板、北交所等）
@@ -296,7 +296,7 @@ async def _update_realtime_stock_data(stock_codes: Optional[list[str]], service:
     else:
         # 如果用户指定了股票代码，先获取它们的名称，然后过滤ST股票
         try:
-            all_pairs = get_all_stock_code_name_pairs()
+            all_pairs = get_all_stock_code_name_pairs(force_refresh=True)
             code_to_name = {code: name for code, name in all_pairs}
             # 过滤ST股票
             filtered_codes = []

@@ -24,15 +24,17 @@ class MainCapitalDistribution(BaseIndicator):
     - VAR8：最终主力出货值（负值表示出货信号）
     """
 
-    def __init__(self, filter_threshold: float = 1.01):
+    def __init__(self, filter_threshold: float = 1.01, weakness_threshold: float = 0.30):
         """
         初始化主力出货指标
 
         Args:
             filter_threshold: 信号过滤阈值，绝对值小于此值的信号将被置零（默认 1.01）
+            weakness_threshold: 收盘弱势阈值，上影线占比小于此值不显示出货柱（默认 0.30）
         """
         super().__init__()
         self.filter_threshold = filter_threshold
+        self.weakness_threshold = weakness_threshold
 
     def _sma(self, data: pd.Series, period: int, weight: int) -> pd.Series:
         """计算简单移动平均（SMA）"""
@@ -89,6 +91,8 @@ class MainCapitalDistribution(BaseIndicator):
         var8_value = np.where(var8_condition, (var4 + var6 * 2) / 2, 0)
         var8 = self._ema(pd.Series(var8_value, index=data.index), 3) / 618 * var7
 
+        upper_shadow = (high - close) / (high - data["Low"] + 1e-10)
+        var8 = np.where(upper_shadow < self.weakness_threshold, 0, var8)
         var8 = np.where(np.abs(var8) < self.filter_threshold, 0, var8)
 
         result = data.copy()

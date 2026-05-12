@@ -109,6 +109,23 @@ export interface SearchHistoryResponse {
   total: number;
 }
 
+export interface StockSnapshot {
+  stock_code: string;
+  stock_name: string;
+  latest_price: number;
+  change_pct: number;
+  open_price: number;
+  high: number;
+  low: number;
+  timestamp: string;
+}
+
+export interface BatchStatusResponse {
+  snapshots: Record<string, StockSnapshot>;
+  current_updated: boolean;
+  current_full_data: IntradayDataResponse | null;
+}
+
 // ============================================================
 // API 函数
 // ============================================================
@@ -157,4 +174,23 @@ export async function saveSearchHistory(
 export async function deleteSearchHistory(id: number): Promise<boolean> {
   const resp = await fetch(`${API_BASE}/history/${id}`, { method: 'DELETE' });
   return resp.ok;
+}
+
+export async function updateSearchHistoryTimestamp(id: number): Promise<SearchHistoryItem> {
+  const resp = await fetch(`${API_BASE}/history/${id}/timestamp`, { method: 'PUT' });
+  if (!resp.ok) throw new Error('更新时间戳失败');
+  return resp.json();
+}
+
+export async function getBatchStatus(
+  stockCodes: string[],
+  currentCode: string,
+): Promise<BatchStatusResponse> {
+  const resp = await fetch(`${API_BASE}/batch-status`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ stock_codes: stockCodes, current_code: currentCode }),
+  });
+  if (!resp.ok) throw new Error(`批量状态查询失败: ${resp.status}`);
+  return resp.json();
 }

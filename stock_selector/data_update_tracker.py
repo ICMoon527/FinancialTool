@@ -306,6 +306,65 @@ class DataUpdateTracker:
         except Exception as e:
             logger.error(f"Failed to mark {stock_code} as inactive: {e}")
 
+    def repair_invalid_dates(self, stock_codes: Optional[List[str]] = None) -> int:
+        """
+        修复 tracker 中虚高的 last_updated_date。
+
+        对比 StockUpdateRecord.last_updated_date 与 StockDaily 中的实际 MAX(date)，
+        若 tracker 记录日期大于实际数据日期，修正为实际值。
+
+        Args:
+            stock_codes: 待修复的股票代码列表，为 None 时修复全部
+
+        Returns:
+            修复的记录数
+        """
+        from src.storage import StockDaily
+
+        repaired_count = 0
+        try:
+            with self.db_manager.get_session() as session:
+                # 查询待修复的记录
+                stmt = select(StockUpdateRecord).where(StockUpdateRecord.last_updated_date.isnot(None))
+                if stock_codes:
+                    stmt = stmt.where(StockUpdateRecord.code.in_(stock_codes))
+                records = session.execute(stmt).scalars().all()
+
+                for record in records:
+                    # 查询该股票在 StockDaily 中的实际最大日期
+                    max_date_stmt = (
+                        select(StockDaily.date)
+                        .where(StockDaily.code == record.code)
+                        .order_by(StockDaily.date.desc())
+                        .limit(1)
+                    )
+                    max_date_result = session.execute(max_date_stmt).scalar_one_or_none()
+
+                    if max_date_result is None:
+                        # 没有任何数据，跳过
+                        continue
+
+                    actual_max_date = max_date_result if isinstance(max_date_result, date) else max_date_result
+
+                    if record.last_updated_date > actual_max_date:
+                        old_date = record.last_updated_date
+                        record.last_updated_date = actual_max_date
+                        repaired_count += 1
+                        logger.debug(
+                            f"修复 {record.code}: last_updated {old_date} -> {actual_max_date}"
+                        )
+
+                if repaired_count > 0:
+                    session.commit()
+                    logger.info(f"修复了 {repaired_count} 条 tracker 记录")
+
+        except Exception as e:
+            logger.error(f"修复 tracker 记录失败: {e}")
+            if "session" in locals():
+                session.rollback()
+
+        return repaired_count
+
 
 def get_update_tracker() -> DataUpdateTracker:
     """获取全局数据更新追踪器实例"""

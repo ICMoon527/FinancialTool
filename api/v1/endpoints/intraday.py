@@ -24,6 +24,8 @@ from sqlalchemy import text
 
 from api.deps import get_database_manager
 from api.v1.schemas.intraday import (
+    BatchStatusRequest,
+    BatchStatusResponse,
     DeleteHistoryResponse,
     IndicatorLine,
     IndicatorLinePoint,
@@ -34,6 +36,7 @@ from api.v1.schemas.intraday import (
     SearchHistoryItem,
     SearchHistoryRequest,
     SearchHistoryResponse,
+    StockSnapshot,
     WeightContribution,
 )
 from api.v1.schemas.common import ErrorResponse
@@ -1165,6 +1168,182 @@ def get_intraday_data(
         raise HTTPException(status_code=500, detail={"error": "internal_error", "message": str(e)})
 
 
+# ---------- 批量状态查询 ----------
+
+
+def _parse_sina_realtime_batch(stock_codes: list) -> dict:
+    """通过新浪接口批量获取股票实时行情
+
+    新浪接口支持逗号分隔的多股票批量查询：
+    http://hq.sinajs.cn/list=sh600519,sz000001,sh600000
+
+    Returns:
+        {stock_code: {name, price, change_pct, open, high, low, timestamp}}
+    """
+    import re
+    import requests as req
+
+    symbols = []
+    for code in stock_codes:
+        code = code.strip()
+        if code.startswith(("6", "5", "9")):
+            symbols.append(f"sh{code}")
+        else:
+            symbols.append(f"sz{code}")
+
+    if not symbols:
+        return {}
+
+    url = f"http://hq.sinajs.cn/list={','.join(symbols)}"
+    headers = {
+        "Referer": "http://finance.sina.com.cn",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    }
+
+    try:
+        r = req.get(url, headers=headers, timeout=10)
+        r.encoding = "gbk"
+        text = r.text
+    except Exception as e:
+        logger.warning(f"新浪批量行情接口请求失败: {e}")
+        return {}
+
+    result = {}
+    pattern = re.compile(r'var hq_str_(sh|sz)(\d+)="([^"]*)"')
+    for match in pattern.finditer(text):
+        prefix = match.group(1)
+        code = match.group(2)
+        data_str = match.group(3)
+        fields = data_str.split(",")
+        if len(fields) < 33:
+            continue
+
+        stock_code = code
+        try:
+            name = fields[0]
+            open_price = float(fields[1]) if fields[1] else 0.0
+            pre_close = float(fields[2]) if fields[2] else 0.0
+            price = float(fields[3]) if fields[3] else 0.0
+            high = float(fields[4]) if fields[4] else 0.0
+            low = float(fields[5]) if fields[5] else 0.0
+            change_pct = ((price - pre_close) / pre_close * 100) if pre_close > 0 else 0.0
+            timestamp = fields[31] if len(fields) > 31 else ""
+        except (ValueError, IndexError):
+            continue
+
+        result[stock_code] = {
+            "stock_code": stock_code,
+            "stock_name": name,
+            "latest_price": round(price, 2),
+            "change_pct": round(change_pct, 2),
+            "open_price": round(open_price, 2),
+            "high": round(high, 2),
+            "low": round(low, 2),
+            "timestamp": timestamp,
+        }
+
+    return result
+
+
+@router.post(
+    "/batch-status",
+    response_model=BatchStatusResponse,
+    responses={
+        200: {"description": "批量实时行情 + 可选完整分时数据"},
+    },
+    summary="批量获取搜索历史股票的实时状态",
+    description="批量获取搜索历史中所有股票的实时行情快照，同时检查当前展示股票是否有新数据需要刷新。",
+)
+def get_batch_status(
+    body: BatchStatusRequest,
+    db_manager: DatabaseManager = Depends(get_database_manager),
+) -> BatchStatusResponse:
+    """批量获取股票实时行情，并检查当前展示股票是否需要刷新"""
+    try:
+        stock_codes = [c.strip() for c in body.stock_codes if c.strip()]
+        if not stock_codes:
+            return BatchStatusResponse(snapshots={}, current_updated=False)
+
+        # 1. 批量获取实时行情
+        raw_snapshots = _parse_sina_realtime_batch(stock_codes)
+
+        snapshots: dict = {}
+        for code in stock_codes:
+            if code in raw_snapshots:
+                snapshots[code] = StockSnapshot(**raw_snapshots[code])
+            else:
+                snapshots[code] = StockSnapshot(stock_code=code)
+
+        # 2. 检查当前展示股票是否有新数据
+        current_code = body.current_code.strip()
+        current_updated = False
+        current_full_data = None
+
+        if current_code and current_code in raw_snapshots:
+            code = _normalize_stock_code(current_code)
+            sn = raw_snapshots[current_code]
+
+            # 获取分时K线，比对最新时间戳判断是否有新数据
+            try:
+                klines = _get_intraday_klines(code, None)
+                if klines:
+                    latest_kline_time = klines[-1].get("时间", "") if klines else ""
+                    latest_snapshot_time = sn.get("timestamp", "")
+                    # 比较：如果K线最新时间和快照时间接近，说明数据已同步
+                    if latest_kline_time and latest_snapshot_time:
+                        kt = latest_kline_time.replace(":", "")
+                        st = latest_snapshot_time.replace(":", "").replace(" ", "")
+                        if kt[:4] != st[:4]:
+                            current_updated = True
+                    else:
+                        current_updated = True
+
+                    if current_updated:
+                        # 注入累计分时均价
+                        _inject_avg_price(klines)
+                        # 计算参考线
+                        reference_lines = _compute_reference_lines(klines, code, db_manager, None)
+                        # 运行做T策略
+                        signals, summary = _run_t0_strategy(klines, reference_lines)
+                        # 生成指标子图
+                        indicator_sub_charts = _generate_indicator_sub_charts(klines)
+                        # 构建K线响应
+                        kline_points = [IntradayKlinePoint(**k) for k in klines]
+                        # 确定日期
+                        date_str = datetime.now().strftime("%Y-%m-%d")
+                        # 获取股票名称
+                        stock_name = sn.get("stock_name", "")
+                        if not stock_name:
+                            try:
+                                fetcher_manager = DataFetcherManager()
+                                stock_name = fetcher_manager.get_stock_name(code, skip_realtime=True) or ""
+                            except Exception:
+                                pass
+
+                        current_full_data = IntradayDataResponse(
+                            stock_code=code,
+                            stock_name=stock_name,
+                            date=date_str,
+                            kline_data=kline_points,
+                            signals=signals,
+                            reference_lines=reference_lines,
+                            indicator_sub_charts=indicator_sub_charts,
+                            signal_summary=summary,
+                        )
+            except Exception as e:
+                logger.warning(f"检查当前股票 {current_code} 更新失败: {e}")
+
+        return BatchStatusResponse(
+            snapshots=snapshots,
+            current_updated=current_updated,
+            current_full_data=current_full_data,
+        )
+
+    except Exception as e:
+        logger.error(f"批量状态查询失败: {e}", exc_info=True)
+        return BatchStatusResponse(snapshots={}, current_updated=False)
+
+
 # ---------- 搜索历史 ----------
 
 
@@ -1281,3 +1460,45 @@ def delete_search_history(
     except Exception as e:
         logger.error(f"删除搜索历史失败: {e}")
         return DeleteHistoryResponse(success=False, message=str(e))
+
+
+@router.put(
+    "/history/{history_id}/timestamp",
+    response_model=SearchHistoryItem,
+    summary="更新分时搜索历史时间戳",
+    description="将指定记录的时间戳更新为当前时间，使其在列表中置顶显示",
+)
+def update_search_history_timestamp(
+    history_id: int,
+    db_manager: DatabaseManager = Depends(get_database_manager),
+) -> SearchHistoryItem:
+    """更新时间戳使记录置顶"""
+    try:
+        now = datetime.now().isoformat()
+        with db_manager.session_scope() as session:
+            session.execute(
+                text("UPDATE intraday_search_history SET search_time = :t WHERE id = :hid"),
+                {"t": now, "hid": history_id},
+            )
+            result = session.execute(
+                text("SELECT id, stock_code, stock_name, search_date, search_time "
+                     "FROM intraday_search_history WHERE id = :hid"),
+                {"hid": history_id},
+            )
+            row = result.fetchone()
+
+        if not row:
+            raise HTTPException(status_code=404, detail=f"未找到ID为 {history_id} 的记录")
+
+        return SearchHistoryItem(
+            id=row[0],
+            stock_code=row[1],
+            stock_name=row[2] or "",
+            date=row[3] or "",
+            search_time=row[4] or "",
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"更新时间戳失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

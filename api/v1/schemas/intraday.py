@@ -133,3 +133,34 @@ class DeleteHistoryResponse(BaseModel):
 
     success: bool = True
     message: str = ""
+
+
+# ── 批量状态查询 ──
+
+
+class StockSnapshot(BaseModel):
+    """单只股票实时快照"""
+
+    stock_code: str
+    stock_name: str = ""
+    latest_price: float = 0.0
+    change_pct: float = 0.0  # 涨跌幅百分比
+    open_price: float = 0.0
+    high: float = 0.0
+    low: float = 0.0
+    timestamp: str = ""  # "HH:MM:SS"
+
+
+class BatchStatusRequest(BaseModel):
+    """批量状态查询请求"""
+
+    stock_codes: List[str] = Field(..., description="需要查询的股票代码列表")
+    current_code: str = Field("", description="当前展示的股票代码")
+
+
+class BatchStatusResponse(BaseModel):
+    """批量状态查询响应"""
+
+    snapshots: Dict[str, StockSnapshot] = Field(default_factory=dict)
+    current_updated: bool = False  # 当前展示股票是否有新数据
+    current_full_data: Optional[IntradayDataResponse] = None  # 仅 current_updated=True 时有值

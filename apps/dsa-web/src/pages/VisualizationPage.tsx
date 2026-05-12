@@ -3,6 +3,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import * as lightweightCharts from 'lightweight-charts';
 
 import { visualizationApi, type VisualizationResponse, type VisualizationSearchHistoryItem, type ChipDistributionResponse } from '../api/visualization';
+import type { StockSnapshot } from '../api/intraday';
 import { validateStockCode } from '../utils/validation';
 import { Card } from '../components/common';
 import { useStockPriceHistory } from '../hooks';
@@ -58,6 +59,7 @@ const VisualizationPage: React.FC = () => {
   const [refreshKey, setRefreshKey] = useState(0);
   const [searchHistory, setSearchHistory] = useState<VisualizationSearchHistoryItem[]>([]);
   const [selectedHistoryId, setSelectedHistoryId] = useState<number | null>(null);
+  const [historySnapshots, setHistorySnapshots] = useState<Record<string, StockSnapshot>>({});
   const [selectedIndicators, setSelectedIndicators] = useState<string[]>(
     filterValidIndicators(['volume', 'main_capital_absorption', 'banker_control', 'main_trading', 'main_cost'])
   );
@@ -213,6 +215,26 @@ const VisualizationPage: React.FC = () => {
   useEffect(() => {
     loadSearchHistory();
   }, [loadSearchHistory]);
+
+  const searchHistoryRef = useRef<VisualizationSearchHistoryItem[]>([]);
+  searchHistoryRef.current = searchHistory;
+
+  const fetchAndUpdate = useCallback(async () => {
+    const codes = searchHistoryRef.current.map(h => h.stock_code);
+    if (codes.length === 0) return;
+    try {
+      const resp = await visualizationApi.getBatchStatus(codes);
+      setHistorySnapshots(resp.snapshots);
+    } catch {
+      // 静默失败，不打扰用户
+    }
+  }, []);
+
+  useEffect(() => {
+    if (searchHistory.length > 0) {
+      fetchAndUpdate();
+    }
+  }, [searchHistory.length, fetchAndUpdate]);
   
   // 确保visualizationDataRef始终与最新状态同步
   useEffect(() => {
@@ -2081,13 +2103,38 @@ const VisualizationPage: React.FC = () => {
                       )}
                     </div>
                     <div className="flex items-center gap-1.5 mt-0.5">
-                      <span className="text-xs text-muted font-mono">
-                        {item.stock_code}
-                      </span>
-                      <span className="text-xs text-muted/50">·</span>
-                      <span className="text-xs text-muted">
-                        {new Date(item.searched_at).toLocaleString('zh-CN')}
-                      </span>
+                      {(() => {
+                        const snap = historySnapshots[item.stock_code];
+                        if (snap && snap.latest_price > 0) {
+                          const isUp = snap.change_pct >= 0;
+                          return (
+                            <>
+                              <span className="text-xs text-white font-mono font-medium">
+                                ¥{snap.latest_price.toFixed(2)}
+                              </span>
+                              <span
+                                className="text-xs font-mono font-medium"
+                                style={{ color: isUp ? '#FF4444' : '#44FF44' }}
+                              >
+                                {isUp ? '+' : ''}{snap.change_pct.toFixed(2)}%
+                              </span>
+                              <span className="text-xs text-muted/50">·</span>
+                              <span className="text-xs text-muted">
+                                {new Date(item.searched_at).toLocaleDateString('zh-CN')}
+                              </span>
+                            </>
+                          );
+                        }
+                        return (
+                          <>
+                            <span className="text-xs text-muted font-mono">{item.stock_code}</span>
+                            <span className="text-xs text-muted/50">·</span>
+                            <span className="text-xs text-muted">
+                              {new Date(item.searched_at).toLocaleDateString('zh-CN')}
+                            </span>
+                          </>
+                        );
+                      })()}
                     </div>
                   </div>
                   <button
