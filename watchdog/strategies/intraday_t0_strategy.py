@@ -285,8 +285,8 @@ class IntradayIndicatorEngine:
         # RSI参数
         rsi_cfg = indicator_cfg.get("rsi", {})
         self.rsi_period = rsi_cfg.get("period", 14)
-        self.rsi_overbought = rsi_cfg.get("overbought", 70)
-        self.rsi_oversold = rsi_cfg.get("oversold", 30)
+        self.rsi_overbought = rsi_cfg.get("overbought", 65)
+        self.rsi_oversold = rsi_cfg.get("oversold", 20)
 
     # ---------- 工具函数 ----------
 
@@ -562,14 +562,14 @@ class SignalEvaluator:
 
     BUY_WEIGHTS = {
         "absorption_active": 0,
-        "cyw_cross_ma_up": 0,
-        "main_in_signal": 0,
-        "price_cross_ma5_up": 0,
+        "cyw_cross_ma_up": 1,
+        "main_in_signal": 1,
+        "price_cross_ma5_up": 1,
         "avg_price_oversold_fix": 2,
         "price_above_ma20": 1,
         "volume_surge": 1,
         "macd_golden_cross": 2,
-        "rsi_oversold": 2,
+        "rsi_oversold": 5,
     }
     BUY_LABELS = {
         "absorption_active": "主力吸筹活跃",
@@ -591,7 +591,7 @@ class SignalEvaluator:
         "price_cross_ma5_down": 2,
         "avg_price_overbought_fix": 2,
         "macd_death_cross": 2,
-        "rsi_overbought": 2,
+        "rsi_overbought": 5,
     }
     SELL_LABELS = {
         "distribution_active": "主力出货活跃",
@@ -956,33 +956,39 @@ class IntradayT0Strategy:
             "volume": {"ma_period": 5, "surge_ratio": 1.5},
             "price_ma": {"ma5_period": 5, "ma20_period": 20},
             "avg_price_deviation": {"oversold_threshold": -2.5, "overbought_threshold": 2.5},
+            "macd": {"fast_period": 12, "slow_period": 26, "signal_period": 9},
+            "rsi": {"period": 14, "overbought": 65, "oversold": 20},
         },
         "signals": {
             "buy": {
-                "thresholds": {"strong": 10, "medium": 7, "weak": 4},
+                "thresholds": {"strong": 9, "medium": 7, "weak": 5},
                 "positions": {"strong": "全仓", "medium": "半仓", "weak": "1/3仓"},
                 "confidence": {"strong": 0.85, "medium": 0.65, "weak": 0.40},
                 "weights": {
-                    "absorption_active": 3,
-                    "cyw_cross_ma_up": 2,
-                    "main_in_signal": 2,
-                    "price_cross_ma5_up": 2,
+                    "absorption_active": 0,
+                    "cyw_cross_ma_up": 1,
+                    "main_in_signal": 1,
+                    "price_cross_ma5_up": 1,
                     "avg_price_oversold_fix": 2,
                     "price_above_ma20": 1,
                     "volume_surge": 1,
+                    "macd_golden_cross": 2,
+                    "rsi_oversold": 5,
                 },
             },
             "sell": {
-                "thresholds": {"strong": 11, "medium": 7, "weak": 4},
+                "thresholds": {"strong": 11, "medium": 7, "weak": 5},
                 "positions": {"strong": "全仓卖出", "medium": "半仓卖出", "weak": "1/3仓卖出"},
                 "confidence": {"strong": 0.85, "medium": 0.65, "weak": 0.40},
                 "weights": {
-                    "distribution_active": 3,
-                    "main_out_signal": 2,
-                    "cyw_cross_ma_down": 2,
+                    "distribution_active": 0,
+                    "main_out_signal": 0,
+                    "cyw_cross_ma_down": 0,
                     "volume_stagnation": 3,
                     "price_cross_ma5_down": 2,
                     "avg_price_overbought_fix": 2,
+                    "macd_death_cross": 2,
+                    "rsi_overbought": 5,
                 },
             },
             "gravity": {
@@ -994,7 +1000,7 @@ class IntradayT0Strategy:
                 "weights": {"main_trading": 3, "ma_line": 2, "extreme": 2, "chip_zone": 2, "prev_close": 1.5},
             },
         },
-        "operation": {"signal_cooldown_bars": 5, "log_signals": True},
+        "operation": {"signal_cooldown_bars": 0, "log_signals": True},
     }
 
     def __init__(

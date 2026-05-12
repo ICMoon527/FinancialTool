@@ -899,11 +899,11 @@ def _compute_reference_lines(klines: list, code: str, db_manager=None, query_dat
 
         # ── 今日高/今日低 ──
         ref_lines.append(ReferenceLine(
-            id='today_high', label='今日高', price=round(today_high, 2),
+            id='today_high', label='今高', price=round(today_high, 2),
             category='key_level', color='#FF444488', style='dotted', base_weight=1.0,
         ))
         ref_lines.append(ReferenceLine(
-            id='today_low', label='今日低', price=round(today_low, 2),
+            id='today_low', label='今低', price=round(today_low, 2),
             category='key_level', color='#44FF4488', style='dotted', base_weight=1.0,
         ))
 

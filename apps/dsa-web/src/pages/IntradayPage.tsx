@@ -601,14 +601,14 @@ const IntradayPage: React.FC = () => {
       } else {
         const factors: [string, string, number, boolean][] = [
           ['absorption_active', '主力吸筹活跃', 0, absActive],
-          ['cyw_cross_ma_up', 'CYW上穿MA', 0, cywCrossUp],
-          ['main_in_signal', '主力进出金叉', 0, mainInCrossUp],
-          ['price_cross_ma5_up', '价格上穿MA5', 0, sn.price_cross_ma5_up],
+          ['cyw_cross_ma_up', 'CYW上穿MA', 1, cywCrossUp],
+          ['main_in_signal', '主力进出金叉', 1, mainInCrossUp],
+          ['price_cross_ma5_up', '价格上穿MA5', 1, sn.price_cross_ma5_up],
           ['avg_price_oversold_fix', '均价超卖修复', 2, sn.deviation_oversold && sn.deviation_narrowing],
           ['price_above_ma20', '价格>MA20趋势', 1, sn.price_above_ma20],
           ['volume_surge', '量能放大', 1, false],
           ['macd_golden_cross', 'MACD金叉', 2, macdGoldenCross],
-          ['rsi_oversold', 'RSI超卖', 2, rsiOversold],
+          ['rsi_oversold', 'RSI超卖', 5, rsiOversold],
         ];
         let buyScore = 0;
         for (const [key, label, w, trig] of factors) {
@@ -630,7 +630,7 @@ const IntradayPage: React.FC = () => {
           ['price_cross_ma5_down', '价格下穿MA5', 2, sn.price_cross_ma5_down],
           ['avg_price_overbought_fix', '均价超买回落', 2, sn.deviation_overbought && sn.deviation_peaking],
           ['macd_death_cross', 'MACD死叉', 2, macdDeathCross],
-          ['rsi_overbought', 'RSI超买', 2, rsiOverbought],
+          ['rsi_overbought', 'RSI超买', 5, rsiOverbought],
         ];
         let sellScore = 0;
         for (const [key, label, w, trig] of factors) {
@@ -1033,8 +1033,8 @@ const IntradayPage: React.FC = () => {
         });
         const OVERSOLD = -2.5;
         const OVERBOUGHT = 2.5;
-        const RSI_OVERSOLD = 30;
-        const RSI_OVERBOUGHT = 70;
+        const RSI_OVERSOLD = 20;
+        const RSI_OVERBOUGHT = 65;
         const raw = Array.from(map.entries())
           .sort((a, b) => a[0] - b[0])
           .map(([time, v]) => ({ time, ...v }));
@@ -1058,8 +1058,8 @@ const IntradayPage: React.FC = () => {
             price_cross_ma5_down: prev ? (prev.close >= prev.ma5 && cur.close < cur.ma5) : false,
             deviation_oversold: dev <= OVERSOLD,
             deviation_overbought: dev >= OVERBOUGHT,
-            deviation_narrowing: dev < 0 && dev > OVERSOLD && Math.abs(dev) < Math.abs(prevDev),
-            deviation_peaking: dev > 0 && dev < OVERBOUGHT && Math.abs(dev) < Math.abs(prevDev),
+            deviation_narrowing: dev <= OVERSOLD && prev ? (dev > prevDev) : false,
+            deviation_peaking: dev >= OVERBOUGHT && prev ? (dev < prevDev) : false,
             macd_golden_cross: prev ? (prevDif <= prevDea && curDif > curDea) : false,
             macd_death_cross: prev ? (prevDif >= prevDea && curDif < curDea) : false,
             rsi_oversold: curRsi <= RSI_OVERSOLD,
@@ -1297,7 +1297,8 @@ const IntradayPage: React.FC = () => {
                 color: '#4488FF',
                 lineWidth: 1,
                 priceLineVisible: false,
-                lastValueVisible: false,
+                lastValueVisible: true,
+                crosshairMarkerVisible: true,
               });
               ls.setData(pts);
               lineSeriesList.push(ls);
@@ -1308,6 +1309,7 @@ const IntradayPage: React.FC = () => {
                 lineStyle: 2,
                 priceLineVisible: false,
                 lastValueVisible: false,
+                crosshairMarkerVisible: false,
               });
               ls.setData(pts);
               lineSeriesList.push(ls);
@@ -1318,6 +1320,7 @@ const IntradayPage: React.FC = () => {
                 lineStyle: 2,
                 priceLineVisible: false,
                 lastValueVisible: false,
+                crosshairMarkerVisible: false,
               });
               ls.setData(pts);
               lineSeriesList.push(ls);
@@ -1345,9 +1348,6 @@ const IntradayPage: React.FC = () => {
             lineSeriesList.push(ls);
           }
         }
-
-        // 自适应时间范围
-        subChart.timeScale().fitContent();
 
         // 同步主图时间轴
         const range = chart.timeScale().getVisibleRange();
@@ -1609,19 +1609,37 @@ const IntradayPage: React.FC = () => {
 
   // 根据当前筛选后的信号计算模拟收益（仅考虑显示中的做T记录）
   const filteredSimulReturn = useMemo(() => {
-    let total = 0;
-    let lastBuyPrice: number | null = null;
+    const parseWeight = (advice: string): number => {
+      if (!advice) return 1.0;
+      if (advice.includes('全仓')) return 1.0;
+      if (advice.includes('半仓')) return 0.5;
+      if (advice.includes('1/3仓')) return 0.33;
+      return 1.0;
+    };
+
+    let totalReturn = 0;
+    let lastBuy: { price: number; weight: number; time: string } | null = null;
+    let unsettledBuy: { price: number; weight: number; time: string } | null = null;
+
     for (const sig of filteredSignals) {
       if (sig.signal_type === 'buy') {
-        lastBuyPrice = sig.price;
+        const weight = parseWeight(sig.position_advice || '');
+        lastBuy = { price: sig.price, weight, time: sig.trigger_time };
       } else if (sig.signal_type === 'sell') {
-        if (lastBuyPrice !== null && lastBuyPrice > 0) {
-          total += ((sig.price - lastBuyPrice) / lastBuyPrice) * 100;
-          lastBuyPrice = null;
+        const weight = parseWeight(sig.position_advice || '');
+        if (lastBuy !== null) {
+          const profit = ((sig.price - lastBuy.price) / lastBuy.price * weight - 0.001) * 100;
+          totalReturn += profit;
+          lastBuy = null;
         }
       }
     }
-    return total;
+
+    if (lastBuy !== null) {
+      unsettledBuy = { ...lastBuy };
+    }
+
+    return { totalReturn, unsettledBuy };
   }, [filteredSignals]);
 
   // ── 信号标记（受筛选条件调控，随 filteredSignals 变化而更新）──
@@ -1975,9 +1993,14 @@ const IntradayPage: React.FC = () => {
                 <div className="flex-1 overflow-y-auto" style={{ height: 165 }}>
                   <div className="text-xs text-muted/60 mb-1 flex items-center gap-3">
                     <span>共 {filteredSignals.length} 条信号</span>
-                    <span className="font-mono font-medium" style={{ color: filteredSimulReturn >= 0 ? '#FF4444' : '#44FF44' }}>
-                      模拟收益 {filteredSimulReturn >= 0 ? '+' : ''}{filteredSimulReturn.toFixed(2)}%
+                    <span className="font-mono font-medium" style={{ color: filteredSimulReturn.totalReturn >= 0 ? '#FF4444' : '#44FF44' }}>
+                      模拟收益 {filteredSimulReturn.totalReturn >= 0 ? '+' : ''}{filteredSimulReturn.totalReturn.toFixed(2)}%
                     </span>
+                    {filteredSimulReturn.unsettledBuy && (
+                      <span className="text-yellow-400/80" title={`未平仓买入: ¥${filteredSimulReturn.unsettledBuy.price.toFixed(2)} ${filteredSimulReturn.unsettledBuy.time}`}>
+                        (浮动盈亏待结算)
+                      </span>
+                    )}
                     {activeFilters.size > 0 && (
                       <span className="text-cyan">（已筛选）</span>
                     )}
@@ -2014,6 +2037,15 @@ const IntradayPage: React.FC = () => {
                         } catch (e) { /* ignore */ }
                         currentCrosshairTimeRef.current = targetSec as any;
                         syncCrosshairToSubCharts(targetSec as any);
+                        if (volumeChartRef.current && volumeSeriesRef.current && kp) {
+                          try {
+                            volumeChartRef.current.setCrosshairPosition(
+                              (kp as any).volume || 0,
+                              targetSec as any,
+                              volumeSeriesRef.current,
+                            );
+                          } catch (e) { /* ignore */ }
+                        }
                         computeSignalsAtTime(targetSec as any);
                         setIsCrosshairActive(true);
                         setHoveredWeightDetails({

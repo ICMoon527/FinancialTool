@@ -86,7 +86,7 @@ class ReferenceLineGenerator:
         return [
             {
                 "id": "attack_line",
-                "label": "主力攻击线",
+                "label": "攻击",
                 "price": round(attack_line, 2),
                 "category": "main_trading",
                 "color": "#FF4444",
@@ -95,7 +95,7 @@ class ReferenceLineGenerator:
             },
             {
                 "id": "trading_line",
-                "label": "主力操盘线",
+                "label": "操盘",
                 "price": round(trade_line, 2),
                 "category": "main_trading",
                 "color": "#FFAA00",
@@ -104,7 +104,7 @@ class ReferenceLineGenerator:
             },
             {
                 "id": "defense_line",
-                "label": "主力防守线",
+                "label": "防守",
                 "price": round(defense_line, 2),
                 "category": "main_trading",
                 "color": "#44AA44",
