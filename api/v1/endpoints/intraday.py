@@ -8,8 +8,11 @@
 
 import logging
 import os
+import traceback
 import yaml
-from datetime import datetime, timedelta
+import json
+import threading
+from datetime import datetime, timedelta, date as date_type
 from pathlib import Path
 from typing import Optional, Callable, Any
 
@@ -867,6 +870,101 @@ def _generate_indicator_sub_charts(klines: list) -> list:
         return []
 
 
+def _ensure_turnover_rate(daily_df, code, db_manager, end_date):
+    """
+    确保DataFrame有有效的换手率数据
+
+    如果换手率全为0，则依次尝试：
+    1. 从StockBasic表获取流通股本
+    2. 从AKShare API获取带换手率的日线数据来估算流通股本
+    然后用 成交量 / 流通股本 计算换手率并回写到数据库
+    """
+    if 'turnover_rate' not in daily_df.columns:
+        return daily_df, False
+
+    turnover_vals = daily_df['turnover_rate']
+    non_zero = turnover_vals[turnover_vals.notna() & (turnover_vals > 0)]
+    if len(non_zero) > 0:
+        return daily_df, False
+
+    logger.info(f"换手率全为0，尝试为 {code} 补充换手率数据...")
+
+    from datetime import timedelta
+
+    circulating_shares = None
+
+    # ── Step 1: 从 StockBasic 获取流通股本 ──
+    try:
+        from src.services.turnover_service import TurnoverService
+        turnover_service = TurnoverService(db_manager)
+        stock_basic = turnover_service.get_stock_basic(code, end_date)
+        if stock_basic and stock_basic.circulating_shares and stock_basic.circulating_shares > 0:
+            circulating_shares = stock_basic.circulating_shares
+            logger.info(f"从StockBasic获取 {code} 流通股本: {circulating_shares:.0f} 股")
+    except Exception as e:
+        logger.warning(f"从StockBasic获取 {code} 流通股本失败: {e}")
+
+    # ── Step 2: DB中没有，从AKShare获取 ──
+    if circulating_shares is None or circulating_shares <= 0:
+        try:
+            import akshare as ak
+            akshare_df = ak.stock_zh_a_hist(
+                symbol=code, period="daily",
+                start_date=(end_date - timedelta(days=120)).strftime('%Y%m%d'),
+                end_date=end_date.strftime('%Y%m%d'), adjust="qfq",
+            )
+            if akshare_df is not None and not akshare_df.empty:
+                akshare_df = akshare_df.rename(columns={
+                    '日期': 'date', '开盘': 'open', '收盘': 'close',
+                    '最高': 'high', '最低': 'low', '成交量': 'volume',
+                    '换手率': 'turnover_rate', '成交额': 'amount',
+                })
+                basic_info = turnover_service.estimate_circulating_shares_from_akshare(
+                    akshare_df, code
+                )
+                if basic_info and basic_info.get('circulating_shares', 0) > 0:
+                    turnover_service.save_stock_basic(basic_info)
+                    circulating_shares = basic_info['circulating_shares']
+                    logger.info(
+                        f"从AKShare估算并保存 {code} 流通股本: {circulating_shares:.0f} 股"
+                    )
+        except Exception as e:
+            logger.warning(f"从AKShare获取 {code} 换手率数据失败: {e}")
+
+    if circulating_shares is None or circulating_shares <= 0:
+        logger.warning(f"无法获取 {code} 的流通股本，跳过换手率补充")
+        return daily_df, False
+
+    # ── 计算换手率 ──
+    daily_df = daily_df.copy()
+    daily_df['turnover_rate'] = daily_df['Volume'] / circulating_shares
+    daily_df['turnover_rate'] = daily_df['turnover_rate'].clip(upper=1.0)
+
+    # ── 回写到数据库 ──
+    try:
+        from datetime import datetime as dt
+        with db_manager.get_session() as session:
+            from src.storage import StockDaily
+            from sqlalchemy import and_
+            count = 0
+            for idx, row in daily_df.iterrows():
+                day = idx.date() if hasattr(idx, 'date') else idx
+                record = session.query(StockDaily).filter(
+                    StockDaily.code == code,
+                    StockDaily.date == day,
+                ).first()
+                if record:
+                    record.turnover_rate = float(min(row['turnover_rate'], 1.0))
+                    record.updated_at = dt.now()
+                    count += 1
+            session.commit()
+        logger.info(f"回写 {code} 换手率到数据库: {count} 条")
+    except Exception as e:
+        logger.warning(f"回写 {code} 换手率到数据库失败: {e}")
+
+    return daily_df, True
+
+
 def _compute_reference_lines(klines: list, code: str, db_manager=None, query_date: str = None) -> list:
     """计算支撑/压力参考线
 
@@ -950,6 +1048,7 @@ def _compute_reference_lines(klines: list, code: str, db_manager=None, query_dat
                                 'Low': float(d['low'] or 0),
                                 'Close': float(d['close'] or 0),
                                 'Volume': float(d.get('volume', 0) or 0),
+                                'turnover_rate': float(d.get('turnover_rate', 0) or 0),
                             })
                     if not df_rows:
                         logger.info("日线数据库无有效数据，跳过日线级参考线")
@@ -957,6 +1056,76 @@ def _compute_reference_lines(klines: list, code: str, db_manager=None, query_dat
                         daily_df = pd.DataFrame(df_rows)
                         daily_df['Date'] = pd.to_datetime(daily_df['Date'])
                         daily_df = daily_df.sort_values('Date').set_index('Date')
+
+                        # ── 换手率补充：全为0时从流通股本计算 ──
+                        daily_df, turnover_filled = _ensure_turnover_rate(
+                            daily_df, code, db_manager, end_date
+                        )
+
+                        # ── 筹码密集区缓存读写（仅使用历史数据，不含当日分时）──
+                        # 如果换手率刚被修复，跳过缓存（旧缓存基于坏数据）
+                        cache = None
+                        if not turnover_filled:
+                            cache = db_manager.load_chip_distribution_cache(code, end_date)
+                        if cache is not None:
+                            chip_upper_val = cache["chip_upper"]
+                            chip_lower_val = cache["chip_lower"]
+                            logger.info(
+                                f"命中筹码分布缓存: {code} end_date={end_date}, "
+                                f"upper={chip_upper_val}, lower={chip_lower_val}"
+                            )
+                        else:
+                            if turnover_filled:
+                                logger.info(f"换手率已补充，重新计算筹码分布: {code}")
+                            try:
+                                from indicators.indicators.chip_distribution import ChipDistribution
+                                import numpy as np
+
+                                chip_calc = ChipDistribution(enable_smooth=True, max_days=120)
+                                chip_result = chip_calc.calculate(daily_df)
+
+                                if (chip_result["max_chip_price"] is not None
+                                        and chip_result["current_price"] is not None):
+                                    chip_vols = np.array(chip_result["chip_volumes"])
+                                    price_bins = np.array(chip_result["price_bins"])
+                                    max_density = float(chip_vols.max())
+                                    if max_density > 0:
+                                        peak_idx = int(np.argmax(chip_vols))
+                                        threshold = max_density * 0.5
+                                        lower_idx = peak_idx
+                                        while lower_idx > 0 and float(chip_vols[lower_idx]) >= threshold:
+                                            lower_idx -= 1
+                                        upper_idx = peak_idx
+                                        while upper_idx < len(chip_vols) - 1 and float(chip_vols[upper_idx]) >= threshold:
+                                            upper_idx += 1
+                                        chip_upper_val = round(float(price_bins[upper_idx]), 2)
+                                        chip_lower_val = round(float(price_bins[lower_idx]), 2)
+                                        db_manager.save_chip_distribution_cache(
+                                            code, end_date, chip_upper_val, chip_lower_val
+                                        )
+                                        logger.info(
+                                            f"计算并缓存筹码分布: {code} end_date={end_date}, "
+                                            f"upper={chip_upper_val}, lower={chip_lower_val}"
+                                        )
+                                    else:
+                                        chip_upper_val, chip_lower_val = None, None
+                                else:
+                                    chip_upper_val, chip_lower_val = None, None
+                            except Exception as chip_err:
+                                logger.warning(f"计算筹码分布失败: {chip_err}")
+                                chip_upper_val, chip_lower_val = None, None
+
+                        if chip_upper_val is not None and chip_lower_val is not None:
+                            ref_lines.append(ReferenceLine(
+                                id='chip_upper', label='筹码密集区上沿',
+                                price=chip_upper_val, category='chip_dense',
+                                color='#AA44FF', style='dashed', base_weight=1.5,
+                            ))
+                            ref_lines.append(ReferenceLine(
+                                id='chip_lower', label='筹码密集区下沿',
+                                price=chip_lower_val, category='chip_dense',
+                                color='#AA44FF', style='dashed', base_weight=1.5,
+                            ))
 
                         # 将当日分时数据转换为日线OHLC，追加到历史DataFrame
                         today_close = klines[-1]['Close']
@@ -988,12 +1157,10 @@ def _compute_reference_lines(klines: list, code: str, db_manager=None, query_dat
                             'ma_5': 'ma5',
                             'ma_10': 'ma10',
                             'ma_20': 'ma20',
-                            'chip_dense_upper': 'chip_upper',
-                            'chip_dense_lower': 'chip_lower',
                             'prev_close': 'prev_close',
                         }
-                        # 排除 ReferenceLineGenerator 的 HHV/LLV（由 _add_30day_extreme_lines 专门计算）
-                        skip_ids = {'previous_high_30', 'previous_low_30'}
+                        # 排除 ReferenceLineGenerator 的 HHV/LLV 和筹码密集区（已单独计算）
+                        skip_ids = {'previous_high_30', 'previous_low_30', 'chip_dense_upper', 'chip_dense_lower'}
                         for ref_dict in daily_refs:
                             rid = ref_dict['id']
                             if rid in skip_ids:
@@ -1079,7 +1246,9 @@ def _inject_avg_price(klines: list):
     cum_vol = 0.0
     for k in klines:
         c = k.get('Close', 0)
+        c = c if c is not None else 0.0
         v = k.get('Volume', 0) or 0
+        v = v if v is not None else 0.0
         if v > 0:
             cum_amount += c * v
             cum_vol += v
@@ -1087,7 +1256,7 @@ def _inject_avg_price(klines: list):
         else:
             # 无成交时沿用上一条均价，第一条用Close
             prev = klines[klines.index(k) - 1].get('AvgPrice') if klines.index(k) > 0 else None
-            k['AvgPrice'] = prev if prev is not None else round(c, 2)
+            k['AvgPrice'] = prev if prev is not None else round(float(c), 2)
 
 
 # ============================================================
@@ -1116,13 +1285,37 @@ def get_intraday_data(
         code = _normalize_stock_code(stock_code)
         date_str = date
 
+        # 确定查询日期
+        if date_str is None:
+            q_date = date_type.today()
+            date_str = q_date.isoformat()
+        elif len(date_str) == 8:
+            q_date = date_type(int(date_str[:4]), int(date_str[4:6]), int(date_str[6:8]))
+            date_str = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+        else:
+            q_date = date_type.fromisoformat(date_str)
+
+        is_today = q_date == date_type.today()
+
         # 获取分时K线
-        klines = _get_intraday_klines(code, date_str)
+        klines = None
+        if not is_today:
+            # 历史日期优先从数据库加载
+            klines = db_manager.load_intraday_klines(code, q_date)
+
+        if not klines:
+            klines = _get_intraday_klines(code, date_str)
         if not klines:
             raise HTTPException(status_code=404, detail={"error": "no_data", "message": "未获取到分时K线数据"})
 
         # 注入累计分时均价（策略需要 AvgPrice）
         _inject_avg_price(klines)
+
+        # 异步存储分时K线到数据库
+        _schedule_intraday_storage(code, klines, q_date, db_manager)
+
+        # 计算并异步存储每日分时快照
+        _schedule_daily_summary(code, klines, q_date, db_manager)
 
         # 计算日线级参考线（引力场模型需要）
         reference_lines = _compute_reference_lines(klines, code, db_manager, date_str)
@@ -1136,12 +1329,6 @@ def get_intraday_data(
         # 构建K线响应
         kline_points = [IntradayKlinePoint(**k) for k in klines]
 
-        # 确定日期
-        if date_str is None:
-            date_str = datetime.now().strftime("%Y-%m-%d")
-        elif len(date_str) == 8:
-            date_str = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
-
         # 获取股票名称（优先从 Stock Pool 数据库）
         try:
             fetcher_manager = DataFetcherManager()
@@ -1149,6 +1336,9 @@ def get_intraday_data(
         except Exception as e:
             logger.warning(f"获取股票名称失败 {code}: {e}")
             stock_name = ""
+
+        # 加载前日快照用于指标预热
+        warm_up = db_manager.load_previous_daily_summary(code, q_date)
 
         return IntradayDataResponse(
             stock_code=code,
@@ -1159,6 +1349,7 @@ def get_intraday_data(
             reference_lines=reference_lines,
             indicator_sub_charts=indicator_sub_charts,
             signal_summary=summary,
+            warm_up_summary=warm_up,
         )
 
     except HTTPException:
@@ -1166,6 +1357,67 @@ def get_intraday_data(
     except Exception as e:
         logger.error(f"获取分时数据失败: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail={"error": "internal_error", "message": str(e)})
+
+
+def _compute_daily_summary_from_klines(klines: list) -> dict:
+    """从K线数据计算每日终值快照的指标数据
+    Args:
+        klines: K线字典列表
+    Returns:
+        指标快照字典
+    """
+    if not klines:
+        return {}
+
+    last_k = klines[-1]
+    result = {
+        "last_price": last_k.get("Close") or 0.0,
+        "avg_price": last_k.get("AvgPrice") or 0.0,
+        "open_price": klines[0].get("Open") or 0.0,
+        "high_price": max((k.get("High") or 0.0 for k in klines), default=0.0),
+        "low_price": min((k.get("Low") or 0.0 for k in klines), default=0.0),
+        "total_volume": sum(k.get("Volume") or 0.0 for k in klines),
+        "total_amount": sum(k.get("Amount") or 0.0 for k in klines),
+        "kline_count": len(klines),
+        "last_time": last_k.get("timestamp", "")[11:16] if len(last_k.get("timestamp", "")) >= 16 else "",
+    }
+    return result
+
+
+def _schedule_intraday_storage(code: str, klines: list, q_date: date_type, db_manager: DatabaseManager):
+    """异步调度分时K线存储任务（不阻塞主请求）
+    注意：使用 daemon 线程，如果主请求结束但 uvicon 进程存活，线程将继续执行
+    """
+    def _store():
+        try:
+            count = db_manager.save_intraday_klines(code, q_date, klines)
+            logger.info(f"后台存储完成: {code} {q_date}, {count} 条")
+        except Exception as e:
+            traceback.print_exc()
+            logger.warning(f"后台存储分时K线失败 {code} {q_date}: {e}")
+
+    t = threading.Thread(target=_store, daemon=True)
+    t.start()
+    logger.info(f"已调度后台存储: {code} {q_date}, 共 {len(klines)} 条K线")
+
+
+def _schedule_daily_summary(code: str, klines: list, q_date: date_type, db_manager: DatabaseManager):
+    """异步调度每日快照存储任务（不阻塞主请求）
+    注意：使用 daemon 线程，如果主请求结束但 uvicon 进程存活，线程将继续执行
+    """
+    def _store():
+        try:
+            # 计算指标快照
+            indicators = _compute_daily_summary_from_klines(klines)
+            ok = db_manager.save_daily_summary(code, q_date, klines, indicators)
+            logger.info(f"后台快照存储完成: {code} {q_date}, 成功={ok}")
+        except Exception as e:
+            traceback.print_exc()
+            logger.warning(f"后台存储每日快照失败 {code} {q_date}: {e}")
+
+    t = threading.Thread(target=_store, daemon=True)
+    t.start()
+    logger.info(f"已调度快照存储: {code} {q_date}")
 
 
 # ---------- 批量状态查询 ----------

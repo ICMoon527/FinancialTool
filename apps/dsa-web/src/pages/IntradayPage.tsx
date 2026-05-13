@@ -172,7 +172,7 @@ const IntradayPage: React.FC = () => {
   const [selectedHistoryId, setSelectedHistoryId] = useState<number | null>(null);
   const [historySnapshots, setHistorySnapshots] = useState<Record<string, StockSnapshot>>({});
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [priceRangeEnabled, setPriceRangeEnabled] = useState(true);
+  const [priceRangeEnabled, setPriceRangeEnabled] = useState(false);
   const todayDateStr = useMemo(() => formatDate(new Date()), []);
   const [crosshairSignals, setCrosshairSignals] = useState<Record<string, string>>({});
   const [isCrosshairActive, setIsCrosshairActive] = useState(false);
@@ -201,14 +201,14 @@ const IntradayPage: React.FC = () => {
   const volumeSeriesRef = useRef<lightweightCharts.ISeriesApi<'Histogram'> | null>(null);
   const refLineSeriesRef = useRef<lightweightCharts.ISeriesApi<'Line'>[]>([]);
   const refLinePriceLinesRef = useRef<lightweightCharts.IPriceLine[]>([]);
-  const chipAreaRef = useRef<lightweightCharts.ISeriesApi<'Area'> | null>(null);
+  const chipAreaRef = useRef<lightweightCharts.ISeriesApi<'Baseline'> | null>(null);
   const avgPriceLineRef = useRef<lightweightCharts.ISeriesApi<'Line'> | null>(null);
   const priceRangeSeriesRef = useRef<lightweightCharts.ISeriesApi<'Line'> | null>(null);
   const seriesMarkersRef = useRef<any>(null);
   const timeSyncSubRef = useRef<(() => void) | null>(null);
   const isTimeSyncingRef = useRef(false);
   const currentDateRef = useRef(todayDateStr);
-  const priceRangeEnabledRef = useRef(true);
+  const priceRangeEnabledRef = useRef(false);
   const isCrosshairUpdatingRef = useRef(false);
   const currentCrosshairTimeRef = useRef<Time | null>(null);
   const klineRawDataRef = useRef<any[]>([]);
@@ -262,12 +262,17 @@ const IntradayPage: React.FC = () => {
   const fetchAndUpdate = useCallback(async () => {
     const codes = searchHistoryRef.current.map(h => h.stock_code);
     if (codes.length === 0) return;
-    const currentCode = intradayData?.stock_code || '';
+    const requestedCode = intradayData?.stock_code || '';
     try {
-      const resp = await getBatchStatus(codes, currentCode);
+      const resp = await getBatchStatus(codes, requestedCode);
       setHistorySnapshots(resp.snapshots);
-      if (resp.current_updated && resp.current_full_data && currentCode) {
-        setIntradayData(resp.current_full_data);
+      if (resp.current_updated && resp.current_full_data && requestedCode) {
+        setIntradayData(prev => {
+          if (prev?.stock_code === requestedCode) {
+            return resp.current_full_data;
+          }
+          return prev;
+        });
       }
     } catch {
       // 静默失败，不打扰用户
@@ -310,7 +315,7 @@ const IntradayPage: React.FC = () => {
     const handleVisibility = () => {
       if (document.hidden) {
         stopPolling();
-      } else {
+      } else if (isTradingTime()) {
         fetchAndUpdateRef.current(); // 恢复时立即刷新
         startPolling(); // 仅盘中会启动
       }
@@ -963,25 +968,26 @@ const IntradayPage: React.FC = () => {
         chipAreaRef.current = null;
       }
 
-      // ── 筹码密集区色带（最先添加到底层，避免遮挡分时白线）──
-      if (data.reference_lines && data.reference_lines.length > 0) {
+      // ── 筹码密集区重叠判定（需在参考线和色带渲染前计算，避免 PriceLine 拉伸 Y 轴）──
+      let chipOverlaps = false;
+      let chipUpperPrice: number | null = null;
+      let chipLowerPrice: number | null = null;
+      if (data.reference_lines && data.reference_lines.length > 0 && klines.length > 0) {
         const chipUpper = data.reference_lines.find((rl) => rl.id === 'chip_upper');
         const chipLower = data.reference_lines.find((rl) => rl.id === 'chip_lower');
-        if (chipUpper && chipLower && klines.length > 0) {
-          const areaSeries = chart.addSeries(lightweightCharts.AreaSeries, {
-            lineWidth: 1,
-            topColor: 'rgba(187, 68, 255, 0.08)',
-            bottomColor: 'rgba(187, 68, 255, 0.02)',
-            priceLineVisible: false,
-            lastValueVisible: false,
-            crosshairMarkerVisible: false,
-          });
-          const areaData = klines.map((k) => ({
-            time: k.time as any,
-            value: chipUpper.price,
-          }));
-          areaSeries.setData(areaData);
-          chipAreaRef.current = areaSeries;
+        if (chipUpper && chipLower) {
+          chipUpperPrice = chipUpper.price;
+          chipLowerPrice = chipLower.price;
+          const klineMin = Math.min(...klines.map((k) => k.low));
+          const klineMax = Math.max(...klines.map((k) => k.high));
+          const prevCloseRef = data.reference_lines.find((rl: any) => rl.id === 'prev_close');
+          if (priceRangeEnabledRef.current && prevCloseRef) {
+            const rangeLow = prevCloseRef.price * 0.9;
+            const rangeHigh = prevCloseRef.price * 1.1;
+            chipOverlaps = chipUpper.price >= rangeLow && chipLower.price <= rangeHigh;
+          } else {
+            chipOverlaps = chipUpper.price >= klineMin && chipLower.price <= klineMax;
+          }
         }
       }
 
@@ -1002,13 +1008,15 @@ const IntradayPage: React.FC = () => {
         refLineSeriesRef.current.push(refLayer);
 
         data.reference_lines.forEach((rl) => {
+          const isChipLine = rl.id === 'chip_upper' || rl.id === 'chip_lower';
+          if (isChipLine && !chipOverlaps) return; // 筹码区不在可见范围内，跳过该参考线
           const ls: 0 | 1 | 2 | 3 | 4 = rl.style === 'dashed' ? 2 : (rl.style === 'dotted' ? 1 : 0);
           const priceLine = refLayer.createPriceLine({
             price: rl.price,
             color: rl.color,
             lineWidth: 1,
             lineStyle: ls,
-            axisLabelVisible: true,
+            axisLabelVisible: !isChipLine,
             title: rl.label,
           });
           refLinePriceLinesRef.current.push(priceLine);
@@ -1076,8 +1084,36 @@ const IntradayPage: React.FC = () => {
               { time: lastTime as any, value: ycHigh },
             ]);
             priceRangeSeriesRef.current = ghostSeries;
+
+            // 锁定价格轴，防止后续添加的系列（如筹码密集区）拉宽Y轴范围
+            chart.priceScale('right').applyOptions({ autoScale: false });
           }
         }
+      } else {
+        chart.priceScale('right').applyOptions({ autoScale: true });
+      }
+
+      // ── 筹码密集区色带（仅在价格范围内可见时才渲染，避免拉伸Y轴）──
+      if (chipOverlaps && chipLowerPrice != null && chipUpperPrice != null) {
+        const purple = 'rgba(187, 68, 255, 0.06)';
+        const chipSeries = chart.addSeries(lightweightCharts.BaselineSeries, {
+          baseValue: { type: 'price', price: chipLowerPrice },
+          lineWidth: 0,
+          topLineColor: 'rgba(0,0,0,0)',
+          bottomLineColor: 'rgba(0,0,0,0)',
+          topFillColor1: purple,
+          topFillColor2: purple,
+          bottomFillColor1: purple,
+          bottomFillColor2: purple,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          crosshairMarkerVisible: false,
+        } as any);
+        chipSeries.setData(klines.map((k) => ({
+          time: k.time as any,
+          value: chipUpperPrice,
+        })));
+        chipAreaRef.current = chipSeries;
       }
 
       // ── 构建快照数据：融合K线和指标子图 ──

@@ -646,6 +646,117 @@ class ConversationMessage(Base):
     created_at = Column(DateTime, default=datetime.now, index=True)
 
 
+class IntradayKline1Min(Base):
+    """
+    分时K线（1分钟）数据表
+    存储每只股票每个交易日逐分钟的K线数据
+    用于历史回看和指标预热
+    """
+
+    __tablename__ = "intraday_kline_1min"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    code = Column(String(10), nullable=False, index=True)
+    date = Column(Date, nullable=False, index=True)
+    time = Column(String(5), nullable=False)  # "HH:MM" 格式
+    open = Column(Float)
+    high = Column(Float)
+    low = Column(Float)
+    close = Column(Float)
+    volume = Column(Float)
+    amount = Column(Float)
+    avg_price = Column(Float)  # 累计分时均价（成交额/成交量）
+
+    __table_args__ = (
+        UniqueConstraint("code", "date", "time", name="uix_intraday_kline_code_date_time"),
+        Index("ix_intraday_kline_code_date", "code", "date"),
+    )
+
+    def to_dict(self) -> Dict[str, Any]:
+        """转为字典格式，键名与 _get_intraday_klines 返回格式一致（大写）"""
+        return {
+            "timestamp": f"{self.date}T{self.time}:00",
+            "Open": self.open,
+            "High": self.high,
+            "Low": self.low,
+            "Close": self.close,
+            "Volume": self.volume,
+            "Amount": self.amount,
+            "AvgPrice": self.avg_price,
+        }
+
+
+class IntradayDailySummary(Base):
+    """
+    每日分时终值快照表
+    存储每个股票每个交易日的收盘前最后一分钟（或最新）的技术指标终值
+    用于下一个交易日开盘时的指标预热（如RSI/MACD/CYW需要历史数据）
+    """
+
+    __tablename__ = "intraday_daily_summary"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    code = Column(String(10), nullable=False, index=True)
+    date = Column(Date, nullable=False, index=True)
+    # 价格信息
+    last_price = Column(Float, default=0.0)
+    avg_price = Column(Float, default=0.0)  # 累计分时均价
+    # 成交量信息
+    total_volume = Column(Float, default=0.0)  # 累计成交量
+    total_amount = Column(Float, default=0.0)  # 累计成交额
+    # 技术指标终值（JSON字符串，灵活存储）
+    indicator_snapshot_json = Column(Text, default="{}")
+    # 时间戳
+    last_time = Column(String(5), default="")  # 最后一根K线的时间
+    kline_count = Column(Integer, default=0)  # 当天K线数量
+    created_at = Column(DateTime, default=datetime.now)
+
+    __table_args__ = (
+        UniqueConstraint("code", "date", name="uix_intraday_summary_code_date"),
+        Index("ix_intraday_summary_code_date", "code", "date"),
+    )
+
+    def to_dict(self) -> Dict[str, Any]:
+        """转为字典格式"""
+        snapshot = {}
+        if self.indicator_snapshot_json:
+            try:
+                snapshot = json.loads(self.indicator_snapshot_json)
+            except (json.JSONDecodeError, TypeError):
+                pass
+        return {
+            "date": self.date.isoformat() if self.date else "",
+            "last_price": self.last_price,
+            "avg_price": self.avg_price,
+            "total_volume": self.total_volume,
+            "total_amount": self.total_amount,
+            "last_time": self.last_time,
+            "kline_count": self.kline_count,
+            "indicators": snapshot,
+        }
+
+
+class ChipDistributionCache(Base):
+    """
+    筹码分布缓存表
+    存储按 end_date 计算的筹码密集区上下沿，避免重复计算
+    缓存键：(code, end_date)
+    """
+
+    __tablename__ = "chip_distribution_cache"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    code = Column(String(10), nullable=False, index=True)
+    end_date = Column(Date, nullable=False, index=True)
+    chip_upper = Column(Float, default=0.0)
+    chip_lower = Column(Float, default=0.0)
+    created_at = Column(DateTime, default=datetime.now)
+
+    __table_args__ = (
+        UniqueConstraint("code", "end_date", name="uix_chip_cache_code_end_date"),
+    )
+
+
 class DatabaseManager:
     """
     数据库管理器 - 单例模式
@@ -2976,6 +3087,249 @@ class DatabaseManager:
                 session.rollback()
                 logger.error(f"更新可视化搜索历史记录时间戳失败: {e}")
                 return None
+
+
+# ============================================================
+    # 分时K线（1分钟）数据存取
+    # ============================================================
+
+    def save_intraday_klines(self, code: str, date_obj: date, klines: list) -> int:
+        """保存逐分钟K线数据到数据库
+        Args:
+            code: 股票代码
+            date_obj: 日期
+            klines: K线字典列表（键名大写：Open, High, Low, Close, Volume, Amount, AvgPrice, timestamp）
+        Returns:
+            保存的记录数
+        """
+        with self.get_session() as session:
+            count = 0
+            for k in klines:
+                # 从 timestamp 提取时间 "HH:MM"
+                ts = k.get("timestamp", "")
+                t = ts[11:16] if len(ts) >= 16 else ts[:5] if len(ts) >= 5 else ""
+
+                if not t:
+                    continue
+
+                try:
+                    record = IntradayKline1Min(
+                        code=code,
+                        date=date_obj,
+                        time=t,
+                        open=k.get("Open"),
+                        high=k.get("High"),
+                        low=k.get("Low"),
+                        close=k.get("Close"),
+                        volume=k.get("Volume"),
+                        amount=k.get("Amount"),
+                        avg_price=k.get("AvgPrice"),
+                    )
+                    session.merge(record)
+                    count += 1
+                except Exception as e:
+                    logger.warning(f"保存K线记录失败 {code} {date_obj} {t}: {e}")
+
+            try:
+                session.commit()
+            except Exception as e:
+                session.rollback()
+                logger.error(f"提交K线数据失败 {code} {date_obj}: {e}")
+                return 0
+
+            logger.info(f"保存分时K线: {code} {date_obj}, {count} 条")
+            return count
+
+    def load_intraday_klines(self, code: str, date_obj: date) -> list:
+        """从数据库加载逐分钟K线数据
+        Args:
+            code: 股票代码
+            date_obj: 日期
+        Returns:
+            K线字典列表（键名大写，与 _get_intraday_klines 返回格式一致）
+        """
+        with self.get_session() as session:
+            records = (
+                session.query(IntradayKline1Min)
+                .filter(
+                    IntradayKline1Min.code == code,
+                    IntradayKline1Min.date == date_obj,
+                )
+                .order_by(IntradayKline1Min.time)
+                .all()
+            )
+            if records:
+                logger.info(f"从数据库加载分时K线: {code} {date_obj}, {len(records)} 条")
+            return [r.to_dict() for r in records]
+
+    # ============================================================
+    # 每日分时终值快照存取
+    # ============================================================
+
+    def save_daily_summary(
+        self, code: str, date_obj: date, klines: list, indicators: Optional[dict] = None
+    ) -> bool:
+        """保存每日分时终值快照
+        从最后一根K线提取收盘信息，结合技术指标终值，存入数据库
+        Args:
+            code: 股票代码
+            date_obj: 日期
+            klines: K线字典列表
+            indicators: 技术指标终值字典（可选）
+        Returns:
+            是否保存成功
+        """
+        if not klines:
+            return False
+
+        last_k = klines[-1]
+        last_ts = last_k.get("timestamp", "")
+        last_time = last_ts[11:16] if len(last_ts) >= 16 else last_ts[:5] if len(last_ts) >= 5 else ""
+
+        # 计算累计成交量和成交额
+        total_volume = sum(k.get("Volume") or 0.0 for k in klines)
+        total_amount = sum(k.get("Amount") or 0.0 for k in klines)
+
+        # 累计均价从最后一根K线的 AvgPrice 获取
+        avg_price = last_k.get("AvgPrice") or 0.0
+
+        indicator_json = json.dumps(indicators or {}, ensure_ascii=False)
+
+        with self.get_session() as session:
+            try:
+                existing = session.query(IntradayDailySummary).filter(
+                    IntradayDailySummary.code == code,
+                    IntradayDailySummary.date == date_obj,
+                ).first()
+                if existing:
+                    existing.last_price = last_k.get("Close") or 0.0
+                    existing.avg_price = avg_price
+                    existing.total_volume = total_volume
+                    existing.total_amount = total_amount
+                    existing.indicator_snapshot_json = indicator_json
+                    existing.last_time = last_time
+                    existing.kline_count = len(klines)
+                    existing.created_at = datetime.now()
+                else:
+                    record = IntradayDailySummary(
+                        code=code,
+                        date=date_obj,
+                        last_price=last_k.get("Close") or 0.0,
+                        avg_price=avg_price,
+                        total_volume=total_volume,
+                        total_amount=total_amount,
+                        indicator_snapshot_json=indicator_json,
+                        last_time=last_time,
+                        kline_count=len(klines),
+                        created_at=datetime.now(),
+                    )
+                    session.add(record)
+                session.commit()
+                logger.info(f"保存每日快照: {code} {date_obj}, 价格={last_k.get('Close')}, K线数={len(klines)}")
+                return True
+            except Exception as e:
+                session.rollback()
+                logger.error(f"保存每日快照失败 {code} {date_obj}: {e}")
+                return False
+
+    def load_daily_summary(self, code: str, date_obj: date) -> Optional[dict]:
+        """加载指定日期的分时快照
+        Args:
+            code: 股票代码
+            date_obj: 日期
+        Returns:
+            快照字典，无数据时返回 None
+        """
+        with self.get_session() as session:
+            record = (
+                session.query(IntradayDailySummary)
+                .filter(
+                    IntradayDailySummary.code == code,
+                    IntradayDailySummary.date == date_obj,
+                )
+                .first()
+            )
+            if record:
+                return record.to_dict()
+            return None
+
+    def save_chip_distribution_cache(
+        self, code: str, end_date: date, chip_upper: float, chip_lower: float
+    ) -> bool:
+        """保存筹码分布缓存
+
+        Args:
+            code: 股票代码
+            end_date: 计算截止日期
+            chip_upper: 筹码密集区上沿
+            chip_lower: 筹码密集区下沿
+
+        Returns:
+            是否保存成功
+        """
+        with self.get_session() as session:
+            try:
+                record = ChipDistributionCache(
+                    code=code,
+                    end_date=end_date,
+                    chip_upper=chip_upper,
+                    chip_lower=chip_lower,
+                    created_at=datetime.now(),
+                )
+                session.merge(record)
+                session.commit()
+                logger.info(f"保存筹码分布缓存: {code} end_date={end_date}, upper={chip_upper}, lower={chip_lower}")
+                return True
+            except Exception as e:
+                session.rollback()
+                logger.error(f"保存筹码分布缓存失败 {code} {end_date}: {e}")
+                return False
+
+    def load_chip_distribution_cache(self, code: str, end_date: date) -> Optional[dict]:
+        """加载筹码分布缓存
+
+        Args:
+            code: 股票代码
+            end_date: 计算截止日期
+
+        Returns:
+            缓存字典 {'chip_upper': float, 'chip_lower': float}，无数据时返回 None
+        """
+        with self.get_session() as session:
+            record = (
+                session.query(ChipDistributionCache)
+                .filter(
+                    ChipDistributionCache.code == code,
+                    ChipDistributionCache.end_date == end_date,
+                )
+                .first()
+            )
+            if record:
+                return {"chip_upper": record.chip_upper, "chip_lower": record.chip_lower}
+            return None
+
+    def load_previous_daily_summary(self, code: str, current_date: date) -> Optional[dict]:
+        """加载最近一个交易日（当前日期之前）的分时快照，用于下一个交易日的指标预热
+        Args:
+            code: 股票代码
+            current_date: 当前日期
+        Returns:
+            最近快照字典，无数据时返回 None
+        """
+        with self.get_session() as session:
+            record = (
+                session.query(IntradayDailySummary)
+                .filter(
+                    IntradayDailySummary.code == code,
+                    IntradayDailySummary.date < current_date,
+                )
+                .order_by(desc(IntradayDailySummary.date))
+                .first()
+            )
+            if record:
+                logger.info(f"加载前日快照（预热用）: {code} {record.date}")
+                return record.to_dict()
+            return None
 
 
 # 便捷函数
