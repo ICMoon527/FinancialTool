@@ -100,3 +100,19 @@ class StockSelectorConfigResponse(BaseModel):
     success: bool
     default_top_n: int
     error: Optional[str] = None
+
+
+class ScreenProgressStatus(BaseModel):
+    """异步选股进度"""
+
+    task_id: str = ""
+    status: str = "idle"  # idle | running | completed | failed | cancelled
+    stage: str = ""  # update_realtime | update_data | screening | done
+    stage_progress: float = 0.0  # 当前阶段进度 0-100
+    total_stocks: int = 0
+    processed_stocks: int = 0
+    current_code: str = ""
+    current_name: str = ""
+    elapsed_seconds: float = 0.0
+    errors: list = Field(default_factory=list)
+    result: Optional[StockSelectorResponse] = None  # 完成后才有

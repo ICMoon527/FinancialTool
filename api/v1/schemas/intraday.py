@@ -160,6 +160,16 @@ class BatchStatusRequest(BaseModel):
 
     stock_codes: List[str] = Field(..., description="需要查询的股票代码列表")
     current_code: str = Field("", description="当前展示的股票代码")
+    include_signals: bool = Field(False, description="是否对全部股票进行信号检测（用于铃铛通知）")
+
+
+class SignalAlert(BaseModel):
+    """单只股票的信号告警"""
+
+    stock_code: str
+    signal_type: str  # "buy" | "sell"
+    trigger_time: str  # 信号触发时间
+    price: float  # 信号触发价
 
 
 class BatchStatusResponse(BaseModel):
@@ -168,3 +178,54 @@ class BatchStatusResponse(BaseModel):
     snapshots: Dict[str, StockSnapshot] = Field(default_factory=dict)
     current_updated: bool = False  # 当前展示股票是否有新数据
     current_full_data: Optional[IntradayDataResponse] = None  # 仅 current_updated=True 时有值
+    signal_alerts: Optional[Dict[str, Optional[SignalAlert]]] = Field(
+        default=None,
+        description="当 include_signals=True 时返回每只股票的最新信号告警",
+    )
+
+
+class SimulatedTradeItem(BaseModel):
+    """单笔模拟交易记录（摘要）"""
+
+    buy_time: str = ""
+    buy_price: float = 0.0
+    sell_time: str = ""
+    sell_price: float = 0.0
+    return_pct: float = 0.0
+
+
+class SimulationReportResponse(BaseModel):
+    """模拟交易统计报告"""
+
+    stock_code: str = ""
+    total_klines: int = 0
+    total_signals: int = 0
+    buy_signals: int = 0
+    sell_signals: int = 0
+    total_trades: int = 0
+    win_trades: int = 0
+    lose_trades: int = 0
+    win_rate: float = 0.0
+    avg_return_pct: float = 0.0
+    max_return_pct: float = 0.0
+    min_return_pct: float = 0.0
+    total_return_pct: float = 0.0
+    max_drawdown_pct: float = 0.0
+    profit_factor: float = 0.0
+    trades: List[SimulatedTradeItem] = Field(default_factory=list)
+
+
+class BatchDownloadStatus(BaseModel):
+    """批量下载分时数据进度"""
+
+    task_id: str = ""
+    status: str = "idle"  # idle | running | completed | cancelled | failed
+    total: int = 0
+    completed: int = 0
+    failed: int = 0
+    skipped: int = 0
+    current_code: str = ""
+    current_name: str = ""
+    elapsed_seconds: float = 0.0
+    errors: List[dict] = Field(default_factory=list)  # [{"code": ..., "error": ...}], 最多 20 条
+    date: str = ""

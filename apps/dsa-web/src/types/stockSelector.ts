@@ -83,3 +83,17 @@ export interface ActivateStrategyRequest {
 export interface DeactivateStrategyRequest {
   strategy_id: string;
 }
+
+export interface ScreenProgressStatus {
+  task_id: string;
+  status: 'idle' | 'running' | 'completed' | 'failed' | 'cancelled';
+  stage: string;
+  stage_progress: number;
+  total_stocks: number;
+  processed_stocks: number;
+  current_code: string;
+  current_name: string;
+  elapsed_seconds: number;
+  errors: string[];
+  result: StockSelectorResponse | null;
+}

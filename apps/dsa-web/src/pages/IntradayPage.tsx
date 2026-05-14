@@ -10,10 +10,16 @@ import {
   deleteSearchHistory,
   getBatchStatus,
   updateSearchHistoryTimestamp,
+  simulateTrading,
+  startBatchDownload,
+  getBatchDownloadStatus,
+  cancelBatchDownload,
   type IntradayDataResponse,
   type IntradayKlinePoint,
   type SearchHistoryItem,
+  type SimulationReportResponse,
   type StockSnapshot,
+  type BatchDownloadStatus,
 } from '../api/intraday';
 import type { WeightContribution, IntradaySignal } from '../api/intraday';
 import { validateStockCode } from '../utils/validation';
@@ -95,6 +101,17 @@ function convertKlineData(
 }
 
 /**
+ * 确保子图数据时间范围与K线对齐
+ * 如果数据首点晚于首根K线，前插一个 null 值点（lightweight-charts 中 null = 断点不绘制）
+ * 防止子图 auto-fit 到较晚的起始时间，进而反向传播到主图
+ */
+function padDataStart(pts: any[], firstKlineTime: number) {
+  if (firstKlineTime > 0 && pts.length > 0 && (pts[0].time as number) > firstKlineTime) {
+    pts.unshift({ time: firstKlineTime, value: null });
+  }
+}
+
+/**
  * 解析 akshare 返回的时间字符串为 UTC 毫秒
  */
 function parseTimestamp(tsStr: string, dateStr: string): number {
@@ -171,6 +188,10 @@ const IntradayPage: React.FC = () => {
   const [searchHistory, setSearchHistory] = useState<SearchHistoryItem[]>([]);
   const [selectedHistoryId, setSelectedHistoryId] = useState<number | null>(null);
   const [historySnapshots, setHistorySnapshots] = useState<Record<string, StockSnapshot>>({});
+  const [signalBells, setSignalBells] = useState<Record<string, { type: 'buy' | 'sell'; time: string; price: number }>>({});
+  const signalBellsRef = useRef(signalBells);
+  signalBellsRef.current = signalBells;
+  const seenSignalTimesRef = useRef<Record<string, string>>({});
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [priceRangeEnabled, setPriceRangeEnabled] = useState(false);
   const todayDateStr = useMemo(() => formatDate(new Date()), []);
@@ -184,6 +205,74 @@ const IntradayPage: React.FC = () => {
     pressureForce: number;
     signalType: string;
   } | null>(null);
+
+  // 模拟交易盈亏报告
+  const [simulationReport, setSimulationReport] = useState<SimulationReportResponse | null>(null);
+  const [simulationLoading, setSimulationLoading] = useState(false);
+
+  // 批量下载分时数据
+  const [batchDownload, setBatchDownload] = useState<BatchDownloadStatus | null>(null);
+  const [showBatchModal, setShowBatchModal] = useState(false);
+  const batchDownloadRef = useRef<BatchDownloadStatus | null>(null);
+  batchDownloadRef.current = batchDownload;
+  const batchPollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const handleStartBatchDownload = useCallback(async () => {
+    setShowBatchModal(true);
+    try {
+      const status = await startBatchDownload(undefined, undefined, true);
+      setBatchDownload(status);
+      return status.task_id;
+    } catch (err: any) {
+      console.error('批量下载启动失败:', err);
+      setShowBatchModal(false);
+    }
+  }, []);
+
+  const handleCancelBatchDownload = useCallback(async () => {
+    const task = batchDownloadRef.current;
+    if (!task?.task_id) return;
+    try {
+      await cancelBatchDownload(task.task_id);
+    } catch {
+      // 取消请求可能失败，轮询会自动更新状态
+    }
+  }, []);
+
+  // 批量下载进度轮询
+  useEffect(() => {
+    if (batchDownload?.status === 'running') {
+      if (batchPollingRef.current) return;
+      const taskId = batchDownload.task_id;
+      console.log('[BatchDownload] 开始轮询, taskId:', taskId);
+      batchPollingRef.current = setInterval(async () => {
+        try {
+          const status = await getBatchDownloadStatus(taskId);
+          console.log('[BatchDownload] 轮询结果:', status.status, `${status.completed}/${status.total}`);
+          setBatchDownload(status);
+          if (status.status !== 'running') {
+            if (batchPollingRef.current) {
+              clearInterval(batchPollingRef.current);
+              batchPollingRef.current = null;
+            }
+          }
+        } catch (err) {
+          console.warn('[BatchDownload] 轮询失败:', err);
+        }
+      }, 1000);
+    } else {
+      if (batchPollingRef.current) {
+        clearInterval(batchPollingRef.current);
+        batchPollingRef.current = null;
+      }
+    }
+    return () => {
+      if (batchPollingRef.current) {
+        clearInterval(batchPollingRef.current);
+        batchPollingRef.current = null;
+      }
+    };
+  }, [batchDownload?.status]);
 
   // 存储从API返回的所有信号
   const allSignalsRef = useRef<IntradaySignal[]>([]);
@@ -207,9 +296,10 @@ const IntradayPage: React.FC = () => {
   const seriesMarkersRef = useRef<any>(null);
   const timeSyncSubRef = useRef<(() => void) | null>(null);
   const isTimeSyncingRef = useRef(false);
+  const isInitialRenderRef = useRef(false);
   const currentDateRef = useRef(todayDateStr);
   const priceRangeEnabledRef = useRef(false);
-  const isCrosshairUpdatingRef = useRef(false);
+  const crosshairSyncDepthRef = useRef(0);
   const currentCrosshairTimeRef = useRef<Time | null>(null);
   const klineRawDataRef = useRef<any[]>([]);
   const crosshairSignalRef = useRef<Record<string, string>>({});
@@ -225,6 +315,8 @@ const IntradayPage: React.FC = () => {
   // 指标子图实例管理
   const indicatorChartsRef = useRef<Map<string, lightweightCharts.IChartApi>>(new Map());
   const indicatorSeriesRef = useRef<Map<string, any[]>>(new Map());
+  // 独立存储子图数据（用于 crosshair 同步，不依赖 lightweight-charts 的 data() 方法）
+  const subChartDataRef = useRef<Map<string, any[]>>(new Map());
 
   currentDateRef.current = todayDateStr;
   priceRangeEnabledRef.current = priceRangeEnabled;
@@ -256,15 +348,18 @@ const IntradayPage: React.FC = () => {
     const day = now.getDay();
     if (day === 0 || day === 6) return false;
     const totalMinutes = now.getHours() * 60 + now.getMinutes();
-    return totalMinutes >= 570 && totalMinutes <= 900; // 9:30 - 15:00
+    // 9:30-11:30 和 13:00-15:00，排除午休
+    return (totalMinutes >= 570 && totalMinutes <= 690) || (totalMinutes >= 780 && totalMinutes <= 900);
   }, []);
 
-  const fetchAndUpdate = useCallback(async () => {
+  const pollCounterRef = useRef(0);
+
+  const fetchAndUpdate = useCallback(async (includeSignals: boolean) => {
     const codes = searchHistoryRef.current.map(h => h.stock_code);
     if (codes.length === 0) return;
     const requestedCode = intradayData?.stock_code || '';
     try {
-      const resp = await getBatchStatus(codes, requestedCode);
+      const resp = await getBatchStatus(codes, requestedCode, includeSignals);
       setHistorySnapshots(resp.snapshots);
       if (resp.current_updated && resp.current_full_data && requestedCode) {
         setIntradayData(prev => {
@@ -273,6 +368,26 @@ const IntradayPage: React.FC = () => {
           }
           return prev;
         });
+      }
+      // 处理信号铃铛（从同一响应中提取）
+      if (resp.signal_alerts) {
+        const seen = seenSignalTimesRef.current;
+        const newBells: Record<string, { type: 'buy' | 'sell'; time: string; price: number }> = {};
+        for (const [code, alert] of Object.entries(resp.signal_alerts)) {
+          if (!alert) continue;
+          if (code === requestedCode) continue;
+          const lastSeen = seen[code];
+          if (alert.trigger_time !== lastSeen) {
+            newBells[code] = {
+              type: alert.signal_type,
+              time: alert.trigger_time,
+              price: alert.price,
+            };
+          }
+        }
+        if (Object.keys(newBells).length > 0) {
+          setSignalBells(prev => ({ ...prev, ...newBells }));
+        }
       }
     } catch {
       // 静默失败，不打扰用户
@@ -287,6 +402,7 @@ const IntradayPage: React.FC = () => {
       clearInterval(pollingRef.current);
       pollingRef.current = null;
     }
+    pollCounterRef.current = 0;
   }, []);
 
   const startPolling = useCallback(() => {
@@ -297,16 +413,44 @@ const IntradayPage: React.FC = () => {
         stopPolling(); // 收盘后自动停止
         return;
       }
-      fetchAndUpdateRef.current();
+      pollCounterRef.current++;
+      // 隔次轮询才带信号检测：单次=仅价格快照，双次=价格快照+信号检测（有效60s间隔）
+      const includeSignals = pollCounterRef.current % 2 === 0;
+      fetchAndUpdateRef.current(includeSignals);
     }, 30000);
   }, [stopPolling, isTradingTime]);
 
-  // 搜索历史加载完成后首次获取行情
+  // 首次加载时自动展示搜索历史第一条标的
+  const autoLoadedRef = useRef(false);
+
   useEffect(() => {
-    if (searchHistory.length > 0) {
-      fetchAndUpdate();
+    if (autoLoadedRef.current) return;
+    if (searchHistory.length > 0 && !intradayData) {
+      autoLoadedRef.current = true;
+      const first = searchHistory[0];
+      setStockCode(first.stock_code);
+      setSelectedHistoryId(first.id);
+      setIsLoading(true);
+      const dateParam = todayDateStr.replace(/-/g, '');
+      getIntradayData(first.stock_code, dateParam)
+        .then(data => {
+          setIntradayData(data);
+          setInputError(undefined);
+          return data;
+        })
+        .then(() => {
+          // 自动加载完成后获取侧边栏快照（不含信号检测，避免与 auto-load 竞争资源）
+          if (searchHistory.length > 0) {
+            fetchAndUpdate(false);
+          }
+        })
+        .catch(err => {
+          console.error('自动加载分时数据失败:', err);
+          setInputError(err.message || '获取数据失败');
+        })
+        .finally(() => setIsLoading(false));
     }
-  }, [searchHistory.length, fetchAndUpdate]);
+  }, [searchHistory.length, intradayData, todayDateStr]);
 
   // 盘中轮询
   useEffect(() => {
@@ -316,7 +460,7 @@ const IntradayPage: React.FC = () => {
       if (document.hidden) {
         stopPolling();
       } else if (isTradingTime()) {
-        fetchAndUpdateRef.current(); // 恢复时立即刷新
+        fetchAndUpdateRef.current(true); // 恢复时立即刷新含信号
         startPolling(); // 仅盘中会启动
       }
     };
@@ -475,6 +619,7 @@ const IntradayPage: React.FC = () => {
       });
       indicatorChartsRef.current.clear();
       indicatorSeriesRef.current.clear();
+      subChartDataRef.current.clear();
     };
   }, []);
 
@@ -483,15 +628,26 @@ const IntradayPage: React.FC = () => {
     indicatorChartsRef.current.forEach((subChart, id) => {
       try {
         const seriesArr = indicatorSeriesRef.current.get(id);
-        if (seriesArr && seriesArr.length > 0) {
-          const firstSeries = seriesArr[0];
-          const data = (firstSeries as any).data?.() || [];
-          const dataPt = data.find((d: any) => d.time === time);
-          if (dataPt) {
-            const value = dataPt.value !== undefined ? dataPt.value :
-              (dataPt.close !== undefined ? dataPt.close : 0);
-            subChart.setCrosshairPosition(value, time, firstSeries);
+        const data = subChartDataRef.current.get(id);
+        if (!seriesArr || seriesArr.length === 0 || !data || data.length === 0) return;
+        const firstSeries = seriesArr[0];
+        const dataPt = data.find((d: any) => d.time === time);
+        let value: number | null = null;
+        if (dataPt && dataPt.value != null && !isNaN(Number(dataPt.value))) {
+          value = dataPt.value;
+        } else {
+          // 无精确匹配时，取最近的可用数据点
+          const nearest = data.reduce((best: any, d: any) => {
+            if (d.value == null || isNaN(Number(d.value))) return best;
+            const diff = Math.abs(Number(d.time) - Number(time));
+            return diff < best.diff ? { d, diff } : best;
+          }, { d: data[0], diff: Infinity });
+          if (nearest.d && nearest.diff < Infinity) {
+            value = nearest.d.value;
           }
+        }
+        if (value != null) {
+          subChart.setCrosshairPosition(value, time, firstSeries);
         }
       } catch (e) { /* ignore */ }
     });
@@ -749,6 +905,9 @@ const IntradayPage: React.FC = () => {
       const volContainer = volumeContainerRef.current;
       if (!container || !volContainer) return;
 
+      // ── 标记初始化阶段开始：阻止子图时间轴变更反向传播到主图 ──
+      isInitialRenderRef.current = true;
+
       // ── 销毁旧图表以完全重置内部状态（包括用户手动调整的 scale）──
       if (chartRef.current) {
         if (timeSyncSubRef.current) timeSyncSubRef.current();
@@ -772,6 +931,7 @@ const IntradayPage: React.FC = () => {
       });
       indicatorChartsRef.current.clear();
       indicatorSeriesRef.current.clear();
+      subChartDataRef.current.clear();
       crosshairSubsRef.current.forEach((unsub) => {
         try { unsub(); } catch (e) { /* ignore */ }
       });
@@ -886,6 +1046,7 @@ const IntradayPage: React.FC = () => {
       const klines = convertKlineData(data.kline_data, date);
       klineRawDataRef.current = klines;
       allSignalsRef.current = data.signals || [];
+      const firstKlineTime: number = klines.length > 0 ? (klines[0].time as number) : 0;
 
       // 默认显示最后一个信号的权重贡献
       const sigs = data.signals || [];
@@ -1194,11 +1355,11 @@ const IntradayPage: React.FC = () => {
 
       // ── 主图十字线联动 ──
       const mainHandleCrosshairMove = (param: any) => {
-        if (isCrosshairUpdatingRef.current) {
+        if (crosshairSyncDepthRef.current > 0) {
           if (param.time) computeSignalsAtTime(param.time);
           return;
         }
-        isCrosshairUpdatingRef.current = true;
+        crosshairSyncDepthRef.current++;
         try {
           currentCrosshairTimeRef.current = param.time;
           if (param.time) {
@@ -1219,7 +1380,7 @@ const IntradayPage: React.FC = () => {
             setCrosshairMacdSum(null);
           }
         } finally {
-          setTimeout(() => { isCrosshairUpdatingRef.current = false; }, 0);
+          crosshairSyncDepthRef.current--;
         }
       };
       crosshairSubsRef.current.push(chart.subscribeCrosshairMove(mainHandleCrosshairMove));
@@ -1244,11 +1405,11 @@ const IntradayPage: React.FC = () => {
       // ── 成交量图十字线联动 ──
       if (volChart && volSeries) {
         const volHandleCrosshairMove = (param: any) => {
-          if (isCrosshairUpdatingRef.current) {
+          if (crosshairSyncDepthRef.current > 0) {
             if (param.time) computeSignalsAtTime(param.time);
             return;
           }
-          isCrosshairUpdatingRef.current = true;
+          crosshairSyncDepthRef.current++;
           try {
             currentCrosshairTimeRef.current = param.time;
             if (param.time) {
@@ -1266,7 +1427,7 @@ const IntradayPage: React.FC = () => {
               setCrosshairMacdSum(null);
             }
           } finally {
-            setTimeout(() => { isCrosshairUpdatingRef.current = false; }, 0);
+            crosshairSyncDepthRef.current--;
           }
         };
         crosshairSubsRef.current.push(volChart.subscribeCrosshairMove(volHandleCrosshairMove));
@@ -1308,6 +1469,7 @@ const IntradayPage: React.FC = () => {
       });
       indicatorChartsRef.current.clear();
       indicatorSeriesRef.current.clear();
+      subChartDataRef.current.clear();
 
       for (const sc of subCharts) {
         const entry = containerMap.find((c) => c.id === sc.id);
@@ -1348,6 +1510,8 @@ const IntradayPage: React.FC = () => {
 
         const lineSeriesList: any[] = [];
 
+        let subDataStored = false;
+
         for (const line of sc.lines) {
           if (sc.id === 'absorption') {
             if (!line.data || line.data.length === 0) continue;
@@ -1368,6 +1532,11 @@ const IntradayPage: React.FC = () => {
               })
               .sort((a, b) => (a.time as number) - (b.time as number));
 
+            padDataStart(points, firstKlineTime);
+            if (!subDataStored) {
+              subChartDataRef.current.set(sc.id, points.slice());
+              subDataStored = true;
+            }
             hs.setData(points);
             lineSeriesList.push(hs);
           } else if (sc.id === 'macd') {
@@ -1379,6 +1548,11 @@ const IntradayPage: React.FC = () => {
                 return { time: Math.floor(ms / 1000) as any, value: pt.value };
               })
               .sort((a: any, b: any) => (a.time as number) - (b.time as number));
+            padDataStart(pts, firstKlineTime);
+            if (!subDataStored) {
+              subChartDataRef.current.set(sc.id, pts.slice());
+              subDataStored = true;
+            }
             if (line.name === 'DIF' && pts.length > 0) {
               const ls = subChart.addSeries(lightweightCharts.LineSeries, {
                 color: '#FFFFFF',
@@ -1417,6 +1591,11 @@ const IntradayPage: React.FC = () => {
                 return { time: Math.floor(ms / 1000) as any, value: pt.value };
               })
               .sort((a: any, b: any) => (a.time as number) - (b.time as number));
+            padDataStart(pts, firstKlineTime);
+            if (!subDataStored) {
+              subChartDataRef.current.set(sc.id, pts.slice());
+              subDataStored = true;
+            }
             if (line.name === 'RSI' && pts.length > 0) {
               const ls = subChart.addSeries(lightweightCharts.LineSeries, {
                 color: '#4488FF',
@@ -1469,24 +1648,33 @@ const IntradayPage: React.FC = () => {
               })
               .sort((a, b) => (a.time as number) - (b.time as number));
 
+            padDataStart(points, firstKlineTime);
+            if (!subDataStored) {
+              subChartDataRef.current.set(sc.id, points.slice());
+              subDataStored = true;
+            }
             ls.setData(points);
             lineSeriesList.push(ls);
           }
         }
 
-        // 同步主图时间轴
-        const range = chart.timeScale().getVisibleRange();
-        if (range && range.from && range.to) {
-          subChart.timeScale().setVisibleRange(range);
+        // 同步主图时间轴：用 K线数据的首尾时间确保与主图完全一致
+        // 注意：不能依赖 getVisibleRange()，因为首次渲染前可能返回 null
+        if (klines.length >= 2) {
+          const firstTime = klines[0].time as number;
+          const lastTime = klines[klines.length - 1].time as number;
+          if (firstTime > 0 && lastTime > firstTime) {
+            subChart.timeScale().setVisibleRange({ from: firstTime as any, to: lastTime as any });
+          }
         }
 
         // 子图十字线联动
         const subHandleCrosshairMove = (param: any) => {
-          if (isCrosshairUpdatingRef.current) {
+          if (crosshairSyncDepthRef.current > 0) {
             if (param.time) computeSignalsAtTime(param.time);
             return;
           }
-          isCrosshairUpdatingRef.current = true;
+          crosshairSyncDepthRef.current++;
           try {
             currentCrosshairTimeRef.current = param.time;
             if (param.time) {
@@ -1495,10 +1683,7 @@ const IntradayPage: React.FC = () => {
               if (kp) {
                 try {
                   const cs = candleSeriesRef.current;
-                  const isValidCandleSeries = cs && (cs as any).seriesType?.() === 'Candlestick';
-                  if (isValidCandleSeries && cs) {
-                    chart.setCrosshairPosition(kp.close, param.time, cs);
-                  } else if (cs) {
+                  if (cs) {
                     chart.setCrosshairPosition(kp.close, param.time, cs);
                   }
                 } catch (e) { /* ignore */ }
@@ -1512,14 +1697,25 @@ const IntradayPage: React.FC = () => {
                 if (otherId === sc.id) return;
                 try {
                   const otherSeriesArr = indicatorSeriesRef.current.get(otherId);
-                  if (otherSeriesArr && otherSeriesArr.length > 0) {
+                  const otherData = subChartDataRef.current.get(otherId);
+                  if (otherSeriesArr && otherSeriesArr.length > 0 && otherData && otherData.length > 0) {
                     const otherSeries = otherSeriesArr[0];
-                    const otherData = (otherSeries as any).data?.() || [];
                     const otherPt = otherData.find((d: any) => d.time === param.time);
-                    if (otherPt) {
-                      const val = otherPt.value !== undefined ? otherPt.value
-                        : (otherPt.close !== undefined ? otherPt.close : 0);
-                      otherChart.setCrosshairPosition(val, param.time, otherSeries);
+                    let otherVal: number | null = null;
+                    if (otherPt && otherPt.value != null && !isNaN(Number(otherPt.value))) {
+                      otherVal = otherPt.value;
+                    } else {
+                      const nearest = otherData.reduce((best: any, d: any) => {
+                        if (d.value == null || isNaN(Number(d.value))) return best;
+                        const diff = Math.abs(Number(d.time) - Number(param.time));
+                        return diff < best.diff ? { d, diff } : best;
+                      }, { d: otherData[0], diff: Infinity });
+                      if (nearest.d && nearest.diff < Infinity) {
+                        otherVal = nearest.d.value;
+                      }
+                    }
+                    if (otherVal != null) {
+                      otherChart.setCrosshairPosition(otherVal, param.time, otherSeries);
                     }
                   }
                 } catch (e) { /* ignore */ }
@@ -1532,13 +1728,15 @@ const IntradayPage: React.FC = () => {
               setCrosshairMacdSum(null);
             }
           } finally {
-            setTimeout(() => { isCrosshairUpdatingRef.current = false; }, 0);
+            crosshairSyncDepthRef.current--;
           }
         };
         crosshairSubsRef.current.push(subChart.subscribeCrosshairMove(subHandleCrosshairMove));
 
         const subHandleTimeScaleChange = () => {
           if (isTimeSyncingRef.current) return;
+          // 初始化阶段：阻止子图时间范围变更反向传播到主图
+          if (isInitialRenderRef.current) return;
           isTimeSyncingRef.current = true;
           try {
             const sr = subChart.timeScale().getVisibleRange();
@@ -1598,6 +1796,13 @@ const IntradayPage: React.FC = () => {
         }
         seriesMarkersRef.current = createSeriesMarkers(markSeries, markers as any);
       }
+
+      // ── 延迟清除初始化标志：等待 lightweight-charts 完成首次渲染后再启用子→主时间同步 ──
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          isInitialRenderRef.current = false;
+        });
+      });
     },
     [],
   );
@@ -1653,6 +1858,19 @@ const IntradayPage: React.FC = () => {
     async (item: SearchHistoryItem) => {
       setStockCode(item.stock_code);
       setSelectedHistoryId(item.id);
+      // 清除该股票的铃铛（通过 ref 读取最新值，避免 stale closure）
+      const bell = signalBellsRef.current[item.stock_code];
+      if (bell) {
+        seenSignalTimesRef.current = {
+          ...seenSignalTimesRef.current,
+          [item.stock_code]: bell.time,
+        };
+        setSignalBells(prev => {
+          const next = { ...prev };
+          delete next[item.stock_code];
+          return next;
+        });
+      }
       setIsLoading(true);
       try {
         const dateParam = todayDateStr.replace(/-/g, '');
@@ -1685,6 +1903,22 @@ const IntradayPage: React.FC = () => {
     },
     [loadHistory],
   );
+
+  // 模拟交易盈亏
+  const handleSimulateTrading = useCallback(async () => {
+    const code = intradayData?.stock_code;
+    if (!code) return;
+    setSimulationLoading(true);
+    setSimulationReport(null);
+    try {
+      const report = await simulateTrading(code);
+      setSimulationReport(report);
+    } catch (err: any) {
+      console.error('模拟交易失败:', err);
+    } finally {
+      setSimulationLoading(false);
+    }
+  }, [intradayData?.stock_code]);
 
   // ── 计算信号统计颜色 ──
   const summary = intradayData?.signal_summary;
@@ -1865,11 +2099,39 @@ const IntradayPage: React.FC = () => {
                         <span className="font-medium text-white truncate text-xs">
                           {item.stock_name ? `${item.stock_name} (${item.stock_code})` : item.stock_code}
                         </span>
-                        {isCurrentlyDisplayed && (
+                        {isCurrentlyDisplayed && !signalBells[item.stock_code] ? (
                           <span className="flex-shrink-0 text-cyan text-xs font-medium">
                             展示中
                           </span>
-                        )}
+                        ) : signalBells[item.stock_code] ? (
+                          <span
+                            className="flex-shrink-0"
+                            title={`${signalBells[item.stock_code].type === 'buy' ? '买入' : '卖出'}信号 ${signalBells[item.stock_code].time} ¥${signalBells[item.stock_code].price.toFixed(2)}`}
+                          >
+                            <svg
+                              className="w-4 h-4"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              xmlns="http://www.w3.org/2000/svg"
+                            >
+                              <path
+                                d="M5.5 18a6 6 0 0 1 13 0H5.5z"
+                                stroke={signalBells[item.stock_code].type === 'buy' ? '#FF4444' : '#44FF44'}
+                                strokeWidth="1.5"
+                              />
+                              <path
+                                d="M6 10a6 6 0 1 1 12 0v4H6v-4z"
+                                stroke={signalBells[item.stock_code].type === 'buy' ? '#FF4444' : '#44FF44'}
+                                strokeWidth="1.5"
+                              />
+                              <path
+                                d="M9.5 20a2.5 2.5 0 0 0 5 0h-5z"
+                                stroke={signalBells[item.stock_code].type === 'buy' ? '#FF4444' : '#44FF44'}
+                                strokeWidth="1.5"
+                              />
+                            </svg>
+                          </span>
+                        ) : null}
                       </div>
                       <div className="flex items-center gap-1.5 mt-0.5">
                         {(() => {
@@ -2010,8 +2272,159 @@ const IntradayPage: React.FC = () => {
               '搜索'
             )}
           </button>
+
+          <button
+            type="button"
+            onClick={handleStartBatchDownload}
+            disabled={batchDownload?.status === 'running'}
+            title="批量下载全市场A股当天分时数据"
+            className={`flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded border transition-colors flex-shrink-0 ${
+              batchDownload?.status === 'running'
+                ? 'text-cyan border-cyan/30 bg-cyan/10'
+                : 'text-muted border-muted/20 bg-transparent hover:text-cyan hover:border-cyan/40'
+            } disabled:opacity-60 disabled:cursor-not-allowed`}
+          >
+            {batchDownload?.status === 'running' ? (
+              <>
+                <span className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin" />
+                下载中
+              </>
+            ) : (
+              <>
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                </svg>
+                批量下载
+              </>
+            )}
+          </button>
         </div>
       </header>
+
+      {/* 批量下载进度弹窗 */}
+      {showBatchModal && batchDownload && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/60" onClick={() => {
+            if (batchDownload?.status !== 'running') setShowBatchModal(false);
+          }} />
+          <div className="relative terminal-card border border-white/10 rounded-xl shadow-2xl p-5 w-full max-w-md mx-4">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-sm font-semibold text-white">
+                {batchDownload.status === 'running' ? '正在批量下载分时数据' :
+                 batchDownload.status === 'completed' ? '批量下载完成' :
+                 batchDownload.status === 'cancelled' ? '已取消' : '下载异常'}
+              </h3>
+              <button
+                type="button"
+                onClick={() => setShowBatchModal(false)}
+                className="text-muted hover:text-white p-0.5"
+              >
+                <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M18 6L6 18M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            {/* 进度条 - 使用 key 强制 React 在进度更新时重新渲染 DOM */}
+            {batchDownload.total > 0 ? (
+              <div key={`progress-${batchDownload.completed}`} className="mb-3">
+                <div className="w-full bg-white/5 rounded-full h-2 overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all duration-300 ${
+                      batchDownload.status === 'completed' ? 'bg-emerald' :
+                      batchDownload.status === 'cancelled' ? 'bg-yellow-500/60' :
+                      batchDownload.status === 'failed' ? 'bg-red-500/60' :
+                      'bg-cyan'
+                    }`}
+                    style={{ width: `${Math.round(batchDownload.completed / batchDownload.total * 100)}%` }}
+                  />
+                </div>
+                <div className="text-xs text-muted mt-1 text-right">
+                  {batchDownload.completed} / {batchDownload.total} ({Math.round(batchDownload.completed / batchDownload.total * 100)}%)
+                </div>
+              </div>
+            ) : (
+              batchDownload.status === 'running' && (
+                <div className="text-xs text-muted mb-3 text-center py-2">
+                  正在初始化股票列表...
+                </div>
+              )
+            )}
+
+            {/* 统计信息 */}
+            <div key={`stats-${batchDownload.completed}`} className="grid grid-cols-3 gap-2 mb-3 text-xs">
+              <div className="bg-white/[0.03] rounded px-2 py-1.5">
+                <div className="text-muted">成功</div>
+                <div className="text-emerald font-mono">{batchDownload.completed - batchDownload.skipped}</div>
+              </div>
+              <div className="bg-white/[0.03] rounded px-2 py-1.5">
+                <div className="text-muted">跳过</div>
+                <div className="text-muted font-mono">{batchDownload.skipped}</div>
+              </div>
+              <div className="bg-white/[0.03] rounded px-2 py-1.5">
+                <div className="text-muted">失败</div>
+                <div className="text-red-400 font-mono">{batchDownload.failed}</div>
+              </div>
+            </div>
+
+            {/* 当前处理 */}
+            {batchDownload.status === 'running' && batchDownload.current_code && (
+              <div className="text-xs text-muted mb-3">
+                当前: <span className="text-white font-mono">{batchDownload.current_code}</span>
+                {batchDownload.current_name && <span className="ml-1 text-white/70">{batchDownload.current_name}</span>}
+              </div>
+            )}
+
+            {/* 耗时 */}
+            {batchDownload.elapsed_seconds > 0 && (
+              <div className="text-xs text-muted mb-3">
+                耗时: {Math.floor(batchDownload.elapsed_seconds / 60)}分{Math.floor(batchDownload.elapsed_seconds % 60)}秒
+              </div>
+            )}
+
+            {/* 日期 */}
+            {batchDownload.date && (
+              <div className="text-xs text-muted mb-3">日期: {batchDownload.date}</div>
+            )}
+
+            {/* 错误列表 */}
+            {batchDownload.errors.length > 0 && (
+              <div className="mb-3">
+                <div className="text-xs text-red-400 mb-1">最近错误:</div>
+                <div className="max-h-24 overflow-y-auto text-xs font-mono bg-black/20 rounded px-2 py-1">
+                  {batchDownload.errors.map((e, i) => (
+                    <div key={i} className="text-red-400/80 truncate">
+                      {e.code}: {e.error}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* 按钮 */}
+            <div className="flex items-center gap-2">
+              {batchDownload.status === 'running' && (
+                <button
+                  type="button"
+                  onClick={handleCancelBatchDownload}
+                  className="px-3 py-1.5 text-xs font-medium rounded border border-red-500/30 text-red-400 hover:bg-red-500/10 transition-colors"
+                >
+                  取消下载
+                </button>
+              )}
+              {batchDownload.status !== 'running' && (
+                <button
+                  type="button"
+                  onClick={() => setShowBatchModal(false)}
+                  className="px-3 py-1.5 text-xs font-medium rounded border border-white/10 text-muted hover:text-white hover:border-white/30 transition-colors"
+                >
+                  关闭
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Desktop 侧边栏 */}
       <div className="hidden md:flex col-start-2 row-start-2 flex-col overflow-hidden min-h-0 h-full">
@@ -2036,15 +2449,70 @@ const IntradayPage: React.FC = () => {
         <div className="max-w-6xl">
           {intradayData && (
             <div className="mb-4 mt-2">
-              <h2 className="text-xl font-bold text-white">
-                {intradayData.stock_name
-                  ? `${intradayData.stock_name} (${intradayData.stock_code})`
-                  : intradayData.stock_code}
-                <span className="text-sm text-muted ml-3">{intradayData.date}</span>
-              </h2>
-              <div className="text-xs text-muted mt-1">
-                分时K线: {intradayData.kline_data?.length || 0} 条 · 信号: {intradayData.signals?.length || 0} 个
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h2 className="text-xl font-bold text-white">
+                    {intradayData.stock_name
+                      ? `${intradayData.stock_name} (${intradayData.stock_code})`
+                      : intradayData.stock_code}
+                    <span className="text-sm text-muted ml-3">{intradayData.date}</span>
+                  </h2>
+                  <div className="text-xs text-muted mt-1">
+                    分时K线: {intradayData.kline_data?.length || 0} 条 · 信号: {intradayData.signals?.length || 0} 个
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  <button
+                    type="button"
+                    onClick={handleSimulateTrading}
+                    disabled={simulationLoading}
+                    className={`px-2.5 py-1 text-xs font-medium rounded border transition-colors ${
+                      simulationReport
+                        ? 'text-emerald border-emerald/40 bg-emerald/10 hover:bg-emerald/20'
+                        : 'text-muted border-muted/30 bg-transparent hover:text-white hover:border-white/50'
+                    } disabled:opacity-50 disabled:cursor-not-allowed`}
+                  >
+                    {simulationLoading ? (
+                      <span className="flex items-center gap-1">
+                        <span className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin" />
+                        计算中
+                      </span>
+                    ) : simulationReport ? (
+                      `模拟交易 ${simulationReport.total_return_pct >= 0 ? '+' : ''}${simulationReport.total_return_pct.toFixed(2)}%`
+                    ) : (
+                      '模拟交易'
+                    )}
+                  </button>
+                  {simulationReport && (
+                    <button
+                      type="button"
+                      onClick={() => setSimulationReport(null)}
+                      className="text-muted hover:text-white text-xs p-0.5"
+                      title="关闭"
+                    >
+                      <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M18 6L6 18M6 6l12 12" />
+                      </svg>
+                    </button>
+                  )}
+                </div>
               </div>
+              {simulationReport && (
+                <div className="mt-2 flex flex-wrap gap-3 text-xs text-muted bg-white/[0.03] rounded border border-white/[0.06] px-3 py-2">
+                  <span>总交易: <strong className="text-white">{simulationReport.total_trades}</strong></span>
+                  <span>盈利: <strong className="text-emerald">{simulationReport.win_trades}</strong></span>
+                  <span>亏损: <strong className="text-red-400">{simulationReport.lose_trades}</strong></span>
+                  <span>胜率: <strong className="text-white">{(simulationReport.win_rate * 100).toFixed(1)}%</strong></span>
+                  <span>累计收益: <strong className={simulationReport.total_return_pct >= 0 ? 'text-emerald' : 'text-red-400'}>
+                    {simulationReport.total_return_pct >= 0 ? '+' : ''}{simulationReport.total_return_pct.toFixed(2)}%
+                  </strong></span>
+                  <span>平均收益: <strong className={simulationReport.avg_return_pct >= 0 ? 'text-emerald' : 'text-red-400'}>
+                    {simulationReport.avg_return_pct >= 0 ? '+' : ''}{simulationReport.avg_return_pct.toFixed(2)}%
+                  </strong></span>
+                  <span>最大回撤: <strong className="text-red-400">{simulationReport.max_drawdown_pct.toFixed(2)}%</strong></span>
+                  <span>盈亏比: <strong className="text-white">{simulationReport.profit_factor.toFixed(2)}</strong></span>
+                </div>
+              )}
             </div>
           )}
 

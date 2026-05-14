@@ -3113,19 +3113,38 @@ class DatabaseManager:
                     continue
 
                 try:
-                    record = IntradayKline1Min(
-                        code=code,
-                        date=date_obj,
-                        time=t,
-                        open=k.get("Open"),
-                        high=k.get("High"),
-                        low=k.get("Low"),
-                        close=k.get("Close"),
-                        volume=k.get("Volume"),
-                        amount=k.get("Amount"),
-                        avg_price=k.get("AvgPrice"),
+                    # 先查找是否已有记录，避免唯一约束冲突
+                    existing = (
+                        session.query(IntradayKline1Min)
+                        .filter(
+                            IntradayKline1Min.code == code,
+                            IntradayKline1Min.date == date_obj,
+                            IntradayKline1Min.time == t,
+                        )
+                        .first()
                     )
-                    session.merge(record)
+                    if existing:
+                        existing.open = k.get("Open")
+                        existing.high = k.get("High")
+                        existing.low = k.get("Low")
+                        existing.close = k.get("Close")
+                        existing.volume = k.get("Volume")
+                        existing.amount = k.get("Amount")
+                        existing.avg_price = k.get("AvgPrice")
+                    else:
+                        record = IntradayKline1Min(
+                            code=code,
+                            date=date_obj,
+                            time=t,
+                            open=k.get("Open"),
+                            high=k.get("High"),
+                            low=k.get("Low"),
+                            close=k.get("Close"),
+                            volume=k.get("Volume"),
+                            amount=k.get("Amount"),
+                            avg_price=k.get("AvgPrice"),
+                        )
+                        session.add(record)
                     count += 1
                 except Exception as e:
                     logger.warning(f"保存K线记录失败 {code} {date_obj} {t}: {e}")
@@ -3137,7 +3156,7 @@ class DatabaseManager:
                 logger.error(f"提交K线数据失败 {code} {date_obj}: {e}")
                 return 0
 
-            logger.info(f"保存分时K线: {code} {date_obj}, {count} 条")
+            logger.debug(f"保存分时K线: {code} {date_obj}, {count} 条")
             return count
 
     def load_intraday_klines(self, code: str, date_obj: date) -> list:
@@ -3159,7 +3178,7 @@ class DatabaseManager:
                 .all()
             )
             if records:
-                logger.info(f"从数据库加载分时K线: {code} {date_obj}, {len(records)} 条")
+                logger.debug(f"从数据库加载分时K线: {code} {date_obj}, {len(records)} 条")
             return [r.to_dict() for r in records]
 
     # ============================================================
@@ -3225,7 +3244,7 @@ class DatabaseManager:
                     )
                     session.add(record)
                 session.commit()
-                logger.info(f"保存每日快照: {code} {date_obj}, 价格={last_k.get('Close')}, K线数={len(klines)}")
+                logger.debug(f"保存每日快照: {code} {date_obj}, 价格={last_k.get('Close')}, K线数={len(klines)}")
                 return True
             except Exception as e:
                 session.rollback()
@@ -3327,7 +3346,7 @@ class DatabaseManager:
                 .first()
             )
             if record:
-                logger.info(f"加载前日快照（预热用）: {code} {record.date}")
+                logger.debug(f"加载前日快照（预热用）: {code} {record.date}")
                 return record.to_dict()
             return None
 

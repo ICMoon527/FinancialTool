@@ -4,6 +4,7 @@ import type {
   StockSelectorResponse,
   StrategiesResponse,
   StockSelectorConfigResponse,
+  ScreenProgressStatus,
 } from '../types/stockSelector';
 
 export const stockSelectorApi = {
@@ -35,6 +36,23 @@ export const stockSelectorApi = {
     const response = await apiClient.post<StockSelectorResponse>('/api/v1/stock-selector/screen', request, {
       timeout: 1200000,
     });
+    return response.data;
+  },
+
+  async screenStocksAsync(request: StockSelectorRequest): Promise<ScreenProgressStatus> {
+    const response = await apiClient.post<ScreenProgressStatus>(
+      '/api/v1/stock-selector/screen-async',
+      request,
+      { timeout: 1200000 },
+    );
+    return response.data;
+  },
+
+  async getScreenAsyncStatus(taskId?: string): Promise<ScreenProgressStatus> {
+    const params = taskId ? `?task_id=${encodeURIComponent(taskId)}` : '';
+    const response = await apiClient.get<ScreenProgressStatus>(
+      `/api/v1/stock-selector/screen-async/status${params}`,
+    );
     return response.data;
   },
 };

@@ -1175,7 +1175,7 @@ class IntradayT0Strategy:
             if self._position is not None:
                 buy_price = self._position["price"]
                 pnl_pct = (price - buy_price) / buy_price * 100
-                logger.info(f"[模拟交易] 卖出 {self.stock_code} @ {price:.2f}, 收益率 {pnl_pct:+.2f}%")
+                logger.debug(f"[模拟交易] 卖出 {self.stock_code} @ {price:.2f}, 收益率 {pnl_pct:+.2f}%")
                 self._position = None
 
             return signal
@@ -1207,7 +1207,7 @@ class IntradayT0Strategy:
             signal.sell_weight_details = sell_details
 
             if self._position is None:
-                logger.info(f"[模拟交易] 买入 {self.stock_code} @ {price:.2f}")
+                logger.debug(f"[模拟交易] 买入 {self.stock_code} @ {price:.2f}")
                 self._position = {"price": price, "time": self.buffer.get_latest_time()}
 
             self._emit_signal(signal)

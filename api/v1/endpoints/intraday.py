@@ -12,11 +12,12 @@ import traceback
 import yaml
 import json
 import threading
+import time
 from datetime import datetime, timedelta, date as date_type
 from pathlib import Path
 from typing import Optional, Callable, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from requests.exceptions import (
     ConnectionError,
     ReadTimeout,
@@ -27,6 +28,7 @@ from sqlalchemy import text
 
 from api.deps import get_database_manager
 from api.v1.schemas.intraday import (
+    BatchDownloadStatus,
     BatchStatusRequest,
     BatchStatusResponse,
     DeleteHistoryResponse,
@@ -39,6 +41,8 @@ from api.v1.schemas.intraday import (
     SearchHistoryItem,
     SearchHistoryRequest,
     SearchHistoryResponse,
+    SimulatedTradeItem,
+    SimulationReportResponse,
     StockSnapshot,
     WeightContribution,
 )
@@ -48,6 +52,52 @@ from data_provider import DataFetcherManager
 from watchdog.strategies.intraday_t0_strategy import IntradayIndicatorEngine
 
 logger = logging.getLogger(__name__)
+
+# ── 分时数据内存缓存（包含完整 K线+信号+参考线+指标子图，避免轮询与手动点击之间的重复计算）──
+_full_response_cache: dict = {}
+_full_response_cache_lock = threading.Lock()
+_FULL_RESPONSE_CACHE_TTL = 35  # 略大于30秒轮询间隔
+
+# ── 分时K线缓存（信号检测时写入，供 get_intraday_data 跳过外部API）──
+_klines_cache: dict = {}
+_klines_cache_lock = threading.Lock()
+_KLINES_CACHE_TTL = 35
+
+
+def _get_cached_full_response(code: str) -> Optional[IntradayDataResponse]:
+    """获取缓存的完整分时数据响应"""
+    with _full_response_cache_lock:
+        entry = _full_response_cache.get(code)
+        if entry and time.time() - entry['timestamp'] < _FULL_RESPONSE_CACHE_TTL:
+            return entry['response']
+    return None
+
+
+def _set_cached_full_response(code: str, response: IntradayDataResponse):
+    """缓存完整分时数据响应"""
+    with _full_response_cache_lock:
+        _full_response_cache[code] = {
+            'timestamp': time.time(),
+            'response': response,
+        }
+
+
+def _get_cached_klines(code: str) -> Optional[list]:
+    """获取缓存的K线数据（来自信号检测）"""
+    with _klines_cache_lock:
+        entry = _klines_cache.get(code)
+        if entry and time.time() - entry['timestamp'] < _KLINES_CACHE_TTL:
+            return entry['klines']
+    return None
+
+
+def _set_cached_klines(code: str, klines: list):
+    """缓存K线数据"""
+    with _klines_cache_lock:
+        _klines_cache[code] = {
+            'timestamp': time.time(),
+            'klines': klines,
+        }
 
 CONFIG_PATH = Path(__file__).resolve().parent.parent.parent.parent / "watchdog" / "strategies" / "intraday_t0_config.yaml"
 
@@ -74,6 +124,15 @@ def _normalize_stock_code(code: str) -> str:
     return code
 
 
+def _extract_date_from_klines(klines: list, fallback: str = "") -> str:
+    """从K线数据提取实际日期，避免请求参数与实际数据日期不一致"""
+    if klines and len(klines) > 0:
+        ts = klines[0].get('timestamp', '')
+        if ts:
+            return ts[:10]
+    return fallback or datetime.now().strftime("%Y-%m-%d")
+
+
 def _try_multiple_sources(
     fetch_functions: list[tuple[str, Callable]],
     data_type: str = "数据"
@@ -95,19 +154,19 @@ def _try_multiple_sources(
 
     for source_name, fetch_func in fetch_functions:
         try:
-            logger.info(f"尝试使用 {source_name} 获取{data_type}...")
+            logger.debug(f"尝试使用 {source_name} 获取{data_type}...")
             result = fetch_func()
 
             # 检查结果是否有效
             if result is not None and (not hasattr(result, "empty") or not result.empty):
-                logger.info(f"使用 {source_name} 成功获取{data_type}")
+                logger.debug(f"使用 {source_name} 成功获取{data_type}")
                 return result
             else:
-                logger.warning(f"{source_name} 返回空数据，尝试下一个数据源")
+                logger.debug(f"{source_name} 返回空数据，尝试下一个数据源")
                 continue
 
         except Exception as e:
-            logger.warning(f"{source_name} 获取{data_type}失败: {type(e).__name__}: {e}")
+            logger.debug(f"{source_name} 获取{data_type}失败: {type(e).__name__}: {e}")
             last_exception = e
             continue
 
@@ -159,14 +218,16 @@ def _get_intraday_klines(stock_code: str, date_str: Optional[str] = None) -> lis
 
             market = "sh" if code.startswith("6") else "sz"
             url = f"https://web.ifzq.gtimg.cn/appstock/app/minute/query?code={market}{code}"
-            r = requests.get(url, timeout=15)
+            r = requests.get(url, timeout=8)
             data = r.json()
-            point_list = (
-                data.get("data", {})
-                .get(f"{market}{code}", {})
-                .get("data", {})
-                .get("data", [])
-            )
+            stock_data = data.get("data", {}).get(f"{market}{code}", {})
+            point_list = stock_data.get("data", {}).get("data", [])
+            # 尝试从腾讯响应中提取实际日期
+            resp_date = stock_data.get("data", {}).get("date", "")
+            if resp_date and len(resp_date) == 8:
+                actual_day = f"{resp_date[:4]}-{resp_date[4:6]}-{resp_date[6:8]}"
+            else:
+                actual_day = target_date
             if not point_list:
                 return None
             records = []
@@ -182,7 +243,7 @@ def _get_intraday_klines(stock_code: str, date_str: Optional[str] = None) -> lis
                 per_vol = max(cur_vol - prev_vol, 0.0)
                 prev_vol = cur_vol
                 records.append({
-                    "timestamp": f"{target_date}T{hour}:{minute}:00",
+                    "timestamp": f"{actual_day}T{hour}:{minute}:00",
                     "Open": price,
                     "High": price,
                     "Low": price,
@@ -191,7 +252,14 @@ def _get_intraday_klines(stock_code: str, date_str: Optional[str] = None) -> lis
                 })
             if not records:
                 return None
-            return pd.DataFrame(records)
+            df = pd.DataFrame(records)
+            # 如果腾讯返回的日期与请求日期不一致，记录警告
+            if actual_day != target_date:
+                logger.warning(
+                    f"腾讯API返回日期({actual_day})与请求日期({target_date})不一致，"
+                    f"可能出现日期错配"
+                )
+            return df
 
         fetch_functions.append(("腾讯财经1分钟分时", fetch_tencent_1min))
 
@@ -207,7 +275,7 @@ def _get_intraday_klines(stock_code: str, date_str: Optional[str] = None) -> lis
                 f"?symbol={symbol_str}&scale=5&ma=no&datalen=250"
             )
             headers = {"Referer": "https://finance.sina.com.cn"}
-            r = requests.get(url, headers=headers, timeout=15)
+            r = requests.get(url, headers=headers, timeout=8)
             data = r.json()
             if not data or not isinstance(data, list):
                 return None
@@ -217,13 +285,14 @@ def _get_intraday_klines(stock_code: str, date_str: Optional[str] = None) -> lis
                 if not day_str.startswith(target_date):
                     continue
                 time_part = day_str.split()[-1] if " " in day_str else ""
+                actual_day = day_str.split()[0] if " " in day_str else target_date
                 records.append({
+                    "timestamp": f"{actual_day}T{time_part}",
                     "Open": float(item["open"]),
                     "High": float(item["high"]),
                     "Low": float(item["low"]),
                     "Close": float(item["close"]),
                     "Volume": float(item["volume"]),
-                    "timestamp": f"{target_date}T{time_part}",
                 })
             if not records:
                 return None
@@ -332,7 +401,7 @@ def _get_intraday_klines(stock_code: str, date_str: Optional[str] = None) -> lis
                 continue
             klines.append(kline)
 
-        logger.info(f"获取到 {len(klines)} 根K线数据")
+        logger.debug(f"获取到 {len(klines)} 根K线数据")
         return klines
 
     except HTTPException:
@@ -859,7 +928,7 @@ def _generate_indicator_sub_charts(klines: list) -> list:
                 )
             )
 
-        logger.info(f"生成 {len(sub_charts)} 个指标子图")
+        logger.debug(f"生成 {len(sub_charts)} 个指标子图")
         return sub_charts
 
     except ImportError as e:
@@ -887,7 +956,7 @@ def _ensure_turnover_rate(daily_df, code, db_manager, end_date):
     if len(non_zero) > 0:
         return daily_df, False
 
-    logger.info(f"换手率全为0，尝试为 {code} 补充换手率数据...")
+    logger.debug(f"换手率全为0，尝试为 {code} 补充换手率数据...")
 
     from datetime import timedelta
 
@@ -900,7 +969,7 @@ def _ensure_turnover_rate(daily_df, code, db_manager, end_date):
         stock_basic = turnover_service.get_stock_basic(code, end_date)
         if stock_basic and stock_basic.circulating_shares and stock_basic.circulating_shares > 0:
             circulating_shares = stock_basic.circulating_shares
-            logger.info(f"从StockBasic获取 {code} 流通股本: {circulating_shares:.0f} 股")
+            logger.debug(f"从StockBasic获取 {code} 流通股本: {circulating_shares:.0f} 股")
     except Exception as e:
         logger.warning(f"从StockBasic获取 {code} 流通股本失败: {e}")
 
@@ -958,7 +1027,7 @@ def _ensure_turnover_rate(daily_df, code, db_manager, end_date):
                     record.updated_at = dt.now()
                     count += 1
             session.commit()
-        logger.info(f"回写 {code} 换手率到数据库: {count} 条")
+        logger.debug(f"回写 {code} 换手率到数据库: {count} 条")
     except Exception as e:
         logger.warning(f"回写 {code} 换手率到数据库失败: {e}")
 
@@ -1051,7 +1120,7 @@ def _compute_reference_lines(klines: list, code: str, db_manager=None, query_dat
                                 'turnover_rate': float(d.get('turnover_rate', 0) or 0),
                             })
                     if not df_rows:
-                        logger.info("日线数据库无有效数据，跳过日线级参考线")
+                        logger.debug("日线数据库无有效数据，跳过日线级参考线")
                     else:
                         daily_df = pd.DataFrame(df_rows)
                         daily_df['Date'] = pd.to_datetime(daily_df['Date'])
@@ -1070,13 +1139,13 @@ def _compute_reference_lines(klines: list, code: str, db_manager=None, query_dat
                         if cache is not None:
                             chip_upper_val = cache["chip_upper"]
                             chip_lower_val = cache["chip_lower"]
-                            logger.info(
+                            logger.debug(
                                 f"命中筹码分布缓存: {code} end_date={end_date}, "
                                 f"upper={chip_upper_val}, lower={chip_lower_val}"
                             )
                         else:
                             if turnover_filled:
-                                logger.info(f"换手率已补充，重新计算筹码分布: {code}")
+                                logger.debug(f"换手率已补充，重新计算筹码分布: {code}")
                             try:
                                 from indicators.indicators.chip_distribution import ChipDistribution
                                 import numpy as np
@@ -1103,7 +1172,7 @@ def _compute_reference_lines(klines: list, code: str, db_manager=None, query_dat
                                         db_manager.save_chip_distribution_cache(
                                             code, end_date, chip_upper_val, chip_lower_val
                                         )
-                                        logger.info(
+                                        logger.debug(
                                             f"计算并缓存筹码分布: {code} end_date={end_date}, "
                                             f"upper={chip_upper_val}, lower={chip_lower_val}"
                                         )
@@ -1139,7 +1208,7 @@ def _compute_reference_lines(klines: list, code: str, db_manager=None, query_dat
                         }, index=[pd.Timestamp(q_date)])
                         daily_df = pd.concat([daily_df, today_row])
                         daily_df = daily_df.sort_index()
-                        logger.info(
+                        logger.debug(
                             f"追加当日OHLC: O={today_open} H={today_high} L={today_low} "
                             f"C={today_close} V={today_vol}, 总计{len(daily_df)}行"
                         )
@@ -1175,7 +1244,7 @@ def _compute_reference_lines(klines: list, code: str, db_manager=None, query_dat
                                 style=ref_dict['style'],
                                 base_weight=ref_dict['base_weight'],
                             ))
-                        logger.info(f"ReferenceLineGenerator 生成 {len(daily_refs)} 条日线级参考线")
+                        logger.debug(f"ReferenceLineGenerator 生成 {len(daily_refs)} 条日线级参考线")
 
                         # ── 前高/前低 30个自然日HHV/LLV ──
                         _add_30day_extreme_lines(ref_lines, daily_df, q_date, today_low, today_high)
@@ -1183,7 +1252,7 @@ def _compute_reference_lines(klines: list, code: str, db_manager=None, query_dat
             except Exception as db_err:
                 logger.warning(f"从数据库获取日线数据失败，跳过日线级参考线: {db_err}", exc_info=True)
 
-        logger.info(f"生成 {len(ref_lines)} 条参考线")
+        logger.debug(f"生成 {len(ref_lines)} 条参考线")
         return ref_lines
 
     except Exception as e:
@@ -1231,7 +1300,7 @@ def _add_30day_extreme_lines(ref_lines: list, daily_df, query_date, today_low: f
             id='llv_30', label='前低30日', price=round(llv_30, 2),
             category='极值', color='#44FF44', style='solid', base_weight=1.1,
         ))
-        logger.info(f"30日极值: HHV={hhv_30:.2f}, LLV={llv_30:.2f}")
+        logger.debug(f"30日极值: HHV={hhv_30:.2f}, LLV={llv_30:.2f}")
     except Exception as e:
         logger.warning(f"计算30日极值失败: {e}", exc_info=True)
 
@@ -1283,30 +1352,50 @@ def get_intraday_data(
     """获取分时K线数据和信号"""
     try:
         code = _normalize_stock_code(stock_code)
-        date_str = date
 
-        # 确定查询日期
-        if date_str is None:
+        # 确定查询日期（仅当日数据走缓存，历史数据不缓存）
+        if date is None:
             q_date = date_type.today()
             date_str = q_date.isoformat()
-        elif len(date_str) == 8:
-            q_date = date_type(int(date_str[:4]), int(date_str[4:6]), int(date_str[6:8]))
-            date_str = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+            is_today = True
+        elif len(date) == 8:
+            q_date = date_type(int(date[:4]), int(date[4:6]), int(date[6:8]))
+            date_str = f"{date[:4]}-{date[4:6]}-{date[6:8]}"
+            is_today = q_date == date_type.today()
         else:
-            q_date = date_type.fromisoformat(date_str)
+            q_date = date_type.fromisoformat(date)
+            is_today = q_date == date_type.today()
+            date_str = date
 
-        is_today = q_date == date_type.today()
+        # 当日数据优先走完整响应缓存（轮询已计算好，直接返回）
+        if is_today:
+            cached = _get_cached_full_response(code)
+            if cached is not None:
+                logger.info(f"[数据源] {code}: 命中完整内存缓存")
+                return cached
 
-        # 获取分时K线
         klines = None
-        if not is_today:
-            # 历史日期优先从数据库加载
-            klines = db_manager.load_intraday_klines(code, q_date)
+        # 优先从数据库获取（包括当日：收盘后轮询停止，缓存过期时DB是最快路径）
+        klines = db_manager.load_intraday_klines(code, q_date)
+        if klines:
+            logger.info(f"[数据源] {code}: 命中数据库，共 {len(klines)} 条K线")
+
+        if not klines:
+            klines = _get_cached_klines(code)
+            if klines:
+                logger.info(f"[数据源] {code}: 命中K线内存缓存，共 {len(klines)} 条K线")
 
         if not klines:
             klines = _get_intraday_klines(code, date_str)
+            if klines:
+                logger.info(f"[数据源] {code}: 通过API联网获取，共 {len(klines)} 条K线")
         if not klines:
             raise HTTPException(status_code=404, detail={"error": "no_data", "message": "未获取到分时K线数据"})
+
+        # 从实际K线数据提取日期（比请求参数更可靠）
+        actual_date = _extract_date_from_klines(klines, date_str)
+        if actual_date != date_str:
+            logger.info(f"[数据源] {code}: 日期修正 {date_str} → {actual_date}")
 
         # 注入累计分时均价（策略需要 AvgPrice）
         _inject_avg_price(klines)
@@ -1340,10 +1429,10 @@ def get_intraday_data(
         # 加载前日快照用于指标预热
         warm_up = db_manager.load_previous_daily_summary(code, q_date)
 
-        return IntradayDataResponse(
+        response = IntradayDataResponse(
             stock_code=code,
             stock_name=stock_name,
-            date=date_str,
+            date=actual_date,
             kline_data=kline_points,
             signals=signals,
             reference_lines=reference_lines,
@@ -1351,6 +1440,12 @@ def get_intraday_data(
             signal_summary=summary,
             warm_up_summary=warm_up,
         )
+
+        # 当日数据写入缓存，避免 batch-status 轮询时重复计算
+        if is_today:
+            _set_cached_full_response(code, response)
+
+        return response
 
     except HTTPException:
         raise
@@ -1391,14 +1486,14 @@ def _schedule_intraday_storage(code: str, klines: list, q_date: date_type, db_ma
     def _store():
         try:
             count = db_manager.save_intraday_klines(code, q_date, klines)
-            logger.info(f"后台存储完成: {code} {q_date}, {count} 条")
+            logger.debug(f"后台存储完成: {code} {q_date}, {count} 条")
         except Exception as e:
             traceback.print_exc()
             logger.warning(f"后台存储分时K线失败 {code} {q_date}: {e}")
 
     t = threading.Thread(target=_store, daemon=True)
     t.start()
-    logger.info(f"已调度后台存储: {code} {q_date}, 共 {len(klines)} 条K线")
+    logger.debug(f"已调度后台存储: {code} {q_date}, 共 {len(klines)} 条K线")
 
 
 def _schedule_daily_summary(code: str, klines: list, q_date: date_type, db_manager: DatabaseManager):
@@ -1410,17 +1505,147 @@ def _schedule_daily_summary(code: str, klines: list, q_date: date_type, db_manag
             # 计算指标快照
             indicators = _compute_daily_summary_from_klines(klines)
             ok = db_manager.save_daily_summary(code, q_date, klines, indicators)
-            logger.info(f"后台快照存储完成: {code} {q_date}, 成功={ok}")
+            logger.debug(f"后台快照存储完成: {code} {q_date}, 成功={ok}")
         except Exception as e:
             traceback.print_exc()
             logger.warning(f"后台存储每日快照失败 {code} {q_date}: {e}")
 
     t = threading.Thread(target=_store, daemon=True)
     t.start()
-    logger.info(f"已调度快照存储: {code} {q_date}")
+    logger.debug(f"已调度快照存储: {code} {q_date}")
 
 
 # ---------- 批量状态查询 ----------
+
+
+def _compute_signal_alert(code: str) -> Optional[dict]:
+    """计算单只股票的最新信号告警
+    获取分时K线 → 注入均价 → 运行策略 → 提取最新信号
+    同时将K线数据写入内存缓存，供 get_intraday_data 复用
+    Args:
+        code: 股票代码
+    Returns:
+        信号告警字典 {stock_code, signal_type, trigger_time, price} 或 None
+    """
+    try:
+        klines = _get_intraday_klines(code, None)
+        if not klines or len(klines) < 2:
+            return None
+        _inject_avg_price(klines)
+        # 缓存K线供后续点击切换时复用
+        _set_cached_klines(code, klines)
+        signals, _summary = _run_t0_strategy(klines, None)
+        if not signals:
+            return None
+        latest = signals[-1]
+        return {
+            "stock_code": code,
+            "signal_type": latest.signal_type,
+            "trigger_time": str(latest.trigger_time),
+            "price": round(latest.price, 2),
+        }
+    except Exception as e:
+        logger.warning(f"计算信号告警失败 {code}: {e}")
+        return None
+
+
+def _batch_compute_signal_alerts(codes: list, skip_code: str = None) -> dict:
+    """批量并行计算多只股票的信号告警
+    使用 ThreadPoolExecutor 并行获取K线和运行策略，单只超时 10 秒
+    Args:
+        codes: 股票代码列表
+        skip_code: 跳过的股票代码（已在 batch-status 中刷新过）
+    Returns:
+        {code: SignalAlert字典 或 None}
+    """
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+
+    if not codes:
+        return {}
+
+    results: dict = {}
+    codes_to_process = [c for c in codes if c != skip_code]
+    if not codes_to_process:
+        return results
+    with ThreadPoolExecutor(max_workers=min(5, len(codes_to_process))) as executor:
+        future_to_code = {executor.submit(_compute_signal_alert, c): c for c in codes_to_process}
+        for future in future_to_code:
+            code = future_to_code[future]
+            try:
+                results[code] = future.result(timeout=10)
+            except FutureTimeoutError:
+                logger.warning(f"信号检测超时: {code}")
+                results[code] = None
+            except Exception as e:
+                logger.warning(f"信号检测异常 {code}: {e}")
+                results[code] = None
+
+    return results
+
+
+def _run_simulated_trading(code: str, db_manager: DatabaseManager) -> Optional[SimulationReportResponse]:
+    """对指定股票运行模拟交易，返回统计报告
+
+    使用已有的K线数据和做T策略，模拟逐根K线的买卖交易。
+    """
+    try:
+        q_date = date_type.today()
+        klines = db_manager.load_intraday_klines(code, q_date)
+        if not klines:
+            klines = _get_cached_klines(code)
+        if not klines:
+            klines = _get_intraday_klines(code, None)
+        if not klines or len(klines) < 2:
+            return None
+
+        _inject_avg_price(klines)
+        reference_lines = _compute_reference_lines(klines, code, db_manager, None)
+        signals, _summary = _run_t0_strategy(klines, reference_lines)
+
+        from watchdog.strategies.simulator import T0Simulator
+        from watchdog.strategies.intraday_t0_strategy import IntradayT0Strategy
+
+        config_path = os.path.join(
+            os.path.dirname(__file__), "..", "..", "..",
+            "watchdog", "strategies", "intraday_t0_config.yaml"
+        )
+        config_path = os.path.normpath(config_path)
+        strategy = IntradayT0Strategy(stock_code=code, stock_name="", config_path=config_path)
+        simulator = T0Simulator(strategy)
+        report = simulator.run(klines, verbose=False)
+
+        trade_items = []
+        for t in report.trades:
+            if t.status == "closed" and t.return_pct is not None:
+                trade_items.append(SimulatedTradeItem(
+                    buy_time=str(t.buy_time) if t.buy_time else "",
+                    buy_price=round(t.buy_price, 2),
+                    sell_time=str(t.sell_time) if t.sell_time else "",
+                    sell_price=round(t.sell_price, 2),
+                    return_pct=round(t.return_pct, 2),
+                ))
+
+        return SimulationReportResponse(
+            stock_code=code,
+            total_klines=report.total_klines,
+            total_signals=report.total_signals,
+            buy_signals=report.buy_signals,
+            sell_signals=report.sell_signals,
+            total_trades=report.total_trades,
+            win_trades=report.win_trades,
+            lose_trades=report.lose_trades,
+            win_rate=round(report.win_rate, 4),
+            avg_return_pct=round(report.avg_return_pct, 4),
+            max_return_pct=round(report.max_return_pct, 4),
+            min_return_pct=round(report.min_return_pct, 4),
+            total_return_pct=round(report.total_return_pct, 4),
+            max_drawdown_pct=round(report.max_drawdown_pct, 4),
+            profit_factor=round(report.profit_factor, 4),
+            trades=trade_items,
+        )
+    except Exception as e:
+        logger.warning(f"模拟交易失败 {code}: {e}", exc_info=True)
+        return None
 
 
 def _parse_sina_realtime_batch(stock_codes: list) -> dict:
@@ -1535,65 +1760,391 @@ def get_batch_status(
             code = _normalize_stock_code(current_code)
             sn = raw_snapshots[current_code]
 
-            # 获取分时K线，比对最新时间戳判断是否有新数据
-            try:
-                klines = _get_intraday_klines(code, None)
-                if klines:
-                    latest_kline_time = klines[-1].get("时间", "") if klines else ""
-                    latest_snapshot_time = sn.get("timestamp", "")
-                    # 比较：如果K线最新时间和快照时间接近，说明数据已同步
-                    if latest_kline_time and latest_snapshot_time:
-                        kt = latest_kline_time.replace(":", "")
-                        st = latest_snapshot_time.replace(":", "").replace(" ", "")
-                        if kt[:4] != st[:4]:
+            # 先检查完整响应缓存，避免重复计算参考线/信号/指标
+            cached_full = _get_cached_full_response(code)
+            if cached_full is not None:
+                logger.info(f"[batch-status] {code}: 命中完整内存缓存，跳过重复计算")
+                current_full_data = cached_full
+                current_updated = True
+            else:
+                try:
+                    klines = _get_intraday_klines(code, None)
+                    if klines:
+                        latest_kline_time = klines[-1].get("时间", "") if klines else ""
+                        latest_snapshot_time = sn.get("timestamp", "")
+                        # 比较：如果K线最新时间和快照时间接近，说明数据已同步
+                        if latest_kline_time and latest_snapshot_time:
+                            kt = latest_kline_time.replace(":", "")
+                            st = latest_snapshot_time.replace(":", "").replace(" ", "")
+                            if kt[:4] != st[:4]:
+                                current_updated = True
+                        else:
                             current_updated = True
-                    else:
-                        current_updated = True
 
-                    if current_updated:
-                        # 注入累计分时均价
-                        _inject_avg_price(klines)
-                        # 计算参考线
-                        reference_lines = _compute_reference_lines(klines, code, db_manager, None)
-                        # 运行做T策略
-                        signals, summary = _run_t0_strategy(klines, reference_lines)
-                        # 生成指标子图
-                        indicator_sub_charts = _generate_indicator_sub_charts(klines)
-                        # 构建K线响应
-                        kline_points = [IntradayKlinePoint(**k) for k in klines]
-                        # 确定日期
-                        date_str = datetime.now().strftime("%Y-%m-%d")
-                        # 获取股票名称
-                        stock_name = sn.get("stock_name", "")
-                        if not stock_name:
-                            try:
-                                fetcher_manager = DataFetcherManager()
-                                stock_name = fetcher_manager.get_stock_name(code, skip_realtime=True) or ""
-                            except Exception:
-                                pass
+                        if current_updated:
+                            # 注入累计分时均价
+                            _inject_avg_price(klines)
+                            # 计算参考线
+                            reference_lines = _compute_reference_lines(klines, code, db_manager, None)
+                            # 运行做T策略
+                            signals, summary = _run_t0_strategy(klines, reference_lines)
+                            # 生成指标子图
+                            indicator_sub_charts = _generate_indicator_sub_charts(klines)
+                            # 构建K线响应
+                            kline_points = [IntradayKlinePoint(**k) for k in klines]
+                            # 从实际K线数据提取日期
+                            actual_date = _extract_date_from_klines(klines)
+                            # 获取股票名称
+                            stock_name = sn.get("stock_name", "")
+                            if not stock_name:
+                                try:
+                                    fetcher_manager = DataFetcherManager()
+                                    stock_name = fetcher_manager.get_stock_name(code, skip_realtime=True) or ""
+                                except Exception:
+                                    pass
 
-                        current_full_data = IntradayDataResponse(
-                            stock_code=code,
-                            stock_name=stock_name,
-                            date=date_str,
-                            kline_data=kline_points,
-                            signals=signals,
-                            reference_lines=reference_lines,
-                            indicator_sub_charts=indicator_sub_charts,
-                            signal_summary=summary,
-                        )
+                            current_full_data = IntradayDataResponse(
+                                stock_code=code,
+                                stock_name=stock_name,
+                                date=actual_date,
+                                kline_data=kline_points,
+                                signals=signals,
+                                reference_lines=reference_lines,
+                                indicator_sub_charts=indicator_sub_charts,
+                                signal_summary=summary,
+                            )
+                            # 缓存完整响应，供后续手动点击时即时返回
+                            _set_cached_full_response(code, current_full_data)
+                except Exception as e:
+                    logger.warning(f"检查当前股票 {current_code} 更新失败: {e}")
+
+        # 3. 信号检测（用于铃铛通知，跳过当前股——它已在上面刷新）
+        signal_alerts = None
+        if body.include_signals:
+            try:
+                signal_alerts = _batch_compute_signal_alerts(stock_codes, skip_code=current_code)
             except Exception as e:
-                logger.warning(f"检查当前股票 {current_code} 更新失败: {e}")
+                logger.warning(f"批量信号检测失败: {e}")
+                signal_alerts = None
 
         return BatchStatusResponse(
             snapshots=snapshots,
             current_updated=current_updated,
             current_full_data=current_full_data,
+            signal_alerts=signal_alerts,
         )
 
     except Exception as e:
         logger.error(f"批量状态查询失败: {e}", exc_info=True)
         return BatchStatusResponse(snapshots={}, current_updated=False)
+
+
+@router.post(
+    "/{stock_code}/simulate-trading",
+    response_model=SimulationReportResponse,
+    summary="模拟做T交易盈亏",
+    description="基于当日分时K线数据，完整回放做T策略，统计模拟交易的盈亏报告",
+)
+def get_simulate_trading(
+    stock_code: str,
+    db_manager: DatabaseManager = Depends(get_database_manager),
+) -> SimulationReportResponse:
+    """运行模拟交易并返回统计报告"""
+    code = _normalize_stock_code(stock_code)
+    report = _run_simulated_trading(code, db_manager)
+    if report is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "no_data", "message": f"股票 {stock_code} 模拟交易数据不足"},
+        )
+    logger.info(f"模拟交易完成: {code}, 交易{report.total_trades}次, 累计收益{report.total_return_pct:+.2f}%")
+    return report
+
+
+# ---------- 批量下载分时数据 ----------
+
+_batch_download_tasks: dict = {}
+_batch_download_lock = threading.Lock()
+
+
+def _run_batch_download(task_id: str, target_date: str, max_workers: int, force: bool = False):
+    """后台线程：批量下载所有A股分时数据"""
+    import uuid
+
+    with _batch_download_lock:
+        task = _batch_download_tasks.get(task_id)
+        if not task:
+            return
+
+    try:
+        from stock_selector.stock_pool import get_all_stock_code_name_pairs
+
+        stock_pairs = get_all_stock_code_name_pairs(force_refresh=False)
+        code_to_name = {code: name for code, name in stock_pairs}
+
+        with _batch_download_lock:
+            task["total"] = len(stock_pairs)
+            task["current_code"] = ""
+            task["current_name"] = ""
+
+        # 创建独立的 DatabaseManager 实例（避免 session 共享问题）
+        from src.storage import DatabaseManager as DBManager
+        from datetime import date as date_type
+
+        db = DBManager.get_instance()
+        q_date = date_type.fromisoformat(target_date) if target_date else date_type.today()
+
+        processed = 0
+        failed = 0
+        skipped = 0
+        codes = [code for code, _ in stock_pairs]
+
+        # 按市场分组：沪市优先（代码 6 开头）
+        sh_codes = [c for c in codes if c.startswith("6")]
+        sz_codes = [c for c in codes if not c.startswith("6")]
+        ordered_codes = sh_codes + sz_codes
+
+        # 分段批量处理，每段内并行
+        batch_size = 20
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        for i in range(0, len(ordered_codes), batch_size):
+            with _batch_download_lock:
+                if task.get("cancelled"):
+                    task["status"] = "cancelled"
+                    task["end_time"] = time.time()
+                    return
+
+            batch = ordered_codes[i : i + batch_size]
+
+            def _fetch_one(code: str):
+                """获取单只股票的分时K线"""
+                nonlocal db, q_date, target_date
+                try:
+                    # 非强制模式下检查是否已在 DB 中
+                    if not force:
+                        existing = db.load_intraday_klines(code, q_date)
+                        if existing and len(existing) > 0:
+                            return code, True, True  # skipped
+
+                    klines = _get_intraday_klines(code, target_date)
+                    if not klines:
+                        return code, False, "无分时数据"
+
+                    _inject_avg_price(klines)
+                    db.save_intraday_klines(code, q_date, klines)
+                    # 缓存 K 线供后续使用
+                    _set_cached_klines(code, klines)
+                    return code, True, False  # success, not skipped
+                except Exception as e:
+                    return code, False, str(e)[:200]
+
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {executor.submit(_fetch_one, code): code for code in batch}
+                # 记录未完成的 future，超时时将其标记为失败并继续下一批
+                from concurrent.futures import TimeoutError as FuturesTimeoutError
+                remaining_futures = dict(futures)
+
+                try:
+                    for future in as_completed(futures, timeout=30):
+                        code = futures[future]
+                        remaining_futures.pop(future, None)
+                        try:
+                            code, ok, info = future.result(timeout=5)
+                        except Exception as e:
+                            ok, info = False, str(e)[:200]
+
+                        if ok:
+                            if info is True:  # skipped
+                                skipped += 1
+                            else:
+                                processed += 1
+                        else:
+                            failed += 1
+                            with _batch_download_lock:
+                                if len(task["errors"]) < 20:
+                                    task["errors"].append({"code": code, "error": str(info)})
+
+                        with _batch_download_lock:
+                            task["completed"] = processed + skipped
+                            task["failed"] = failed
+                            task["skipped"] = skipped
+                            task["current_code"] = code
+                            task["current_name"] = code_to_name.get(code, "")
+                            task["elapsed_seconds"] = time.time() - task["start_time"]
+
+                except FuturesTimeoutError:
+                    # as_completed 超时: 将剩余未完成的 futures 标记为失败并继续下一批
+                    timeout_count = len(remaining_futures)
+                    logger.warning(
+                        f"批次 {i // batch_size + 1}: {timeout_count}/{len(batch)} 只股票超时，"
+                        f"标记为失败并继续下一批"
+                    )
+                    for future, code in remaining_futures.items():
+                        future.cancel()
+                        failed += 1
+                        with _batch_download_lock:
+                            if len(task["errors"]) < 20:
+                                task["errors"].append({"code": code, "error": "获取分时数据超时"})
+                            task["failed"] = failed
+                            task["current_code"] = code
+                            task["current_name"] = code_to_name.get(code, "")
+                            task["elapsed_seconds"] = time.time() - task["start_time"]
+
+            # 每批之间暂停 0.3s，避免 API 限流
+            time.sleep(0.3)
+
+        with _batch_download_lock:
+            task["status"] = "completed"
+            task["end_time"] = time.time()
+            task["elapsed_seconds"] = task["end_time"] - task["start_time"]
+
+        logger.info(
+            f"批量下载完成: {task_id}, 成功{processed}, 跳过{skipped}, 失败{failed}, "
+            f"耗时{task['elapsed_seconds']:.1f}s"
+        )
+    except Exception as e:
+        logger.error(f"批量下载异常: {task_id}: {e}", exc_info=True)
+        with _batch_download_lock:
+            task["status"] = "failed"
+            task["end_time"] = time.time()
+            task["errors"].append({"code": "system", "error": str(e)[:200]})
+
+
+@router.post(
+    "/batch-download",
+    response_model=BatchDownloadStatus,
+    summary="批量下载A股分时数据",
+    description="启动后台任务，批量下载所有A股的当天分时K线数据并存储到数据库",
+)
+def start_batch_download(
+    date: Optional[str] = Body(None, description="目标日期 YYYY-MM-DD，默认当日"),
+    max_workers: int = Body(8, ge=1, le=20, description="并行线程数"),
+    force: bool = Body(False, description="强制更新，忽略数据库中已有数据"),
+    db_manager: DatabaseManager = Depends(get_database_manager),
+) -> BatchDownloadStatus:
+    import threading
+    import uuid as uuid_module
+
+    # 检查是否已有正在运行的任务
+    with _batch_download_lock:
+        for tid, t in _batch_download_tasks.items():
+            if t.get("status") == "running":
+                return BatchDownloadStatus(
+                    task_id=tid,
+                    status="running",
+                    total=t["total"],
+                    completed=t["completed"],
+                    failed=t["failed"],
+                    skipped=t.get("skipped", 0),
+                    current_code=t["current_code"],
+                    current_name=t["current_name"],
+                    elapsed_seconds=time.time() - t["start_time"],
+                    errors=t.get("errors", []),
+                    date=t.get("date", ""),
+                )
+
+    target_date = date or datetime.now().strftime("%Y-%m-%d")
+    task_id = uuid_module.uuid4().hex[:12]
+
+    task = {
+        "task_id": task_id,
+        "status": "running",
+        "total": 0,
+        "completed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "current_code": "",
+        "current_name": "",
+        "start_time": time.time(),
+        "end_time": None,
+        "errors": [],
+        "date": target_date,
+        "cancelled": False,
+    }
+
+    with _batch_download_lock:
+        _batch_download_tasks[task_id] = task
+
+    thread = threading.Thread(
+        target=_run_batch_download,
+        args=(task_id, target_date, max_workers, force),
+        daemon=True,
+    )
+    thread.start()
+
+    logger.info(f"启动批量下载: {task_id}, 日期={target_date}, 线程数={max_workers}")
+
+    return BatchDownloadStatus(
+        task_id=task_id,
+        status="running",
+        total=0,
+        completed=0,
+        failed=0,
+        skipped=0,
+        current_code="",
+        current_name="",
+        elapsed_seconds=0.0,
+        errors=[],
+        date=target_date,
+    )
+
+
+@router.get(
+    "/batch-download/status",
+    response_model=BatchDownloadStatus,
+    summary="查询批量下载进度",
+)
+def get_batch_download_status(
+    task_id: Optional[str] = Query(None, description="任务ID，不传则返回最近一个任务"),
+) -> BatchDownloadStatus:
+    with _batch_download_lock:
+        if not task_id:
+            # 返回最近的任务
+            if not _batch_download_tasks:
+                return BatchDownloadStatus(status="idle")
+            task_id = list(_batch_download_tasks.keys())[-1]
+
+        task = _batch_download_tasks.get(task_id)
+        if not task:
+            return BatchDownloadStatus(task_id=task_id, status="idle")
+
+        elapsed = time.time() - task["start_time"] if task["start_time"] else 0
+        if task.get("end_time"):
+            elapsed = task["end_time"] - task["start_time"]
+
+        return BatchDownloadStatus(
+            task_id=task_id,
+            status=task["status"],
+            total=task["total"],
+            completed=task["completed"],
+            failed=task["failed"],
+            skipped=task.get("skipped", 0),
+            current_code=task["current_code"],
+            current_name=task["current_name"],
+            elapsed_seconds=round(elapsed, 1),
+            errors=task.get("errors", [])[-20:],
+            date=task.get("date", ""),
+        )
+
+
+@router.post(
+    "/batch-download/cancel",
+    summary="取消批量下载任务",
+)
+def cancel_batch_download(
+    task_id: str = Body(..., embed=True),
+) -> dict:
+    with _batch_download_lock:
+        task = _batch_download_tasks.get(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail="任务不存在")
+        if task["status"] != "running":
+            raise HTTPException(status_code=400, detail="任务已结束")
+        task["cancelled"] = True
+        task["status"] = "cancelled"
+        task["end_time"] = time.time()
+    return {"message": "已发送取消请求", "task_id": task_id}
 
 
 # ---------- 搜索历史 ----------

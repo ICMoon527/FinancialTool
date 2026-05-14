@@ -4,14 +4,16 @@ Stock Selector API Endpoints.
 """
 
 import logging
+import threading
 import time
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, Body, HTTPException, Depends, Query
 from api.utils.json_encoder import jsonable_encoder_with_numpy
 
 from api.v1.schemas.stock_selector import (
+    ScreenProgressStatus,
     StrategyInfo,
     StrategyMatchInfo,
     StockCandidateInfo,
@@ -335,7 +337,7 @@ async def _update_stock_data(stock_codes: Optional[list[str]], service: StockSel
     
     # 处理股票代码列表
     if stock_codes is None:
-        stock_code_name_pairs = get_all_stock_code_name_pairs()
+        stock_code_name_pairs = get_all_stock_code_name_pairs(force_refresh=True)
         # 过滤ST股票
         stock_code_name_pairs = filter_st_stocks(stock_code_name_pairs)
         # 过滤特定板块的股票代码（科创板、创业板、北交所等）
@@ -344,7 +346,7 @@ async def _update_stock_data(stock_codes: Optional[list[str]], service: StockSel
     else:
         # 如果用户指定了股票代码，先获取它们的名称，然后过滤ST股票
         try:
-            all_pairs = get_all_stock_code_name_pairs()
+            all_pairs = get_all_stock_code_name_pairs(force_refresh=True)
             code_to_name = {code: name for code, name in all_pairs}
             # 过滤ST股票
             filtered_codes = []
@@ -500,3 +502,295 @@ def _update_sector_data(service: StockSelectorService) -> None:
         logger.error(f"更新板块数据时出错: {e}")
         import traceback
         logger.error(traceback.format_exc())
+
+
+# ---------- 异步选股（带进度追踪）----------
+
+_screen_tasks: dict = {}
+_screen_lock = threading.Lock()
+
+
+def _run_screen_async(task_id: str, request: StockSelectorRequest):
+    """后台线程：运行选股流程并更新进度"""
+    import uuid as uuid_module
+
+    task = None
+    with _screen_lock:
+        task = _screen_tasks.get(task_id)
+        if not task:
+            return
+
+    try:
+        service = get_stock_selector_service()
+
+        # 获取股票列表
+        from stock_selector.stock_pool import get_all_stock_code_name_pairs, filter_special_stock_codes, filter_st_stocks
+        stock_code_name_pairs = get_all_stock_code_name_pairs(force_refresh=True)
+        stock_code_name_pairs = filter_st_stocks(stock_code_name_pairs)
+        all_codes = [code for code, name in stock_code_name_pairs]
+        all_codes = filter_special_stock_codes(all_codes)
+        code_to_name = {code: name for code, name in stock_code_name_pairs}
+
+        total_stocks = len(all_codes)
+        with _screen_lock:
+            task["total_stocks"] = total_stocks
+
+        # 设置市场数据缓存的强制更新模式
+        MarketDataCache.set_force_update(request.update_realtime or request.update_data)
+
+        use_update_realtime = request.update_realtime
+        use_update_data = request.update_data
+        if use_update_realtime and use_update_data:
+            use_update_data = False
+
+        # --- 阶段1: 更新实时数据 ---
+        if use_update_realtime:
+            with _screen_lock:
+                task["stage"] = "update_realtime"
+                task["stage_progress"] = 0
+                task["current_code"] = ""
+                task["current_name"] = ""
+
+            from stock_selector.realtime_data_updater import get_realtime_updater
+
+            realtime_codes = request.stock_codes if request.stock_codes else all_codes
+            realtime_updater = get_realtime_updater()
+
+            # 分批次更新，报告进度
+            batch_size = 300
+            total_batches = (len(realtime_codes) + batch_size - 1) // batch_size
+            for i in range(0, len(realtime_codes), batch_size):
+                with _screen_lock:
+                    if task.get("cancelled"):
+                        task["status"] = "cancelled"
+                        task["end_time"] = time.time()
+                        return
+
+                batch = realtime_codes[i : i + batch_size]
+                with _screen_lock:
+                    task["current_code"] = batch[0] if batch else ""
+                    task["current_name"] = code_to_name.get(batch[0], "") if batch else ""
+                    task["processed_stocks"] = i
+                    task["stage_progress"] = round((i / len(realtime_codes)) * 100, 1)
+                    task["elapsed_seconds"] = time.time() - task["start_time"]
+
+                try:
+                    realtime_updater.update_realtime_data(stock_codes=batch)
+                except Exception as e:
+                    logger.warning(f"更新实时数据批次失败: {batch[0]}-{batch[-1]}: {e}")
+
+            _update_market_data()
+            _update_sector_data(service)
+
+            with _screen_lock:
+                task["stage_progress"] = 100
+                task["processed_stocks"] = len(realtime_codes)
+
+        # --- 阶段2: 更新历史数据 ---
+        if use_update_data:
+            with _screen_lock:
+                task["stage"] = "update_data"
+                task["stage_progress"] = 0
+                task["processed_stocks"] = 0
+
+            from datetime import date, timedelta
+
+            config = get_config()
+            update_codes = request.stock_codes if request.stock_codes else all_codes
+
+            try:
+                from stock_selector.tushare_data_downloader import get_tushare_downloader
+
+                downloader = get_tushare_downloader(rate_limit_per_minute=50)
+
+                # Tushare 每次处理10只股票
+                tushare_batch_size = 10
+                total_batches = (len(update_codes) + tushare_batch_size - 1) // tushare_batch_size
+                for i in range(0, len(update_codes), tushare_batch_size):
+                    with _screen_lock:
+                        if task.get("cancelled"):
+                            task["status"] = "cancelled"
+                            task["end_time"] = time.time()
+                            return
+
+                    batch = update_codes[i : i + tushare_batch_size]
+                    with _screen_lock:
+                        task["current_code"] = batch[0] if batch else ""
+                        task["current_name"] = code_to_name.get(batch[0], "") if batch else ""
+                        task["processed_stocks"] = i
+                        task["stage_progress"] = round((i / len(update_codes)) * 100, 1)
+                        task["elapsed_seconds"] = time.time() - task["start_time"]
+
+                    try:
+                        downloader.download_data(stock_codes=batch, days=config.update_data_default_days)
+                    except Exception as e:
+                        logger.warning(f"Tushare下载批次失败: {batch[0]}-{batch[-1]}: {e}")
+
+            except Exception as e:
+                logger.warning(f"Tushare下载器失败: {e}")
+            finally:
+                _update_market_data()
+                _update_sector_data(service)
+
+            with _screen_lock:
+                task["stage_progress"] = 100
+                task["processed_stocks"] = len(update_codes)
+
+        # --- 阶段3: 选股 ---
+        with _screen_lock:
+            task["stage"] = "screening"
+            task["stage_progress"] = 0
+
+        MarketDataCache.set_force_update(False)
+
+        candidates = service.screen_stocks(
+            stock_codes=request.stock_codes,
+            strategy_ids=request.strategy_ids,
+            top_n=request.top_n,
+        )
+
+        with _screen_lock:
+            task["stage_progress"] = 50
+
+        sector_manager = None
+        if service.strategy_manager:
+            sector_manager = service.strategy_manager.get_sector_manager()
+
+        active_ids = set(request.strategy_ids or [])
+        candidate_infos = []
+        if candidates:
+            for candidate in candidates:
+                info = _convert_stock_candidate_to_info(candidate, list(active_ids), sector_manager)
+                candidate_infos.append(info)
+
+        execution_time_ms = (time.time() - task["start_time"]) * 1000
+
+        response = StockSelectorResponse(
+            success=True,
+            candidates=candidate_infos,
+            total_screened=len(request.stock_codes) if request.stock_codes else total_stocks,
+            execution_time_ms=execution_time_ms,
+        )
+
+        with _screen_lock:
+            task["status"] = "completed"
+            task["stage"] = "done"
+            task["stage_progress"] = 100
+            task["end_time"] = time.time()
+            task["elapsed_seconds"] = task["end_time"] - task["start_time"]
+            task["result"] = response
+
+        logger.info(
+            f"异步选股完成: {task_id}, 耗时{task['elapsed_seconds']:.1f}s, "
+            f"候选{len(candidate_infos)}只"
+        )
+
+    except Exception as e:
+        logger.error(f"异步选股异常: {task_id}: {e}", exc_info=True)
+        with _screen_lock:
+            task["status"] = "failed"
+            task["stage"] = "done"
+            task["end_time"] = time.time()
+            task["elapsed_seconds"] = task["end_time"] - task["start_time"]
+            task["result"] = StockSelectorResponse(
+                success=False,
+                candidates=[],
+                total_screened=0,
+                execution_time_ms=task["elapsed_seconds"] * 1000,
+                error=str(e),
+            )
+
+
+@router.post(
+    "/screen-async",
+    response_model=ScreenProgressStatus,
+    summary="异步选股（带进度追踪）",
+    description="启动后台选股任务，支持实时进度查询",
+)
+def screen_stocks_async(
+    request: StockSelectorRequest,
+    service: StockSelectorService = Depends(get_stock_selector_service),
+) -> ScreenProgressStatus:
+    import uuid as uuid_module
+
+    task_id = uuid_module.uuid4().hex[:12]
+
+    task = {
+        "task_id": task_id,
+        "status": "running",
+        "stage": "preparing",
+        "stage_progress": 0,
+        "total_stocks": 0,
+        "processed_stocks": 0,
+        "current_code": "",
+        "current_name": "",
+        "start_time": time.time(),
+        "end_time": None,
+        "errors": [],
+        "result": None,
+        "cancelled": False,
+    }
+
+    with _screen_lock:
+        _screen_tasks[task_id] = task
+
+    thread = threading.Thread(
+        target=_run_screen_async,
+        args=(task_id, request),
+        daemon=True,
+    )
+    thread.start()
+
+    logger.info(
+        f"启动异步选股: {task_id}, update_realtime={request.update_realtime}, "
+        f"update_data={request.update_data}"
+    )
+
+    return ScreenProgressStatus(
+        task_id=task_id,
+        status="running",
+        stage="preparing",
+        stage_progress=0,
+        total_stocks=0,
+        processed_stocks=0,
+        current_code="",
+        current_name="",
+        elapsed_seconds=0.0,
+    )
+
+
+@router.get(
+    "/screen-async/status",
+    response_model=ScreenProgressStatus,
+    summary="查询异步选股进度",
+)
+def get_screen_async_status(
+    task_id: Optional[str] = Query(None, description="任务ID"),
+) -> ScreenProgressStatus:
+    with _screen_lock:
+        if not task_id:
+            if not _screen_tasks:
+                return ScreenProgressStatus(status="idle")
+            task_id = list(_screen_tasks.keys())[-1]
+
+        task = _screen_tasks.get(task_id)
+        if not task:
+            return ScreenProgressStatus(task_id=task_id, status="idle")
+
+        elapsed = time.time() - task["start_time"] if task["start_time"] else 0
+        if task.get("end_time"):
+            elapsed = task["end_time"] - task["start_time"]
+
+        return ScreenProgressStatus(
+            task_id=task_id,
+            status=task["status"],
+            stage=task["stage"],
+            stage_progress=task["stage_progress"],
+            total_stocks=task["total_stocks"],
+            processed_stocks=task["processed_stocks"],
+            current_code=task["current_code"],
+            current_name=task["current_name"],
+            elapsed_seconds=round(elapsed, 1),
+            errors=task.get("errors", []),
+            result=task.get("result"),
+        )

@@ -6,6 +6,7 @@ import type {
   StrategyInfo,
   StockCandidateInfo,
   StrategyMatchInfo,
+  ScreenProgressStatus,
 } from '../types/stockSelector';
 
 const strategyTypeBadge = (type: string) => {
@@ -239,6 +240,13 @@ const StockSelectorPage: React.FC = () => {
   });
   
   const strategyDropdownRef = useRef<HTMLDivElement>(null);
+
+  // 异步选股进度追踪
+  const [screenTask, setScreenTask] = useState<ScreenProgressStatus | null>(null);
+  const [showScreenModal, setShowScreenModal] = useState(false);
+  const screenTaskRef = useRef<ScreenProgressStatus | null>(null);
+  screenTaskRef.current = screenTask;
+  const screenPollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   
   // 切换收藏状态
   const toggleFavorite = (strategyId: string, e: React.MouseEvent) => {
@@ -304,22 +312,41 @@ const StockSelectorPage: React.FC = () => {
   }, [fetchStrategies]);
 
   const handleScreen = useCallback(async () => {
-    setIsScreening(true);
     setScreeningError(null);
-    setScreeningStage('正在选股，请稍候...');
 
+    const codes = stockCodes.trim() ? stockCodes.trim().split(/[,\s]+/).filter(Boolean) : undefined;
+    const strategyIds = selectedStrategyIds.length > 0 ? selectedStrategyIds : undefined;
+
+    // 如果需要更新数据，使用异步流程并展示进度弹窗
+    if (updateData || updateRealtime) {
+      setShowScreenModal(true);
+      try {
+        const status = await stockSelectorApi.screenStocksAsync({
+          stock_codes: codes,
+          update_data: updateData,
+          update_realtime: updateRealtime,
+          strategy_ids: strategyIds,
+        });
+        setScreenTask(status);
+      } catch (err) {
+        setScreeningError(err instanceof Error ? err.message : '选股启动失败');
+        setShowScreenModal(false);
+      }
+      return;
+    }
+
+    // 不需要更新数据时，使用同步接口
+    setIsScreening(true);
+    setScreeningStage('正在选股，请稍候...');
     try {
-      const codes = stockCodes.trim() ? stockCodes.trim().split(/[,\s]+/).filter(Boolean) : undefined;
-      const strategyIds = selectedStrategyIds.length > 0 ? selectedStrategyIds : undefined;
       const response = await stockSelectorApi.screenStocks({
         stock_codes: codes,
-        update_data: updateData,
-        update_realtime: updateRealtime,
+        update_data: false,
+        update_realtime: false,
         strategy_ids: strategyIds,
       });
-      
+
       setScreeningStage('完成！');
-      
       await new Promise(resolve => setTimeout(resolve, 300));
       setCandidates(response.candidates);
       localStorage.setItem('stockSelector_candidates', JSON.stringify(response.candidates));
@@ -358,6 +385,43 @@ const StockSelectorPage: React.FC = () => {
       document.removeEventListener('mousedown', handleClickOutside);
     };
   }, []);
+
+  // 异步选股进度轮询
+  useEffect(() => {
+    if (screenTask?.status === 'running') {
+      if (screenPollingRef.current) return;
+      screenPollingRef.current = setInterval(async () => {
+        try {
+          const status = await stockSelectorApi.getScreenAsyncStatus(screenTaskRef.current?.task_id);
+          setScreenTask(status);
+          if (status.status !== 'running') {
+            if (screenPollingRef.current) {
+              clearInterval(screenPollingRef.current);
+              screenPollingRef.current = null;
+            }
+            // 完成后自动更新结果
+            if (status.result?.success && status.result.candidates) {
+              setCandidates(status.result.candidates);
+              localStorage.setItem('stockSelector_candidates', JSON.stringify(status.result.candidates));
+            }
+          }
+        } catch {
+          // ignore polling errors
+        }
+      }, 1000);
+    } else {
+      if (screenPollingRef.current) {
+        clearInterval(screenPollingRef.current);
+        screenPollingRef.current = null;
+      }
+    }
+    return () => {
+      if (screenPollingRef.current) {
+        clearInterval(screenPollingRef.current);
+        screenPollingRef.current = null;
+      }
+    };
+  }, [screenTask?.status, screenTask?.task_id]);
 
   // 移除固定高度设置，保持自然的 flexbox 布局
   // 右侧 section 已经有 overflow-y-auto，配合 flex-1 会自动处理滚动
@@ -435,7 +499,7 @@ const StockSelectorPage: React.FC = () => {
               value={stockCodes}
               onChange={(e) => setStockCodes(e.target.value.toUpperCase())}
               placeholder="Stock codes (comma/space separated, leave empty for all)"
-              disabled={isScreening}
+              disabled={isScreening || screenTask?.status === 'running'}
               className="input-terminal w-full"
             />
           </div>
@@ -447,7 +511,7 @@ const StockSelectorPage: React.FC = () => {
                 e.stopPropagation();
                 setIsStrategyDropdownOpen(!isStrategyDropdownOpen);
               }}
-              disabled={isScreening}
+              disabled={isScreening || screenTask?.status === 'running'}
               className="input-terminal text-xs py-2 px-3 min-w-64 flex items-center justify-between"
             >
               <span>
@@ -488,7 +552,7 @@ const StockSelectorPage: React.FC = () => {
                             setSelectedStrategyIds(selectedStrategyIds.filter(id => id !== strategy.id));
                           }
                         }}
-                        disabled={isScreening}
+                        disabled={isScreening || screenTask?.status === 'running'}
                         className="rounded w-4 h-4"
                       />
                       <div className="flex-1 min-w-0">
@@ -509,16 +573,16 @@ const StockSelectorPage: React.FC = () => {
           <button
             type="button"
             onClick={handleScreen}
-            disabled={isScreening}
+            disabled={isScreening || screenTask?.status === 'running'}
             className="btn-primary flex items-center gap-1.5 whitespace-nowrap"
           >
-            {isScreening ? (
+            {isScreening || screenTask?.status === 'running' ? (
               <>
                 <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
                   <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                   <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
                 </svg>
-                Screening...
+                {updateData || updateRealtime ? '选股中...' : 'Screening...'}
               </>
             ) : (
               'Screen Stocks'
@@ -535,7 +599,7 @@ const StockSelectorPage: React.FC = () => {
                   setUpdateRealtime(false);
                 }
               }}
-              disabled={isScreening}
+              disabled={isScreening || screenTask?.status === 'running'}
               className="rounded"
             />
             <span className="text-xs text-secondary">Update Data</span>
@@ -550,7 +614,7 @@ const StockSelectorPage: React.FC = () => {
                   setUpdateData(false);
                 }
               }}
-              disabled={isScreening}
+              disabled={isScreening || screenTask?.status === 'running'}
               className="rounded"
             />
             <span className="text-xs text-secondary">Update Realtime</span>
@@ -741,6 +805,131 @@ const StockSelectorPage: React.FC = () => {
           )}
         </section>
       </main>
+
+      {/* 异步选股进度弹窗 */}
+      {showScreenModal && screenTask && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/60" onClick={() => {
+            if (screenTask?.status !== 'running') setShowScreenModal(false);
+          }} />
+          <div className="relative terminal-card border border-white/10 rounded-xl shadow-2xl p-5 w-full max-w-md mx-4">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-sm font-semibold text-white">
+                {screenTask.status === 'running' ? '正在选股...' :
+                 screenTask.status === 'completed' ? '选股完成' :
+                 screenTask.status === 'cancelled' ? '已取消' :
+                 screenTask.status === 'failed' ? '选股失败' : '准备中...'}
+              </h3>
+              <button
+                type="button"
+                onClick={() => {
+                  if (screenTask.status !== 'running') setShowScreenModal(false);
+                }}
+                className="text-muted hover:text-white p-0.5"
+              >
+                <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M18 6L6 18M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            {/* 阶段信息 */}
+            <div className="text-xs text-muted mb-3">
+              {screenTask.stage === 'update_realtime' && '阶段: 更新实时数据'}
+              {screenTask.stage === 'update_data' && '阶段: 更新历史数据'}
+              {screenTask.stage === 'screening' && '阶段: 策略筛选'}
+              {screenTask.stage === 'preparing' && '阶段: 准备中...'}
+              {screenTask.stage === 'done' && '阶段: 完成'}
+              {!screenTask.stage && '阶段: 初始化...'}
+            </div>
+
+            {/* 进度条 */}
+            <div className="mb-3">
+              <div className="w-full bg-white/5 rounded-full h-2 overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-all duration-300 ${
+                    screenTask.status === 'completed' ? 'bg-emerald' :
+                    screenTask.status === 'cancelled' ? 'bg-yellow-500/60' :
+                    screenTask.status === 'failed' ? 'bg-red-500/60' :
+                    'bg-cyan'
+                  }`}
+                  style={{ width: `${Math.max(1, screenTask.stage_progress)}%` }}
+                />
+              </div>
+              <div className="text-xs text-muted mt-1 text-right">
+                {screenTask.stage_progress.toFixed(1)}%
+              </div>
+            </div>
+
+            {/* 统计信息 */}
+            {screenTask.total_stocks > 0 && (
+              <div className="grid grid-cols-2 gap-2 mb-3 text-xs">
+                <div className="bg-white/[0.03] rounded px-2 py-1.5">
+                  <div className="text-muted">总股票数</div>
+                  <div className="text-white font-mono">{screenTask.total_stocks}</div>
+                </div>
+                <div className="bg-white/[0.03] rounded px-2 py-1.5">
+                  <div className="text-muted">已处理</div>
+                  <div className="text-cyan font-mono">{screenTask.processed_stocks}</div>
+                </div>
+              </div>
+            )}
+
+            {/* 当前处理 */}
+            {screenTask.status === 'running' && screenTask.current_code && (
+              <div className="text-xs text-muted mb-3">
+                当前: <span className="text-white font-mono">{screenTask.current_code}</span>
+                {screenTask.current_name && <span className="ml-1 text-white/70">{screenTask.current_name}</span>}
+              </div>
+            )}
+
+            {/* 耗时 */}
+            {screenTask.elapsed_seconds > 0 && (
+              <div className="text-xs text-muted mb-3">
+                耗时: {Math.floor(screenTask.elapsed_seconds / 60)}分{Math.floor(screenTask.elapsed_seconds % 60)}秒
+              </div>
+            )}
+
+            {/* 错误列表 */}
+            {screenTask.errors && screenTask.errors.length > 0 && (
+              <div className="mb-3">
+                <div className="text-xs text-red-400 mb-1">错误:</div>
+                <div className="max-h-24 overflow-y-auto text-xs font-mono bg-black/20 rounded px-2 py-1">
+                  {screenTask.errors.map((e, i) => (
+                    <div key={i} className="text-red-400/80 truncate">{e}</div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* 失败时显示错误信息 */}
+            {screenTask.status === 'failed' && screenTask.result?.error && (
+              <div className="mb-3 text-xs text-red-400 bg-red-400/10 rounded px-2 py-1.5">
+                {screenTask.result.error}
+              </div>
+            )}
+
+            {/* 按钮 */}
+            <div className="flex items-center gap-2">
+              {screenTask.status !== 'running' && (
+                <button
+                  type="button"
+                  onClick={() => setShowScreenModal(false)}
+                  className="px-3 py-1.5 text-xs font-medium rounded border border-white/10 text-muted hover:text-white hover:border-white/30 transition-colors"
+                >
+                  关闭
+                </button>
+              )}
+              {screenTask.status === 'completed' && screenTask.result && (
+                <div className="text-xs text-emerald">
+                  已筛选 {screenTask.result.candidates.length} 只股票
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 };

@@ -303,7 +303,7 @@ class ReferenceLineGenerator:
         # 过滤掉价格为0或负值的异常结果
         lines = [line for line in lines if line["price"] > 0]
 
-        logger.info(f"生成参考线 {len(lines)} 条，分布于 {len(set(l['category'] for l in lines))} 个类别")
+        logger.debug(f"生成参考线 {len(lines)} 条，分布于 {len(set(l['category'] for l in lines))} 个类别")
         return lines
 
 
