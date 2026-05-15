@@ -15,7 +15,7 @@ import threading
 import time
 from datetime import datetime, timedelta, date as date_type
 from pathlib import Path
-from typing import Optional, Callable, Any
+from typing import Optional, Callable, Any, Dict
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from requests.exceptions import (
@@ -52,6 +52,21 @@ from data_provider import DataFetcherManager
 from watchdog.strategies.intraday_t0_strategy import IntradayIndicatorEngine
 
 logger = logging.getLogger(__name__)
+
+# ── 股票名称缓存 ──
+_stock_display_cache: Dict[str, str] = {}
+
+def _format_stock_display(code: str) -> str:
+    """格式化股票显示名，如 '工业富联 (601138)'"""
+    if not _stock_display_cache:
+        try:
+            from stock_selector.stock_pool import get_all_stock_code_name_pairs
+            for c, n in get_all_stock_code_name_pairs(force_refresh=False):
+                _stock_display_cache[c] = n
+        except Exception:
+            pass
+    name = _stock_display_cache.get(code, "")
+    return f"{name} ({code})" if name else code
 
 # ── 分时数据内存缓存（包含完整 K线+信号+参考线+指标子图，避免轮询与手动点击之间的重复计算）──
 _full_response_cache: dict = {}
@@ -111,6 +126,15 @@ def _load_indicator_config() -> dict:
     except Exception as e:
         logger.warning(f'加载指标配置文件失败，使用默认参数: {e}')
     return {}
+
+
+def _get_rsi_thresholds():
+    """获取RSI超买超卖阈值，来自策略配置文件"""
+    config = _load_indicator_config()
+    indicators = config.get("indicators", {})
+    rsi_cfg = indicators.get("rsi", {})
+    return rsi_cfg.get("overbought", 65), rsi_cfg.get("oversold", 20)
+
 
 router = APIRouter()
 
@@ -1444,10 +1468,10 @@ def get_intraday_data(
             if cached is not None:
                 # 校验缓存数据日期是否匹配今日，防止缓存了昨日数据
                 if _is_data_fresh_for_today([k.model_dump() for k in cached.kline_data]):
-                    logger.info(f"[手动查询] {code}: 命中完整内存缓存")
+                    logger.info(f"[手动查询] {_format_stock_display(code)}: 命中完整内存缓存")
                     return cached
                 else:
-                    logger.info(f"[手动查询] {code}: 缓存数据已陈旧，丢弃并重新获取")
+                    logger.info(f"[手动查询] {_format_stock_display(code)}: 缓存数据已陈旧，丢弃并重新获取")
 
         klines = None
         # 优先从数据库获取（包括当日：收盘后轮询停止，缓存过期时DB是最快路径）
@@ -1455,28 +1479,28 @@ def get_intraday_data(
         if klines:
             # 校验DB数据新鲜度（防止存储了昨日数据或盘中断数据）
             if _is_data_fresh_for_today(klines):
-                logger.info(f"[手动查询] {code}: 命中数据库，共 {len(klines)} 条K线")
+                logger.info(f"[手动查询] {_format_stock_display(code)}: 命中数据库，共 {len(klines)} 条K线")
             else:
-                logger.info(f"[手动查询] {code}: 数据库数据已陈旧，丢弃并重新获取")
+                logger.info(f"[手动查询] {_format_stock_display(code)}: 数据库数据已陈旧，丢弃并重新获取")
                 klines = None
 
         if not klines:
             klines = _get_cached_klines(code)
             if klines:
                 if _is_data_fresh_for_today(klines):
-                    logger.info(f"[手动查询] {code}: 命中K线内存缓存，共 {len(klines)} 条K线")
+                    logger.info(f"[手动查询] {_format_stock_display(code)}: 命中K线内存缓存，共 {len(klines)} 条K线")
                 else:
-                    logger.info(f"[手动查询] {code}: K线内存缓存已陈旧，丢弃并重新获取")
+                    logger.info(f"[手动查询] {_format_stock_display(code)}: K线内存缓存已陈旧，丢弃并重新获取")
                     klines = None
 
         # cache_only 策略：不联网，缓存/DB 无数据时返回 404
         # 但如果是 auto 策略降级来的，则允许回退到 API
         if not klines and actual_strategy == "cache_only":
             if strategy == "auto":
-                logger.info(f"[手动查询] {code}: auto策略下缓存/DB均无数据，降级为full走API")
+                logger.info(f"[手动查询] {_format_stock_display(code)}: auto策略下缓存/DB均无数据，降级为full走API")
             else:
                 if is_today:
-                    logger.info(f"[手动查询] {code}: cache_only 策略下缓存/DB均无数据，可能尚未开盘或数据尚未到达")
+                    logger.info(f"[手动查询] {_format_stock_display(code)}: cache_only 策略下缓存/DB均无数据，可能尚未开盘或数据尚未到达")
                 raise HTTPException(
                     status_code=404,
                     detail={
@@ -1488,7 +1512,7 @@ def get_intraday_data(
         if not klines:
             klines = _get_intraday_klines(code, date_str)
             if klines:
-                logger.info(f"[手动查询] {code}: 通过API联网获取，共 {len(klines)} 条K线")
+                logger.info(f"[手动查询] {_format_stock_display(code)}: 通过API联网获取，共 {len(klines)} 条K线")
         if not klines:
             raise HTTPException(status_code=404, detail={"error": "no_data", "message": "未获取到分时K线数据"})
 
@@ -1528,6 +1552,7 @@ def get_intraday_data(
 
         # 加载前日快照用于指标预热
         warm_up = db_manager.load_previous_daily_summary(code, q_date)
+        rsi_ob, rsi_os = _get_rsi_thresholds()
 
         response = IntradayDataResponse(
             stock_code=code,
@@ -1539,6 +1564,8 @@ def get_intraday_data(
             indicator_sub_charts=indicator_sub_charts,
             signal_summary=summary,
             warm_up_summary=warm_up,
+            rsi_overbought=rsi_ob,
+            rsi_oversold=rsi_os,
         )
 
         # 当日数据写入缓存，避免 batch-status 轮询时重复计算
@@ -1935,6 +1962,7 @@ def get_batch_status(
                         except Exception:
                             pass
 
+                    rsi_ob, rsi_os = _get_rsi_thresholds()
                     current_full_data = IntradayDataResponse(
                         stock_code=code,
                         stock_name=stock_name,
@@ -1944,6 +1972,8 @@ def get_batch_status(
                         reference_lines=reference_lines,
                         indicator_sub_charts=indicator_sub_charts,
                         signal_summary=summary,
+                        rsi_overbought=rsi_ob,
+                        rsi_oversold=rsi_os,
                     )
                     _set_cached_full_response(code, current_full_data)
                 except Exception as e:

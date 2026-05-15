@@ -25,6 +25,7 @@ import {
 import type { WeightContribution, IntradaySignal } from '../api/intraday';
 import { validateStockCode } from '../utils/validation';
 import { Card } from '../components/common';
+import { CrosshairSyncEngine } from './CrosshairSyncEngine';
 
 const CHART_HEIGHT = 460;
 
@@ -199,6 +200,8 @@ const IntradayPage: React.FC = () => {
   const [crosshairSignals, setCrosshairSignals] = useState<Record<string, string>>({});
   const [isCrosshairActive, setIsCrosshairActive] = useState(false);
   const [crosshairMacdSum, setCrosshairMacdSum] = useState<number | null>(null);
+  const [crosshairMacdDiff, setCrosshairMacdDiff] = useState<number | null>(null);
+  const [crosshairRsiValue, setCrosshairRsiValue] = useState<number | null>(null);
   const [hoveredWeightDetails, setHoveredWeightDetails] = useState<{
     buy: WeightContribution[];
     sell: WeightContribution[];
@@ -394,7 +397,7 @@ const IntradayPage: React.FC = () => {
   const isInitialRenderRef = useRef(false);
   const currentDateRef = useRef(todayDateStr);
   const priceRangeEnabledRef = useRef(false);
-  const crosshairSyncDepthRef = useRef(0);
+  const syncEngineRef = useRef(new CrosshairSyncEngine());
   const currentCrosshairTimeRef = useRef<Time | null>(null);
   const klineRawDataRef = useRef<any[]>([]);
   const crosshairSignalRef = useRef<Record<string, string>>({});
@@ -410,8 +413,6 @@ const IntradayPage: React.FC = () => {
   // 指标子图实例管理
   const indicatorChartsRef = useRef<Map<string, lightweightCharts.IChartApi>>(new Map());
   const indicatorSeriesRef = useRef<Map<string, any[]>>(new Map());
-  // 独立存储子图数据（用于 crosshair 同步，不依赖 lightweight-charts 的 data() 方法）
-  const subChartDataRef = useRef<Map<string, any[]>>(new Map());
 
   currentDateRef.current = todayDateStr;
   priceRangeEnabledRef.current = priceRangeEnabled;
@@ -728,45 +729,8 @@ const IntradayPage: React.FC = () => {
       });
       indicatorChartsRef.current.clear();
       indicatorSeriesRef.current.clear();
-      subChartDataRef.current.clear();
     };
   }, []);
-
-  // ── 同步辅助函数 ──
-  const syncCrosshairToSubCharts = (time: Time) => {
-    indicatorChartsRef.current.forEach((subChart, id) => {
-      try {
-        const seriesArr = indicatorSeriesRef.current.get(id);
-        const data = subChartDataRef.current.get(id);
-        if (!seriesArr || seriesArr.length === 0 || !data || data.length === 0) return;
-        const firstSeries = seriesArr[0];
-        const dataPt = data.find((d: any) => d.time === time);
-        let value: number | null = null;
-        if (dataPt && dataPt.value != null && !isNaN(Number(dataPt.value))) {
-          value = dataPt.value;
-        } else {
-          // 无精确匹配时，取最近的可用数据点
-          const nearest = data.reduce((best: any, d: any) => {
-            if (d.value == null || isNaN(Number(d.value))) return best;
-            const diff = Math.abs(Number(d.time) - Number(time));
-            return diff < best.diff ? { d, diff } : best;
-          }, { d: data[0], diff: Infinity });
-          if (nearest.d && nearest.diff < Infinity) {
-            value = nearest.d.value;
-          }
-        }
-        if (value != null) {
-          subChart.setCrosshairPosition(value, time, firstSeries);
-        }
-      } catch (e) { /* ignore */ }
-    });
-  };
-
-  const syncTimeRangeToSubCharts = (range: { from: Time; to: Time }) => {
-    indicatorChartsRef.current.forEach((subChart) => {
-      try { subChart.timeScale().setVisibleRange(range); } catch (e) { /* ignore */ }
-    });
-  };
 
   // ── 前端信号计算（无反函数，基于已加载的完整指标线数据切片） ──
 
@@ -889,18 +853,20 @@ const IntradayPage: React.FC = () => {
       }
     }
 
-    // RSI
+    // RSI：使用后端配置阈值
     const rsiArr = slice.map((s) => s.RSI);
     const lastRsi = rsiArr[rsiArr.length - 1];
     if (!isNaN(lastRsi)) {
-      if (lastRsi <= 30) {
-        signals.rsi = 'RSI超卖 \u2191';
-      } else if (lastRsi >= 70) {
-        signals.rsi = 'RSI超买 \u2193';
+      const rsiOb = intradayData?.rsi_overbought ?? 65;
+      const rsiOs = intradayData?.rsi_oversold ?? 20;
+      if (lastRsi <= rsiOs) {
+        signals.rsi = `RSI超卖 \u2191`;
+      } else if (lastRsi >= rsiOb) {
+        signals.rsi = `RSI超买 \u2193`;
       } else if (lastRsi < 50) {
-        signals.rsi = 'RSI偏弱 \u2198';
+        signals.rsi = `RSI偏弱 \u2198`;
       } else {
-        signals.rsi = 'RSI偏强 \u2197';
+        signals.rsi = `RSI偏强 \u2197`;
       }
     }
 
@@ -910,9 +876,18 @@ const IntradayPage: React.FC = () => {
     crosshairSignalRef.current = signals;
     setCrosshairSignals({ ...signals });
 
+    setCrosshairRsiValue(isNaN(lastRsi) ? null : lastRsi);
+
     // 累计到当前时间点的MACD柱高度和
     const macdSum = slice.reduce((sum, s) => sum + (s.MACD_Bar || 0), 0);
     setCrosshairMacdSum(macdSum);
+
+    // 当前MACD柱高度差（最新柱值 − 前一柱值）
+    const macdBarArr = slice.map((s: any) => s.MACD_Bar || 0);
+    const macdDiff = macdBarArr.length >= 2
+      ? macdBarArr[macdBarArr.length - 1] - macdBarArr[macdBarArr.length - 2]
+      : 0;
+    setCrosshairMacdDiff(macdDiff);
 
     setIsCrosshairActive(true);
 
@@ -1019,7 +994,6 @@ const IntradayPage: React.FC = () => {
 
       // ── 销毁旧图表以完全重置内部状态（包括用户手动调整的 scale）──
       if (chartRef.current) {
-        if (timeSyncSubRef.current) timeSyncSubRef.current();
         try { chartRef.current.remove(); } catch (e) { /* ignore */ }
         chartRef.current = null;
         candleSeriesRef.current = null;
@@ -1040,7 +1014,7 @@ const IntradayPage: React.FC = () => {
       });
       indicatorChartsRef.current.clear();
       indicatorSeriesRef.current.clear();
-      subChartDataRef.current.clear();
+      syncEngineRef.current.clear();
       crosshairSubsRef.current.forEach((unsub) => {
         try { unsub(); } catch (e) { /* ignore */ }
       });
@@ -1132,26 +1106,6 @@ const IntradayPage: React.FC = () => {
       volumeChartRef.current = volChart;
       volumeSeriesRef.current = volSeries;
 
-      // 同步主图和成交量图的时间轴范围
-      const syncTimeRange = () => {
-        if (isTimeSyncingRef.current) return;
-        isTimeSyncingRef.current = true;
-        try {
-          const range = chart.timeScale().getVisibleRange();
-          if (range) {
-            volChart.timeScale().setVisibleRange(range);
-            indicatorChartsRef.current.forEach((ic) => {
-              try { ic.timeScale().setVisibleRange(range); } catch (e) { /* ignore */ }
-            });
-          }
-        } catch (e) { /* ignore */ }
-        setTimeout(() => { isTimeSyncingRef.current = false; }, 0);
-      };
-      chart.timeScale().subscribeVisibleTimeRangeChange(syncTimeRange);
-      timeSyncSubRef.current = () => {
-        chart.timeScale().unsubscribeVisibleTimeRangeChange(syncTimeRange);
-      };
-
       const klines = convertKlineData(data.kline_data, date);
       klineRawDataRef.current = klines;
       allSignalsRef.current = data.signals || [];
@@ -1191,6 +1145,14 @@ const IntradayPage: React.FC = () => {
             color: isUp ? '#FF444466' : '#44AA4466',
           };
         }),
+      );
+
+      // ── 注册成交量到同步引擎 ──
+      syncEngineRef.current.register(
+        'volume',
+        volChart,
+        volSeries,
+        klines.map((k) => ({ time: k.time as number, value: (k as any).volume || 0 })),
       );
 
       // ── 分时均价线（累计成交额/累计成交量曲线）──
@@ -1333,6 +1295,26 @@ const IntradayPage: React.FC = () => {
 
       chart.timeScale().fitContent();
 
+      // ── 设置引擎回调和注册主图 ──
+      syncEngineRef.current.setCallbacks({
+        onMove: (time) => {
+          currentCrosshairTimeRef.current = time;
+          computeSignalsAtTime(time);
+        },
+        onLeave: () => {
+          setIsCrosshairActive(false);
+          setCrosshairMacdSum(null);
+          setCrosshairMacdDiff(null);
+          setCrosshairRsiValue(null);
+        },
+      });
+      syncEngineRef.current.register(
+        'main',
+        chart,
+        candleSeriesRef.current!,
+        klines.map((k) => ({ time: k.time as number, value: k.close })),
+      );
+
       // ── 设置初始价格范围为昨收的±10%（受 toggle 控制）──
       if (priceRangeEnabledRef.current) {
         const prevCloseRef = (data.reference_lines || []).find((rl: any) => rl.id === 'prev_close');
@@ -1464,33 +1446,7 @@ const IntradayPage: React.FC = () => {
 
       // ── 主图十字线联动 ──
       const mainHandleCrosshairMove = (param: any) => {
-        if (crosshairSyncDepthRef.current > 0) {
-          if (param.time) computeSignalsAtTime(param.time);
-          return;
-        }
-        crosshairSyncDepthRef.current++;
-        try {
-          currentCrosshairTimeRef.current = param.time;
-          if (param.time) {
-            // 同步到成交量图
-            if (volChart && volSeries) {
-              const kp = klines.find((k: any) => k.time === param.time);
-              if (kp) {
-                try { volChart.setCrosshairPosition(kp.volume, param.time, volSeries); } catch (e) { /* ignore */ }
-              }
-            }
-            // 同步到所有子图
-            syncCrosshairToSubCharts(param.time);
-            // 更新信号文本
-            computeSignalsAtTime(param.time);
-          } else {
-            // 离开图表，恢复最新信号
-            setIsCrosshairActive(false);
-            setCrosshairMacdSum(null);
-          }
-        } finally {
-          crosshairSyncDepthRef.current--;
-        }
+        syncEngineRef.current.handleMove('main', param);
       };
       crosshairSubsRef.current.push(chart.subscribeCrosshairMove(mainHandleCrosshairMove));
 
@@ -1500,10 +1456,7 @@ const IntradayPage: React.FC = () => {
         try {
           const range = chart.timeScale().getVisibleRange();
           if (range && range.from && range.to) {
-            if (volChart) {
-              try { volChart.timeScale().setVisibleRange(range); } catch (e) { /* ignore */ }
-            }
-            syncTimeRangeToSubCharts(range);
+            syncEngineRef.current.syncTimeRange(range);
           }
         } finally {
           setTimeout(() => { isTimeSyncingRef.current = false; }, 0);
@@ -1514,30 +1467,7 @@ const IntradayPage: React.FC = () => {
       // ── 成交量图十字线联动 ──
       if (volChart && volSeries) {
         const volHandleCrosshairMove = (param: any) => {
-          if (crosshairSyncDepthRef.current > 0) {
-            if (param.time) computeSignalsAtTime(param.time);
-            return;
-          }
-          crosshairSyncDepthRef.current++;
-          try {
-            currentCrosshairTimeRef.current = param.time;
-            if (param.time) {
-              const kp = klines.find((k: any) => k.time === param.time);
-              if (kp) {
-                const cs = candleSeriesRef.current;
-                try {
-                  if (cs) chart.setCrosshairPosition(kp.close, param.time, cs);
-                } catch (e) { /* ignore */ }
-              }
-              syncCrosshairToSubCharts(param.time);
-              computeSignalsAtTime(param.time);
-            } else {
-              setIsCrosshairActive(false);
-              setCrosshairMacdSum(null);
-            }
-          } finally {
-            crosshairSyncDepthRef.current--;
-          }
+          syncEngineRef.current.handleMove('volume', param);
         };
         crosshairSubsRef.current.push(volChart.subscribeCrosshairMove(volHandleCrosshairMove));
 
@@ -1547,8 +1477,7 @@ const IntradayPage: React.FC = () => {
           try {
             const vr = volChart.timeScale().getVisibleRange();
             if (vr && vr.from && vr.to) {
-              chart.timeScale().setVisibleRange(vr);
-              syncTimeRangeToSubCharts(vr);
+              syncEngineRef.current.syncTimeRange(vr);
             }
           } finally {
             setTimeout(() => { isTimeSyncingRef.current = false; }, 0);
@@ -1578,7 +1507,6 @@ const IntradayPage: React.FC = () => {
       });
       indicatorChartsRef.current.clear();
       indicatorSeriesRef.current.clear();
-      subChartDataRef.current.clear();
 
       for (const sc of subCharts) {
         const entry = containerMap.find((c) => c.id === sc.id);
@@ -1619,7 +1547,9 @@ const IntradayPage: React.FC = () => {
 
         const lineSeriesList: any[] = [];
 
-        let subDataStored = false;
+        let engineDataCollected = false;
+        let engineData: { time: number; value: number }[] = [];
+        let engineLastValueSeries: any = undefined;
 
         for (const line of sc.lines) {
           if (sc.id === 'absorption') {
@@ -1642,9 +1572,9 @@ const IntradayPage: React.FC = () => {
               .sort((a, b) => (a.time as number) - (b.time as number));
 
             padDataStart(points, firstKlineTime);
-            if (!subDataStored) {
-              subChartDataRef.current.set(sc.id, points.slice());
-              subDataStored = true;
+            if (!engineDataCollected) {
+              engineData = points.slice();
+              engineDataCollected = true;
             }
             hs.setData(points);
             lineSeriesList.push(hs);
@@ -1658,9 +1588,9 @@ const IntradayPage: React.FC = () => {
               })
               .sort((a: any, b: any) => (a.time as number) - (b.time as number));
             padDataStart(pts, firstKlineTime);
-            if (!subDataStored) {
-              subChartDataRef.current.set(sc.id, pts.slice());
-              subDataStored = true;
+            if (!engineDataCollected && line.name === 'DIF') {
+              engineData = pts.slice();
+              engineDataCollected = true;
             }
             if (line.name === 'DIF' && pts.length > 0) {
               const ls = subChart.addSeries(lightweightCharts.LineSeries, {
@@ -1701,20 +1631,21 @@ const IntradayPage: React.FC = () => {
               })
               .sort((a: any, b: any) => (a.time as number) - (b.time as number));
             padDataStart(pts, firstKlineTime);
-            if (!subDataStored) {
-              subChartDataRef.current.set(sc.id, pts.slice());
-              subDataStored = true;
+            if (!engineDataCollected && line.name === 'RSI') {
+              engineData = pts.slice();
+              engineDataCollected = true;
             }
             if (line.name === 'RSI' && pts.length > 0) {
               const ls = subChart.addSeries(lightweightCharts.LineSeries, {
                 color: '#4488FF',
                 lineWidth: 1,
                 priceLineVisible: false,
-                lastValueVisible: true,
+                lastValueVisible: false,
                 crosshairMarkerVisible: true,
               });
               ls.setData(pts);
               lineSeriesList.push(ls);
+              engineLastValueSeries = ls;
             } else if ((line.name === 'rsi_overbought' || line.name === 'RSI_Overbought') && pts.length > 0) {
               const ls = subChart.addSeries(lightweightCharts.LineSeries, {
                 color: '#FF444488',
@@ -1758,106 +1689,51 @@ const IntradayPage: React.FC = () => {
               .sort((a, b) => (a.time as number) - (b.time as number));
 
             padDataStart(points, firstKlineTime);
-            if (!subDataStored) {
-              subChartDataRef.current.set(sc.id, points.slice());
-              subDataStored = true;
+            if (!engineDataCollected) {
+              engineData = points.slice();
+              engineDataCollected = true;
             }
             ls.setData(points);
             lineSeriesList.push(ls);
           }
         }
 
-        // 同步主图时间轴：用 K线数据的首尾时间确保与主图完全一致
-        // 注意：不能依赖 getVisibleRange()，因为首次渲染前可能返回 null
-        if (klines.length >= 2) {
-          const firstTime = klines[0].time as number;
-          const lastTime = klines[klines.length - 1].time as number;
-          if (firstTime > 0 && lastTime > firstTime) {
-            subChart.timeScale().setVisibleRange({ from: firstTime as any, to: lastTime as any });
-          }
+        // ── 注册子图到同步引擎 ──
+        const primarySeries = lineSeriesList.find(
+          (s: any) => {
+            try { return s.seriesType?.() !== 'Histogram'; } catch { return true; }
+          },
+        ) || lineSeriesList[0];
+        console.log(`[SubChart] sc.id=${sc.id} engineDataLen=${engineData.length} hasPrimarySeries=${!!primarySeries} seriesCount=${lineSeriesList.length} engineDataFirstTime=${engineData.length > 0 ? engineData[0].time : 'N/A'} engineDataLastTime=${engineData.length > 0 ? engineData[engineData.length - 1].time : 'N/A'} firstKlineTime=${firstKlineTime}`);
+        if (engineData.length > 0 && primarySeries) {
+          syncEngineRef.current.register(
+            sc.id,
+            subChart,
+            primarySeries,
+            engineData,
+            engineLastValueSeries ? { lastValueSeries: engineLastValueSeries } : undefined,
+          );
+          console.log(`[SubChart] REGISTERED: id=${sc.id}`);
+        } else {
+          console.warn(`[SubChart] SKIPPED registration: id=${sc.id} engineDataLen=${engineData.length} hasPrimarySeries=${!!primarySeries}`);
         }
 
-        // 子图十字线联动
-        const subHandleCrosshairMove = (param: any) => {
-          if (crosshairSyncDepthRef.current > 0) {
-            if (param.time) computeSignalsAtTime(param.time);
-            return;
-          }
-          crosshairSyncDepthRef.current++;
-          try {
-            currentCrosshairTimeRef.current = param.time;
-            if (param.time) {
-              // 同步到主图
-              const kp = klines.find((k: any) => k.time === param.time);
-              if (kp) {
-                try {
-                  const cs = candleSeriesRef.current;
-                  if (cs) {
-                    chart.setCrosshairPosition(kp.close, param.time, cs);
-                  }
-                } catch (e) { /* ignore */ }
-              }
-              // 同步到成交量图
-              if (volChart && volSeries) {
-                try { volChart.setCrosshairPosition(kp?.volume || 0, param.time, volSeries); } catch (e) { /* ignore */ }
-              }
-              // 同步到其他子图
-              indicatorChartsRef.current.forEach((otherChart, otherId) => {
-                if (otherId === sc.id) return;
-                try {
-                  const otherSeriesArr = indicatorSeriesRef.current.get(otherId);
-                  const otherData = subChartDataRef.current.get(otherId);
-                  if (otherSeriesArr && otherSeriesArr.length > 0 && otherData && otherData.length > 0) {
-                    const otherSeries = otherSeriesArr[0];
-                    const otherPt = otherData.find((d: any) => d.time === param.time);
-                    let otherVal: number | null = null;
-                    if (otherPt && otherPt.value != null && !isNaN(Number(otherPt.value))) {
-                      otherVal = otherPt.value;
-                    } else {
-                      const nearest = otherData.reduce((best: any, d: any) => {
-                        if (d.value == null || isNaN(Number(d.value))) return best;
-                        const diff = Math.abs(Number(d.time) - Number(param.time));
-                        return diff < best.diff ? { d, diff } : best;
-                      }, { d: otherData[0], diff: Infinity });
-                      if (nearest.d && nearest.diff < Infinity) {
-                        otherVal = nearest.d.value;
-                      }
-                    }
-                    if (otherVal != null) {
-                      otherChart.setCrosshairPosition(otherVal, param.time, otherSeries);
-                    }
-                  }
-                } catch (e) { /* ignore */ }
-              });
-              // 更新信号文本
-              computeSignalsAtTime(param.time);
-            } else {
-              // 离开图表，恢复最新信号
-              setIsCrosshairActive(false);
-              setCrosshairMacdSum(null);
-            }
-          } finally {
-            crosshairSyncDepthRef.current--;
-          }
-        };
-        crosshairSubsRef.current.push(subChart.subscribeCrosshairMove(subHandleCrosshairMove));
+        // 十字线订阅
+        crosshairSubsRef.current.push(
+          subChart.subscribeCrosshairMove((param) =>
+            syncEngineRef.current.handleMove(sc.id, param),
+          ),
+        );
 
+        // 时间轴同步
         const subHandleTimeScaleChange = () => {
           if (isTimeSyncingRef.current) return;
-          // 初始化阶段：阻止子图时间范围变更反向传播到主图
           if (isInitialRenderRef.current) return;
           isTimeSyncingRef.current = true;
           try {
             const sr = subChart.timeScale().getVisibleRange();
             if (sr && sr.from && sr.to) {
-              chart.timeScale().setVisibleRange(sr);
-              if (volChart) {
-                try { volChart.timeScale().setVisibleRange(sr); } catch (e) { /* ignore */ }
-              }
-              indicatorChartsRef.current.forEach((otherChart, otherId) => {
-                if (otherId === sc.id) return;
-                try { otherChart.timeScale().setVisibleRange(sr); } catch (e) { /* ignore */ }
-              });
+              syncEngineRef.current.syncTimeRange(sr);
             }
           } finally {
             setTimeout(() => { isTimeSyncingRef.current = false; }, 0);
@@ -1867,6 +1743,23 @@ const IntradayPage: React.FC = () => {
 
         indicatorChartsRef.current.set(sc.id, subChart);
         indicatorSeriesRef.current.set(sc.id, lineSeriesList);
+      }
+
+      // 初次同步：多帧重试确保所有子图时间轴对齐
+      // lightweight-charts 内部布局是异步的，单次 setVisibleRange 可能在布局完成前被忽略
+      if (klines.length >= 2) {
+        const firstTime = klines[0].time as number;
+        const lastTime = klines[klines.length - 1].time as number;
+        if (firstTime > 0 && lastTime > firstTime) {
+          const range = { from: firstTime as any, to: lastTime as any };
+          syncEngineRef.current.syncTimeRange(range);
+          requestAnimationFrame(() => {
+            syncEngineRef.current.syncTimeRange(range);
+            requestAnimationFrame(() => {
+              syncEngineRef.current.syncTimeRange(range);
+            });
+          });
+        }
       }
 
       // ── 直接在 renderData 中创建信号标记，避免时序问题 ──
@@ -1906,10 +1799,12 @@ const IntradayPage: React.FC = () => {
         seriesMarkersRef.current = createSeriesMarkers(markSeries, markers as any);
       }
 
-      // ── 延迟清除初始化标志：等待 lightweight-charts 完成首次渲染后再启用子→主时间同步 ──
+      // ── 延迟清除初始化标志：多帧等待后启用双向同步，防止子图异步布局覆盖主图范围 ──
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
-          isInitialRenderRef.current = false;
+          requestAnimationFrame(() => {
+            isInitialRenderRef.current = false;
+          });
         });
       });
     },
@@ -2134,6 +2029,18 @@ const IntradayPage: React.FC = () => {
     );
     if (!macdBarLine || !macdBarLine.data) return 0;
     return macdBarLine.data.reduce((sum: number, pt: any) => sum + (pt.value || 0), 0);
+  }, [intradayData]);
+
+  // MACD柱高度差（最新柱值 − 前一柱值）
+  const macdBarDiff = useMemo(() => {
+    const macdSubChart = intradayData?.indicator_sub_charts?.find((sc: any) => sc.id === 'macd');
+    if (!macdSubChart) return 0;
+    const macdBarLine = macdSubChart.lines.find(
+      (line: any) => line.name === 'MACD柱' || line.name === 'MACD_Bar' || line.name === 'macd_bar',
+    );
+    if (!macdBarLine || !macdBarLine.data || macdBarLine.data.length < 2) return 0;
+    const data = macdBarLine.data;
+    return (data[data.length - 1].value || 0) - (data[data.length - 2].value || 0);
   }, [intradayData]);
 
   // ── 信号标记（受筛选条件调控，随 filteredSignals 变化而更新）──
@@ -2835,26 +2742,7 @@ const IntradayPage: React.FC = () => {
                           return kSec === targetSec;
                         });
                         if (!kp) return;
-                        try {
-                          const cs = candleSeriesRef.current;
-                          if (cs && (cs as any).seriesType?.() !== 'Histogram') {
-                            ch.setCrosshairPosition(sig.price, targetSec as any, cs as any);
-                          } else {
-                            ch.setCrosshairPosition(sig.price, targetSec as any, candleSeriesRef.current!);
-                          }
-                        } catch (e) { /* ignore */ }
-                        currentCrosshairTimeRef.current = targetSec as any;
-                        syncCrosshairToSubCharts(targetSec as any);
-                        if (volumeChartRef.current && volumeSeriesRef.current && kp) {
-                          try {
-                            volumeChartRef.current.setCrosshairPosition(
-                              (kp as any).volume || 0,
-                              targetSec as any,
-                              volumeSeriesRef.current,
-                            );
-                          } catch (e) { /* ignore */ }
-                        }
-                        computeSignalsAtTime(targetSec as any);
+                        syncEngineRef.current.setCrosshairAtTime(targetSec as any);
                         setIsCrosshairActive(true);
                         setHoveredWeightDetails({
                           buy: sig.buy_weight_details || [],
@@ -2949,6 +2837,30 @@ const IntradayPage: React.FC = () => {
                               );
                             })() : null;
                           })()}
+                          {sc.id === 'rsi' && (() => {
+                            const rsiOb = intradayData?.rsi_overbought ?? 65;
+                            const rsiOs = intradayData?.rsi_oversold ?? 20;
+                            const displayRsi = isCrosshairActive && crosshairRsiValue !== null
+                              ? crosshairRsiValue
+                              : (() => {
+                                  const rsiLine = sc.lines.find((l: any) => l.name === 'RSI');
+                                  const rsiData = rsiLine?.data || [];
+                                  return rsiData.length > 0 ? rsiData[rsiData.length - 1].value : null;
+                                })();
+                            if (displayRsi == null) return null;
+                            return (
+                              <span
+                                className="text-[10px] font-mono font-medium px-1.5 py-px rounded"
+                                style={{
+                                  color: displayRsi >= rsiOb ? '#FF4444' : displayRsi <= rsiOs ? '#44FF44' : '#888888',
+                                  backgroundColor: displayRsi >= rsiOb ? 'rgba(255,68,68,0.1)'
+                                    : displayRsi <= rsiOs ? 'rgba(68,255,68,0.1)' : 'rgba(136,136,136,0.1)',
+                                }}
+                              >
+                                RSI {displayRsi.toFixed(1)}
+                              </span>
+                            );
+                          })()}
                           {sc.id === 'macd' && (() => {
                             const displaySum = isCrosshairActive && crosshairMacdSum !== null ? crosshairMacdSum : macdBarSum;
                             return (
@@ -2960,6 +2872,20 @@ const IntradayPage: React.FC = () => {
                                 }}
                               >
                                 柱高和 {displaySum >= 0 ? '+' : ''}{displaySum.toFixed(2)}
+                              </span>
+                            );
+                          })()}
+                          {sc.id === 'macd' && (() => {
+                            const displayDiff = isCrosshairActive && crosshairMacdDiff !== null ? crosshairMacdDiff : macdBarDiff;
+                            return (
+                              <span
+                                className="text-[10px] font-mono font-medium px-1.5 py-px rounded"
+                                style={{
+                                  color: displayDiff >= 0 ? '#FF4444' : '#44FF44',
+                                  backgroundColor: displayDiff >= 0 ? 'rgba(255,68,68,0.1)' : 'rgba(68,255,68,0.1)',
+                                }}
+                              >
+                                柱高差 {displayDiff >= 0 ? '+' : ''}{displayDiff.toFixed(2)}
                               </span>
                             );
                           })()}

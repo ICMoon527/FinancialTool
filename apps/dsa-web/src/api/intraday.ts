@@ -94,6 +94,8 @@ export interface IntradayDataResponse {
     weak_signals: number;
     simulated_return_pct: number;
   };
+  rsi_overbought?: number;
+  rsi_oversold?: number;
 }
 
 export interface SearchHistoryItem {
