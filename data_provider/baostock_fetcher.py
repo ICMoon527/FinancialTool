@@ -346,6 +346,11 @@ class BaostockFetcher(BaseFetcher):
         
         return None
 
+    def close(self) -> None:
+        """释放 Baostock 连接资源"""
+        self._bs_module = None
+        logger.debug("BaostockFetcher 资源已释放")
+
 
 if __name__ == "__main__":
     # 测试代码

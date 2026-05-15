@@ -2119,15 +2119,19 @@ def _run_batch_download(task_id: str, target_date: str, max_workers: int, force:
                                 processed += 1
                         else:
                             failed += 1
-                            # 检查是否为连接相关错误（频率限制）
-                            error_str = str(info)
-                            is_connection_error = any(
-                                kw in error_str.lower()
-                                for kw in [
-                                    "connection", "remote end closed", "timeout",
-                                    "remoteDisconnected", "ConnectionError",
-                                    "Connection aborted", "too many", "rate limit",
-                                ]
+                            fail_reason: str = str(info)
+                            # 检查是否为连接相关错误（频率限制），但不包括"所有数据源耗尽"
+                            is_all_sources_failed = "所有数据源获取" in fail_reason
+                            is_connection_error = (
+                                not is_all_sources_failed
+                                and any(
+                                    kw in fail_reason.lower()
+                                    for kw in [
+                                        "connection", "remote end closed", "timeout",
+                                        "remoteDisconnected", "ConnectionError",
+                                        "Connection aborted", "too many", "rate limit",
+                                    ]
+                                )
                             )
                             if is_connection_error:
                                 batch_failed_codes.append(code)

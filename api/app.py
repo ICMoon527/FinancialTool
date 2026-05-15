@@ -61,6 +61,14 @@ async def app_lifespan(app: FastAPI):
     finally:
         if hasattr(app.state, "system_config_service"):
             delattr(app.state, "system_config_service")
+        # 关闭数据源连接，避免 ResourceWarning: unclosed socket
+        try:
+            from stock_selector.stock_pool import get_stock_pool_manager
+            manager = get_stock_pool_manager()
+            if manager.data_fetcher_manager is not None:
+                manager.data_fetcher_manager.shutdown()
+        except Exception:
+            pass
 
 
 def create_app(static_dir: Optional[Path] = None) -> FastAPI:

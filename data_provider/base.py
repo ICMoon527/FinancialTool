@@ -150,6 +150,14 @@ class BaseFetcher(ABC):
         """
         pass
 
+    def close(self) -> None:
+        """
+        释放数据源占用的资源（连接、Session 等）。
+
+        子类如有需要可重写此方法，在应用关闭时由 DataFetcherManager.shutdown()
+        统一调用。默认实现为空。
+        """
+
     def get_main_indices(self, region: str = "cn") -> Optional[List[Dict[str, Any]]]:
         """
         获取主要指数实时行情
@@ -1190,3 +1198,18 @@ class DataFetcherManager:
                 logger.warning(f"[{fetcher.name}] 获取股票 {stock_code} 所属板块失败: {e}")
                 continue
         return None
+
+    def shutdown(self) -> None:
+        """
+        关闭所有数据源，释放资源。
+
+        遍历所有 fetcher 调用其 close() 方法，在应用退出时调用。
+        """
+        logger.info(f"正在关闭 {len(self._fetchers)} 个数据源...")
+        for fetcher in self._fetchers:
+            try:
+                fetcher.close()
+                logger.debug(f"数据源 {fetcher.name} 已关闭")
+            except Exception as e:
+                logger.warning(f"关闭数据源 {fetcher.name} 时出错: {e}")
+        logger.info("所有数据源已关闭")

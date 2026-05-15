@@ -1956,6 +1956,10 @@ class AkshareFetcher(BaseFetcher):
             logger.error(f"[API调用] ak.stock_zh_index_daily 失败: {e}")
             return None
 
+    def close(self) -> None:
+        """释放 AkshareFetcher 资源"""
+        logger.debug("AkshareFetcher 资源已释放")
+
 if __name__ == "__main__":
     # 测试代码
     logging.basicConfig(level=logging.DEBUG)

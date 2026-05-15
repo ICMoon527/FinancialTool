@@ -940,6 +940,11 @@ class TushareFetcher(BaseFetcher):
         
         return None
 
+    def close(self) -> None:
+        """释放 Tushare API 资源"""
+        self._api = None
+        logger.debug("TushareFetcher 资源已释放")
+
 
 if __name__ == "__main__":
     # 测试代码
