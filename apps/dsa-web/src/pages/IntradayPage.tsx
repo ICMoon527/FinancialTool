@@ -107,10 +107,11 @@ function convertKlineData(
  * 如果数据首点晚于首根K线，前插一个 null 值点（lightweight-charts 中 null = 断点不绘制）
  * 防止子图 auto-fit 到较晚的起始时间，进而反向传播到主图
  */
-function padDataStart(pts: any[], firstKlineTime: number) {
+function padDataStart(pts: any[], firstKlineTime: number): any[] {
   if (firstKlineTime > 0 && pts.length > 0 && (pts[0].time as number) > firstKlineTime) {
-    pts.unshift({ time: firstKlineTime, value: null });
+    return [{ time: firstKlineTime, value: null }, ...pts];
   }
+  return pts;
 }
 
 /**
@@ -1577,9 +1578,8 @@ const IntradayPage: React.FC = () => {
               })
               .sort((a, b) => (a.time as number) - (b.time as number));
 
-            padDataStart(points, firstKlineTime);
             if (!engineDataCollected) {
-              engineData = points.slice();
+              engineData = padDataStart(points, firstKlineTime);
               engineDataCollected = true;
             }
             hs.setData(points);
@@ -1593,9 +1593,8 @@ const IntradayPage: React.FC = () => {
                 return { time: Math.floor(ms / 1000) as any, value: pt.value };
               })
               .sort((a: any, b: any) => (a.time as number) - (b.time as number));
-            padDataStart(pts, firstKlineTime);
             if (!engineDataCollected && line.name === 'DIF') {
-              engineData = pts.slice();
+              engineData = padDataStart(pts, firstKlineTime);
               engineDataCollected = true;
             }
             if (line.name === 'DIF' && pts.length > 0) {
@@ -1636,9 +1635,8 @@ const IntradayPage: React.FC = () => {
                 return { time: Math.floor(ms / 1000) as any, value: pt.value };
               })
               .sort((a: any, b: any) => (a.time as number) - (b.time as number));
-            padDataStart(pts, firstKlineTime);
             if (!engineDataCollected && line.name === 'RSI') {
-              engineData = pts.slice();
+              engineData = padDataStart(pts, firstKlineTime);
               engineDataCollected = true;
             }
             if (line.name === 'RSI' && pts.length > 0) {
@@ -1649,7 +1647,7 @@ const IntradayPage: React.FC = () => {
                 lastValueVisible: true,
                 crosshairMarkerVisible: true,
               });
-              ls.setData(pts.filter((p: any) => p.value != null));
+              ls.setData(pts);
               lineSeriesList.push(ls);
               engineLastValueSeries = ls;
             } else if ((line.name === 'rsi_overbought' || line.name === 'RSI_Overbought') && pts.length > 0) {
@@ -1695,12 +1693,11 @@ const IntradayPage: React.FC = () => {
               })
               .sort((a, b) => (a.time as number) - (b.time as number));
 
-            padDataStart(points, firstKlineTime);
             if (!engineDataCollected) {
-              engineData = points.slice();
+              engineData = padDataStart(points, firstKlineTime);
               engineDataCollected = true;
             }
-            ls.setData(points.filter((p: any) => p.value != null));
+            ls.setData(points);
             lineSeriesList.push(ls);
           }
         }
