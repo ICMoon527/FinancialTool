@@ -14,6 +14,7 @@ import {
   startBatchDownload,
   getBatchDownloadStatus,
   cancelBatchDownload,
+  togglePauseBatchDownload,
   type IntradayDataResponse,
   type IntradayKlinePoint,
   type SearchHistoryItem,
@@ -216,6 +217,78 @@ const IntradayPage: React.FC = () => {
   const batchDownloadRef = useRef<BatchDownloadStatus | null>(null);
   batchDownloadRef.current = batchDownload;
   const batchPollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Canvas 进度条引用：直接用 JS 绘制，完全绕过 React/CSS 渲染管线
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const progressTextRef = useRef<HTMLDivElement | null>(null);
+
+  // Canvas 绘制进度条函数（纯 JS，不受 React 影响）
+  const drawProgressBar = useCallback((completed: number, total: number, status: string) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const w = rect.width;
+    const h = rect.height;
+    // 如果 canvas 尚未布局（宽度为 0），延迟一帧重试
+    if (w <= 0 || h <= 0) {
+      requestAnimationFrame(() => drawProgressBar(completed, total, status));
+      return;
+    }
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.scale(dpr, dpr);
+
+    const radius = h / 2;
+    const pct = total > 0 ? Math.max(0.008, completed / total) : 0;
+
+    // 背景
+    ctx.clearRect(0, 0, w, h);
+    ctx.beginPath();
+    ctx.moveTo(radius, 0);
+    ctx.arcTo(w, 0, w, h, radius);
+    ctx.arcTo(w, h, 0, h, radius);
+    ctx.arcTo(0, h, 0, 0, radius);
+    ctx.arcTo(0, 0, w, 0, radius);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(255,255,255,0.05)';
+    ctx.fill();
+
+    // 进度
+    const progressW = Math.max(radius * 2, w * pct);
+    ctx.beginPath();
+    ctx.moveTo(radius, 0);
+    ctx.arcTo(progressW, 0, progressW, h, radius);
+    ctx.arcTo(progressW, h, 0, h, radius);
+    ctx.arcTo(0, h, 0, 0, radius);
+    ctx.arcTo(0, 0, progressW, 0, radius);
+    ctx.closePath();
+    ctx.fillStyle = status === 'completed' ? '#34d399' :
+                    status === 'cancelled' ? 'rgba(234,179,8,0.6)' :
+                    status === 'failed' ? 'rgba(239,68,68,0.6)' :
+                    '#06b6d4';
+    ctx.fill();
+  }, []);
+
+  // 当 batchDownload 变化时重绘 Canvas（处理初始渲染和状态颜色切换）
+  useEffect(() => {
+    if (batchDownload && batchDownload.total > 0) {
+      requestAnimationFrame(() => {
+        drawProgressBar(batchDownload.completed, batchDownload.total, batchDownload.status);
+      });
+    }
+  }, [batchDownload?.completed, batchDownload?.total, batchDownload?.status, drawProgressBar]);
+
+  // 渲染计数器（调试用：验证组件是否在 setBatchDownload 后重新渲染）
+  const renderCountRef = useRef(0);
+  renderCountRef.current += 1;
+  if (renderCountRef.current % 20 === 0) {
+    console.log(
+      `[Render #${renderCountRef.current}] batchDownload:`,
+      batchDownload ? `${batchDownload.completed}/${batchDownload.total} ${batchDownload.status}` : 'null'
+    );
+  }
 
   const handleStartBatchDownload = useCallback(async () => {
     setShowBatchModal(true);
@@ -239,6 +312,18 @@ const IntradayPage: React.FC = () => {
     }
   }, []);
 
+  const handleTogglePause = useCallback(async () => {
+    const task = batchDownloadRef.current;
+    if (!task?.task_id) return;
+    try {
+      const result = await togglePauseBatchDownload(task.task_id);
+      // 立即更新本地状态（轮询也会同步，但这里即时反馈用户体验更好）
+      setBatchDownload(prev => prev ? { ...prev, paused: result.paused } : null);
+    } catch {
+      // 请求失败，轮询会自动同步状态
+    }
+  }, []);
+
   // 批量下载进度轮询
   useEffect(() => {
     if (batchDownload?.status === 'running') {
@@ -250,6 +335,16 @@ const IntradayPage: React.FC = () => {
           const status = await getBatchDownloadStatus(taskId);
           console.log('[BatchDownload] 轮询结果:', status.status, `${status.completed}/${status.total}`);
           setBatchDownload(status);
+          // 用 requestAnimationFrame + Canvas 绘制，完全绕过 React 渲染管线
+          requestAnimationFrame(() => {
+            if (status.total > 0) {
+              drawProgressBar(status.completed, status.total, status.status);
+            }
+            if (progressTextRef.current) {
+              progressTextRef.current.textContent =
+                `${status.completed} / ${status.total} (${Math.round(status.completed / status.total * 100)}%)`;
+            }
+          });
           if (status.status !== 'running') {
             if (batchPollingRef.current) {
               clearInterval(batchPollingRef.current);
@@ -432,7 +527,21 @@ const IntradayPage: React.FC = () => {
       setSelectedHistoryId(first.id);
       setIsLoading(true);
       const dateParam = todayDateStr.replace(/-/g, '');
-      getIntradayData(first.stock_code, dateParam)
+      const loadData = async () => {
+        // 盘中优先从缓存/DB读取（轮询已保证数据最新）
+        if (isTradingTime()) {
+          try {
+            const data = await getIntradayData(first.stock_code, dateParam, 'cache_only');
+            return data;
+          } catch (e: any) {
+            // cache_only 无数据时降级走完整API链路
+            console.log('缓存无数据，降级走API:', e.message);
+          }
+        }
+        // 盘后直接走 full 链路
+        return getIntradayData(first.stock_code, dateParam, 'full');
+      };
+      loadData()
         .then(data => {
           setIntradayData(data);
           setInputError(undefined);
@@ -450,7 +559,7 @@ const IntradayPage: React.FC = () => {
         })
         .finally(() => setIsLoading(false));
     }
-  }, [searchHistory.length, intradayData, todayDateStr]);
+  }, [searchHistory.length, intradayData, todayDateStr, isTradingTime]);
 
   // 盘中轮询
   useEffect(() => {
@@ -1823,7 +1932,10 @@ const IntradayPage: React.FC = () => {
     setIsLoading(true);
     try {
       const dateParam = todayDateStr.replace(/-/g, '');
-      const data = await getIntradayData(stockCode, dateParam);
+      // 盘中轮询已保证缓存/DB最新，手动搜索用 cache_only 避免额外API压力
+      // 盘后直接走 full 链路，跳过 cache_only 的无效尝试
+      const dataStrategy = isTradingTime() ? 'cache_only' : 'full';
+      const data = await getIntradayData(stockCode, dateParam, dataStrategy);
       setIntradayData(data);
       setInputError(undefined);
 
@@ -1841,7 +1953,7 @@ const IntradayPage: React.FC = () => {
     } finally {
       setIsLoading(false);
     }
-  }, [stockCode, loadHistory]);
+  }, [stockCode, loadHistory, isTradingTime, todayDateStr]);
 
   // 回车搜索
   const handleKeyDown = useCallback(
@@ -1874,7 +1986,10 @@ const IntradayPage: React.FC = () => {
       setIsLoading(true);
       try {
         const dateParam = todayDateStr.replace(/-/g, '');
-        const data = await getIntradayData(item.stock_code, dateParam);
+        // 盘中轮询已保证缓存/DB最新，手动点击用 cache_only 避免额外API压力
+        // 盘后直接走 full 链路，跳过 cache_only 的无效尝试
+        const dataStrategy = isTradingTime() ? 'cache_only' : 'full';
+        const data = await getIntradayData(item.stock_code, dateParam, dataStrategy);
         setIntradayData(data);
         setInputError(undefined);
         // 更新搜索历史时间戳，使该纪录置顶
@@ -1892,7 +2007,7 @@ const IntradayPage: React.FC = () => {
         setIsLoading(false);
       }
     },
-    [todayDateStr, loadHistory],
+    [todayDateStr, loadHistory, isTradingTime],
   );
 
   // 删除历史
@@ -2310,7 +2425,9 @@ const IntradayPage: React.FC = () => {
           <div className="relative terminal-card border border-white/10 rounded-xl shadow-2xl p-5 w-full max-w-md mx-4">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-sm font-semibold text-white">
-                {batchDownload.status === 'running' ? '正在批量下载分时数据' :
+                {batchDownload.waiting_retry ? '等待重试中...' :
+                 batchDownload.paused ? '已暂停' :
+                 batchDownload.status === 'running' ? '正在批量下载分时数据' :
                  batchDownload.status === 'completed' ? '批量下载完成' :
                  batchDownload.status === 'cancelled' ? '已取消' : '下载异常'}
               </h3>
@@ -2325,22 +2442,17 @@ const IntradayPage: React.FC = () => {
               </button>
             </div>
 
-            {/* 进度条 - 使用 key 强制 React 在进度更新时重新渲染 DOM */}
+            {/* 进度条 - Canvas 绘制，完全绕过 React/CSS 渲染管线 */}
             {batchDownload.total > 0 ? (
-              <div key={`progress-${batchDownload.completed}`} className="mb-3">
-                <div className="w-full bg-white/5 rounded-full h-2 overflow-hidden">
-                  <div
-                    className={`h-full rounded-full transition-all duration-300 ${
-                      batchDownload.status === 'completed' ? 'bg-emerald' :
-                      batchDownload.status === 'cancelled' ? 'bg-yellow-500/60' :
-                      batchDownload.status === 'failed' ? 'bg-red-500/60' :
-                      'bg-cyan'
-                    }`}
-                    style={{ width: `${Math.round(batchDownload.completed / batchDownload.total * 100)}%` }}
-                  />
-                </div>
-                <div className="text-xs text-muted mt-1 text-right">
+              <div className="mb-3">
+                <canvas
+                  ref={canvasRef}
+                  className="w-full h-3 block"
+                  style={{ borderRadius: '9999px' }}
+                />
+                <div ref={progressTextRef} className="text-xs text-muted mt-1 text-right">
                   {batchDownload.completed} / {batchDownload.total} ({Math.round(batchDownload.completed / batchDownload.total * 100)}%)
+                  <span className="ml-2 text-[10px] text-cyan/50">render #{renderCountRef.current}</span>
                 </div>
               </div>
             ) : (
@@ -2382,6 +2494,31 @@ const IntradayPage: React.FC = () => {
               </div>
             )}
 
+            {/* 等待重试倒计时 */}
+            {batchDownload.waiting_retry && batchDownload.retry_countdown > 0 && (
+              <div className="mb-3 px-2 py-1.5 rounded bg-yellow-500/10 border border-yellow-500/20">
+                <div className="text-xs text-yellow-400 flex items-center gap-1.5">
+                  <svg className="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none">
+                    <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" className="opacity-25" />
+                    <path d="M12 2a10 10 0 019.95 9" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+                  </svg>
+                  检测到频率限制，{batchDownload.retry_countdown} 秒后重试失败项...
+                </div>
+              </div>
+            )}
+
+            {/* 暂停状态提示 */}
+            {batchDownload.paused && batchDownload.status === 'running' && (
+              <div className="mb-3 px-2 py-1.5 rounded bg-blue-500/10 border border-blue-500/20">
+                <div className="text-xs text-blue-400 flex items-center gap-1.5">
+                  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" />
+                  </svg>
+                  下载已暂停，点击"继续下载"恢复
+                </div>
+              </div>
+            )}
+
             {/* 日期 */}
             {batchDownload.date && (
               <div className="text-xs text-muted mb-3">日期: {batchDownload.date}</div>
@@ -2404,13 +2541,26 @@ const IntradayPage: React.FC = () => {
             {/* 按钮 */}
             <div className="flex items-center gap-2">
               {batchDownload.status === 'running' && (
-                <button
-                  type="button"
-                  onClick={handleCancelBatchDownload}
-                  className="px-3 py-1.5 text-xs font-medium rounded border border-red-500/30 text-red-400 hover:bg-red-500/10 transition-colors"
-                >
-                  取消下载
-                </button>
+                <>
+                  <button
+                    type="button"
+                    onClick={handleTogglePause}
+                    className={`px-3 py-1.5 text-xs font-medium rounded border transition-colors ${
+                      batchDownload.paused
+                        ? 'border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/10'
+                        : 'border-yellow-500/30 text-yellow-400 hover:bg-yellow-500/10'
+                    }`}
+                  >
+                    {batchDownload.paused ? '继续下载' : '暂停下载'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleCancelBatchDownload}
+                    className="px-3 py-1.5 text-xs font-medium rounded border border-red-500/30 text-red-400 hover:bg-red-500/10 transition-colors"
+                  >
+                    取消下载
+                  </button>
+                </>
               )}
               {batchDownload.status !== 'running' && (
                 <button

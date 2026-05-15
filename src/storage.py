@@ -38,6 +38,7 @@ from sqlalchemy import (
     and_,
     delete,
     desc,
+    event,
 )
 from sqlalchemy.orm import (
     declarative_base,
@@ -796,10 +797,22 @@ class DatabaseManager:
             db_url,
             echo=False,  # 设为 True 可查看 SQL 语句
             pool_pre_ping=True,  # 连接健康检查
-            pool_size=20,  # 连接池大小，匹配线程池数量
-            max_overflow=10,  # 最大溢出连接数
+            pool_size=3,  # 连接池大小，SQLite 不宜过大
+            max_overflow=5,  # 最大溢出连接数
             pool_recycle=3600,  # 连接回收时间（秒），避免长时间连接
+            connect_args={
+                "check_same_thread": False,  # 允许多线程使用同一连接
+            },
         )
+
+        # 启用 WAL 模式以支持读写并发，设置 busy_timeout 避免锁等待超时
+        @event.listens_for(self._engine, "connect")
+        def _set_sqlite_pragma(dbapi_connection, connection_record):
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA busy_timeout=5000")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.close()
 
         # 创建 Session 工厂
         self._SessionLocal = sessionmaker(

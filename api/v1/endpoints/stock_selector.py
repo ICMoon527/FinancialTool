@@ -523,17 +523,24 @@ def _run_screen_async(task_id: str, request: StockSelectorRequest):
     try:
         service = get_stock_selector_service()
 
-        # 获取股票列表
-        from stock_selector.stock_pool import get_all_stock_code_name_pairs, filter_special_stock_codes, filter_st_stocks
-        stock_code_name_pairs = get_all_stock_code_name_pairs(force_refresh=True)
-        stock_code_name_pairs = filter_st_stocks(stock_code_name_pairs)
-        all_codes = [code for code, name in stock_code_name_pairs]
-        all_codes = filter_special_stock_codes(all_codes)
-        code_to_name = {code: name for code, name in stock_code_name_pairs}
+        # 获取股票列表（优先使用预计算的数据）
+        all_codes = task.get("precomputed_all_codes", [])
+        code_to_name = task.get("precomputed_code_to_name", {})
+        if not all_codes:
+            from stock_selector.stock_pool import get_all_stock_code_name_pairs, filter_special_stock_codes, filter_st_stocks
+            stock_code_name_pairs = get_all_stock_code_name_pairs(force_refresh=True)
+            stock_code_name_pairs = filter_st_stocks(stock_code_name_pairs)
+            all_codes = [code for code, name in stock_code_name_pairs]
+            all_codes = filter_special_stock_codes(all_codes)
+            code_to_name = {code: name for code, name in stock_code_name_pairs}
+            with _screen_lock:
+                task["total_stocks"] = len(all_codes)
+        else:
+            with _screen_lock:
+                if not task.get("total_stocks"):
+                    task["total_stocks"] = len(all_codes)
 
         total_stocks = len(all_codes)
-        with _screen_lock:
-            task["total_stocks"] = total_stocks
 
         # 设置市场数据缓存的强制更新模式
         MarketDataCache.set_force_update(request.update_realtime or request.update_data)
@@ -640,17 +647,38 @@ def _run_screen_async(task_id: str, request: StockSelectorRequest):
         with _screen_lock:
             task["stage"] = "screening"
             task["stage_progress"] = 0
+            task["processed_stocks"] = 0
+            if not task.get("total_stocks"):
+                task["total_stocks"] = len(all_codes)
 
         MarketDataCache.set_force_update(False)
+
+        def screening_progress(completed: int, total: int, current_code: str, current_name: str):
+            with _screen_lock:
+                if task.get("cancelled"):
+                    cancel_event = task.get("cancel_event")
+                    if cancel_event:
+                        cancel_event.set()
+                    return
+                task["stage_progress"] = round((completed / total) * 100, 1)
+                task["processed_stocks"] = completed
+                task["current_code"] = current_code
+                task["current_name"] = current_name
+                task["elapsed_seconds"] = time.time() - task["start_time"]
+
+        cancel_event = threading.Event()
+        task["cancel_event"] = cancel_event
 
         candidates = service.screen_stocks(
             stock_codes=request.stock_codes,
             strategy_ids=request.strategy_ids,
             top_n=request.top_n,
+            progress_callback=screening_progress,
+            cancel_event=cancel_event,
         )
 
         with _screen_lock:
-            task["stage_progress"] = 50
+            task["stage_progress"] = 100
 
         sector_manager = None
         if service.strategy_manager:
@@ -715,12 +743,26 @@ def screen_stocks_async(
 
     task_id = uuid_module.uuid4().hex[:12]
 
+    # 预计算 total_stocks，避免前端轮询时显示"正在初始化..."
+    try:
+        from stock_selector.stock_pool import get_all_stock_code_name_pairs, filter_special_stock_codes, filter_st_stocks
+        pairs = get_all_stock_code_name_pairs(force_refresh=True)
+        pairs = filter_st_stocks(pairs)
+        codes = [c for c, _ in pairs]
+        codes = filter_special_stock_codes(codes)
+        precomputed_total = len(codes)
+        precomputed_code_to_name = {code: name for code, name in pairs}
+    except Exception as e:
+        logger.warning(f"预计算股票列表失败: {e}")
+        precomputed_total = 0
+        precomputed_code_to_name = {}
+
     task = {
         "task_id": task_id,
         "status": "running",
         "stage": "preparing",
         "stage_progress": 0,
-        "total_stocks": 0,
+        "total_stocks": precomputed_total,       # 预计算的值
         "processed_stocks": 0,
         "current_code": "",
         "current_name": "",
@@ -729,6 +771,8 @@ def screen_stocks_async(
         "errors": [],
         "result": None,
         "cancelled": False,
+        "precomputed_all_codes": codes,           # 传递给后台线程
+        "precomputed_code_to_name": precomputed_code_to_name,
     }
 
     with _screen_lock:
@@ -751,7 +795,7 @@ def screen_stocks_async(
         status="running",
         stage="preparing",
         stage_progress=0,
-        total_stocks=0,
+        total_stocks=precomputed_total,
         processed_stocks=0,
         current_code="",
         current_name="",
@@ -790,6 +834,50 @@ def get_screen_async_status(
             processed_stocks=task["processed_stocks"],
             current_code=task["current_code"],
             current_name=task["current_name"],
+            elapsed_seconds=round(elapsed, 1),
+            errors=task.get("errors", []),
+            result=task.get("result"),
+        )
+
+
+@router.post(
+    "/screen-async/cancel",
+    response_model=ScreenProgressStatus,
+    summary="取消异步选股任务",
+)
+def cancel_screen_async(
+    task_id: Optional[str] = Query(None, description="任务ID"),
+) -> ScreenProgressStatus:
+    with _screen_lock:
+        if not task_id:
+            if not _screen_tasks:
+                return ScreenProgressStatus(status="idle")
+            task_id = list(_screen_tasks.keys())[-1]
+
+        task = _screen_tasks.get(task_id)
+        if not task:
+            return ScreenProgressStatus(task_id=task_id, status="idle")
+
+        if task["status"] == "running":
+            task["cancelled"] = True
+            task["status"] = "cancelled"
+            task["stage"] = "done"
+            task["end_time"] = time.time()
+            cancel_event = task.get("cancel_event")
+            if cancel_event:
+                cancel_event.set()
+
+        elapsed = task.get("end_time", time.time()) - task["start_time"]
+
+        return ScreenProgressStatus(
+            task_id=task_id,
+            status=task["status"],
+            stage=task["stage"],
+            stage_progress=task.get("stage_progress", 0),
+            total_stocks=task.get("total_stocks", 0),
+            processed_stocks=task.get("processed_stocks", 0),
+            current_code=task.get("current_code", ""),
+            current_name=task.get("current_name", ""),
             elapsed_seconds=round(elapsed, 1),
             errors=task.get("errors", []),
             result=task.get("result"),

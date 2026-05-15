@@ -5,8 +5,9 @@ Stock Selector Service - High-level service for stock screening.
 
 import logging
 import concurrent.futures
+import threading
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Callable
 from tqdm import tqdm
 import pandas as pd
 import numpy as np
@@ -69,6 +70,8 @@ class StockSelectorService:
         stock_codes: Optional[List[str]],
         strategy_ids: Optional[List[str]] = None,
         top_n: Optional[int] = None,
+        progress_callback: Optional[Callable[[int, int, str, str], None]] = None,
+        cancel_event: Optional[threading.Event] = None,
     ) -> List[StockCandidate]:
         config = get_config()
         if top_n is None:
@@ -257,29 +260,44 @@ class StockSelectorService:
                 return None
 
         if enable_multithreading:
-            # 多线程模式：使用 ThreadPoolExecutor 并发处理
             max_workers = min(config.multithreading_workers, len(stock_codes))
             logger.info("使用多线程模式筛选股票，工作线程数: %d", max_workers)
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = {executor.submit(process_stock, code): code for code in stock_codes}
-                
+
+                completed = 0
                 for future in tqdm(
                     concurrent.futures.as_completed(futures),
                     total=len(futures),
                     desc="Screening stocks",
                     unit="stock"
                 ):
-                    results.append(future.result())
+                    if cancel_event and cancel_event.is_set():
+                        logger.info("选股任务已被取消，停止等待剩余结果")
+                        break
+                    result = future.result()
+                    results.append(result)
+                    completed += 1
+                    if progress_callback and completed % 10 == 0:
+                        code = futures[future]
+                        name = code_to_name_map.get(code, code)
+                        progress_callback(completed, len(stock_codes), code, name)
         else:
             logger.info("使用单线程模式筛选股票")
-            for code in tqdm(
+            for idx, code in enumerate(tqdm(
                 stock_codes,
                 desc="Screening stocks",
                 unit="stock"
-            ):
+            )):
+                if cancel_event and cancel_event.is_set():
+                    logger.info("选股任务已被取消，停止筛选")
+                    break
                 result = process_stock(code)
                 results.append(result)
+                if progress_callback and (idx + 1) % 10 == 0:
+                    name = code_to_name_map.get(code, code)
+                    progress_callback(idx + 1, len(stock_codes), code, name)
 
         for result in results:
             if result:

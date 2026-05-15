@@ -1,5 +1,5 @@
 import type React from 'react';
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo, useLayoutEffect } from 'react';
 import { stockSelectorApi } from '../api/stockSelector';
 import { Card, Badge, KlineChart } from '../components/common';
 import type {
@@ -216,9 +216,7 @@ const StockSelectorPage: React.FC = () => {
     const saved = localStorage.getItem('stockSelector_candidates');
     return saved ? JSON.parse(saved) : [];
   });
-  const [isScreening, setIsScreening] = useState(false);
   const [screeningError, setScreeningError] = useState<string | null>(null);
-  const [screeningStage, setScreeningStage] = useState('');
   const [selectedStock, setSelectedStock] = useState<StockCandidateInfo | null>(null);
 
   const [stockCodes, setStockCodes] = useState('');
@@ -247,6 +245,78 @@ const StockSelectorPage: React.FC = () => {
   const screenTaskRef = useRef<ScreenProgressStatus | null>(null);
   screenTaskRef.current = screenTask;
   const screenPollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Canvas 进度条
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  const drawProgressBar = useCallback((progress: number, barStatus: string, barStage: string) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const w = rect.width;
+    const h = rect.height;
+    if (w <= 0 || h <= 0) {
+      requestAnimationFrame(() => drawProgressBar(progress, barStatus, barStage));
+      return;
+    }
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.scale(dpr, dpr);
+
+    const radius = h / 2;
+    const pct = Math.max(0, progress) / 100;
+    const progressW = w * pct;
+
+    // 阶段颜色
+    let barColor = '#06b6d4';
+    if (barStatus === 'completed') {
+      barColor = '#34d399';
+    } else if (barStatus === 'cancelled') {
+      barColor = 'rgba(234,179,8,0.6)';
+    } else if (barStatus === 'failed') {
+      barColor = 'rgba(239,68,68,0.6)';
+    } else if (barStage === 'update_realtime') {
+      barColor = '#06b6d4';
+    } else if (barStage === 'update_data') {
+      barColor = '#a855f7';
+    } else if (barStage === 'screening') {
+      barColor = '#f59e0b';
+    }
+
+    // 背景
+    ctx.clearRect(0, 0, w, h);
+    ctx.beginPath();
+    ctx.moveTo(radius, 0);
+    ctx.arcTo(w, 0, w, h, radius);
+    ctx.arcTo(w, h, 0, h, radius);
+    ctx.arcTo(0, h, 0, 0, radius);
+    ctx.arcTo(0, 0, w, 0, radius);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(255,255,255,0.05)';
+    ctx.fill();
+
+    // 进度填充
+    if (progressW > 0) {
+      ctx.beginPath();
+      ctx.moveTo(radius, 0);
+      ctx.arcTo(progressW, 0, progressW, h, radius);
+      ctx.arcTo(progressW, h, 0, h, radius);
+      ctx.arcTo(0, h, 0, 0, radius);
+      ctx.arcTo(0, 0, progressW, 0, radius);
+      ctx.closePath();
+      ctx.fillStyle = barColor;
+      ctx.fill();
+    }
+  }, []);
+
+  useLayoutEffect(() => {
+    if (screenTask && screenTask.total_stocks > 0) {
+      drawProgressBar(screenTask.stage_progress, screenTask.status, screenTask.stage);
+    }
+  }, [screenTask?.stage_progress, screenTask?.status, screenTask?.stage, screenTask?.total_stocks, drawProgressBar]);
   
   // 切换收藏状态
   const toggleFavorite = (strategyId: string, e: React.MouseEvent) => {
@@ -317,43 +387,18 @@ const StockSelectorPage: React.FC = () => {
     const codes = stockCodes.trim() ? stockCodes.trim().split(/[,\s]+/).filter(Boolean) : undefined;
     const strategyIds = selectedStrategyIds.length > 0 ? selectedStrategyIds : undefined;
 
-    // 如果需要更新数据，使用异步流程并展示进度弹窗
-    if (updateData || updateRealtime) {
-      setShowScreenModal(true);
-      try {
-        const status = await stockSelectorApi.screenStocksAsync({
-          stock_codes: codes,
-          update_data: updateData,
-          update_realtime: updateRealtime,
-          strategy_ids: strategyIds,
-        });
-        setScreenTask(status);
-      } catch (err) {
-        setScreeningError(err instanceof Error ? err.message : '选股启动失败');
-        setShowScreenModal(false);
-      }
-      return;
-    }
-
-    // 不需要更新数据时，使用同步接口
-    setIsScreening(true);
-    setScreeningStage('正在选股，请稍候...');
+    setShowScreenModal(true);
     try {
-      const response = await stockSelectorApi.screenStocks({
+      const status = await stockSelectorApi.screenStocksAsync({
         stock_codes: codes,
-        update_data: false,
-        update_realtime: false,
+        update_data: updateData,
+        update_realtime: updateRealtime,
         strategy_ids: strategyIds,
       });
-
-      setScreeningStage('完成！');
-      await new Promise(resolve => setTimeout(resolve, 300));
-      setCandidates(response.candidates);
-      localStorage.setItem('stockSelector_candidates', JSON.stringify(response.candidates));
+      setScreenTask(status);
     } catch (err) {
-      setScreeningError(err instanceof Error ? err.message : 'Screening failed');
-    } finally {
-      setIsScreening(false);
+      setScreeningError(err instanceof Error ? err.message : '选股启动失败');
+      setShowScreenModal(false);
     }
   }, [stockCodes, updateData, updateRealtime, selectedStrategyIds]);
 
@@ -499,7 +544,7 @@ const StockSelectorPage: React.FC = () => {
               value={stockCodes}
               onChange={(e) => setStockCodes(e.target.value.toUpperCase())}
               placeholder="Stock codes (comma/space separated, leave empty for all)"
-              disabled={isScreening || screenTask?.status === 'running'}
+              disabled={screenTask?.status === 'running'}
               className="input-terminal w-full"
             />
           </div>
@@ -511,7 +556,7 @@ const StockSelectorPage: React.FC = () => {
                 e.stopPropagation();
                 setIsStrategyDropdownOpen(!isStrategyDropdownOpen);
               }}
-              disabled={isScreening || screenTask?.status === 'running'}
+              disabled={screenTask?.status === 'running'}
               className="input-terminal text-xs py-2 px-3 min-w-64 flex items-center justify-between"
             >
               <span>
@@ -552,7 +597,7 @@ const StockSelectorPage: React.FC = () => {
                             setSelectedStrategyIds(selectedStrategyIds.filter(id => id !== strategy.id));
                           }
                         }}
-                        disabled={isScreening || screenTask?.status === 'running'}
+                        disabled={screenTask?.status === 'running'}
                         className="rounded w-4 h-4"
                       />
                       <div className="flex-1 min-w-0">
@@ -573,16 +618,16 @@ const StockSelectorPage: React.FC = () => {
           <button
             type="button"
             onClick={handleScreen}
-            disabled={isScreening || screenTask?.status === 'running'}
+            disabled={screenTask?.status === 'running'}
             className="btn-primary flex items-center gap-1.5 whitespace-nowrap"
           >
-            {isScreening || screenTask?.status === 'running' ? (
+            {screenTask?.status === 'running' ? (
               <>
                 <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
                   <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                   <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
                 </svg>
-                {updateData || updateRealtime ? '选股中...' : 'Screening...'}
+                选股中...
               </>
             ) : (
               'Screen Stocks'
@@ -599,7 +644,7 @@ const StockSelectorPage: React.FC = () => {
                   setUpdateRealtime(false);
                 }
               }}
-              disabled={isScreening || screenTask?.status === 'running'}
+              disabled={screenTask?.status === 'running'}
               className="rounded"
             />
             <span className="text-xs text-secondary">Update Data</span>
@@ -614,7 +659,7 @@ const StockSelectorPage: React.FC = () => {
                   setUpdateData(false);
                 }
               }}
-              disabled={isScreening || screenTask?.status === 'running'}
+              disabled={screenTask?.status === 'running'}
               className="rounded"
             />
             <span className="text-xs text-secondary">Update Realtime</span>
@@ -690,29 +735,7 @@ const StockSelectorPage: React.FC = () => {
         </div>
 
         <section className="flex-1 overflow-hidden flex gap-3 h-[1400px]">
-          {isScreening ? (
-            <div className="flex-1 flex flex-col items-center justify-center">
-              <div className="w-full max-w-md">
-                <div className="flex items-center justify-center gap-3 mb-6">
-                  <div className="w-10 h-10 border-3 border-cyan/20 border-t-cyan rounded-full animate-spin" />
-                </div>
-                
-                <div className="mb-3 text-center">
-                  <p className="text-white text-sm font-medium">
-                    {screeningStage || '正在选股，请稍候...'}
-                  </p>
-                </div>
-                
-                <div className="w-full h-2 bg-white/10 rounded-full overflow-hidden">
-                  <div className="h-full bg-gradient-to-r from-cyan/30 via-cyan to-cyan/30 rounded-full animate-pulse" style={{ width: '100%' }} />
-                </div>
-                
-                <div className="mt-2 text-center">
-                  <span className="text-xs text-muted">数据处理中...</span>
-                </div>
-              </div>
-            </div>
-          ) : candidates.length === 0 ? (
+          {candidates.length === 0 ? (
             <div className="flex-1 flex flex-col items-center justify-center text-center">
               <div className="w-12 h-12 mb-3 rounded-xl bg-elevated flex items-center justify-center">
                 <svg className="w-6 h-6 text-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -813,13 +836,39 @@ const StockSelectorPage: React.FC = () => {
             if (screenTask?.status !== 'running') setShowScreenModal(false);
           }} />
           <div className="relative terminal-card border border-white/10 rounded-xl shadow-2xl p-5 w-full max-w-md mx-4">
+            {/* 标题 + 阶段图标 */}
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-sm font-semibold text-white">
-                {screenTask.status === 'running' ? '正在选股...' :
-                 screenTask.status === 'completed' ? '选股完成' :
-                 screenTask.status === 'cancelled' ? '已取消' :
-                 screenTask.status === 'failed' ? '选股失败' : '准备中...'}
-              </h3>
+              <div className="flex items-center gap-2">
+                {screenTask.status === 'running' && screenTask.stage === 'update_realtime' && (
+                  <span className="text-cyan text-lg">⏱</span>
+                )}
+                {screenTask.status === 'running' && screenTask.stage === 'update_data' && (
+                  <span className="text-purple-400 text-lg">📊</span>
+                )}
+                {screenTask.status === 'running' && screenTask.stage === 'screening' && (
+                  <span className="text-amber text-lg">🔍</span>
+                )}
+                {screenTask.status === 'running' && (screenTask.stage === 'preparing' || !screenTask.stage) && (
+                  <span className="text-muted text-lg">⌛</span>
+                )}
+                {screenTask.status === 'completed' && <span className="text-emerald text-lg">✅</span>}
+                {screenTask.status === 'cancelled' && <span className="text-yellow-400 text-lg">⏹</span>}
+                {screenTask.status === 'failed' && <span className="text-red-400 text-lg">❌</span>}
+                <h3 className={`text-sm font-semibold ${
+                  screenTask.status === 'completed' ? 'text-emerald' :
+                  screenTask.status === 'cancelled' ? 'text-yellow-400' :
+                  screenTask.status === 'failed' ? 'text-red-400' :
+                  'text-white'
+                }`}>
+                  {screenTask.status === 'running' && screenTask.stage === 'update_realtime' && '更新实时数据'}
+                  {screenTask.status === 'running' && screenTask.stage === 'update_data' && '更新历史数据'}
+                  {screenTask.status === 'running' && screenTask.stage === 'screening' && '策略筛选'}
+                  {screenTask.status === 'running' && (screenTask.stage === 'preparing' || !screenTask.stage) && '准备中...'}
+                  {screenTask.status === 'completed' && '选股完成'}
+                  {screenTask.status === 'cancelled' && '已取消'}
+                  {screenTask.status === 'failed' && '选股失败'}
+                </h3>
+              </div>
               <button
                 type="button"
                 onClick={() => {
@@ -833,44 +882,71 @@ const StockSelectorPage: React.FC = () => {
               </button>
             </div>
 
-            {/* 阶段信息 */}
-            <div className="text-xs text-muted mb-3">
-              {screenTask.stage === 'update_realtime' && '阶段: 更新实时数据'}
-              {screenTask.stage === 'update_data' && '阶段: 更新历史数据'}
-              {screenTask.stage === 'screening' && '阶段: 策略筛选'}
-              {screenTask.stage === 'preparing' && '阶段: 准备中...'}
-              {screenTask.stage === 'done' && '阶段: 完成'}
-              {!screenTask.stage && '阶段: 初始化...'}
-            </div>
-
-            {/* 进度条 */}
-            <div className="mb-3">
-              <div className="w-full bg-white/5 rounded-full h-2 overflow-hidden">
-                <div
-                  className={`h-full rounded-full transition-all duration-300 ${
-                    screenTask.status === 'completed' ? 'bg-emerald' :
-                    screenTask.status === 'cancelled' ? 'bg-yellow-500/60' :
-                    screenTask.status === 'failed' ? 'bg-red-500/60' :
-                    'bg-cyan'
-                  }`}
-                  style={{ width: `${Math.max(1, screenTask.stage_progress)}%` }}
+            {/* Canvas 进度条 */}
+            {screenTask.total_stocks > 0 ? (
+              <div className="mb-3">
+                <canvas
+                  ref={canvasRef}
+                  className="w-full h-3 block"
+                  style={{ borderRadius: '9999px' }}
                 />
+                <div className="text-xs text-muted mt-1 text-right">
+                  {screenTask.status === 'completed' || screenTask.status === 'failed' || screenTask.status === 'cancelled'
+                    ? `${screenTask.stage_progress.toFixed(1)}%`
+                    : `${screenTask.processed_stocks} / ${screenTask.total_stocks} (${screenTask.stage_progress.toFixed(1)}%)`}
+                </div>
               </div>
-              <div className="text-xs text-muted mt-1 text-right">
-                {screenTask.stage_progress.toFixed(1)}%
+            ) : (
+              <div className="text-xs text-muted mb-3 text-center py-2">
+                {screenTask.status === 'running' ? '正在获取股票列表...' : '\u00A0'}
               </div>
-            </div>
+            )}
 
-            {/* 统计信息 */}
-            {screenTask.total_stocks > 0 && (
+            {/* 阶段相关统计卡片 */}
+            {screenTask.total_stocks > 0 && screenTask.status === 'running' && (
+              <div className="grid grid-cols-3 gap-2 mb-3 text-xs">
+                <div className="bg-white/[0.03] rounded px-2 py-1.5">
+                  <div className="text-muted">总股票数</div>
+                  <div className="text-white font-mono">{screenTask.total_stocks}</div>
+                </div>
+                <div className="bg-white/[0.03] rounded px-2 py-1.5">
+                  <div className="text-muted">
+                    {screenTask.stage === 'screening' ? '已筛选' : '已处理'}
+                  </div>
+                  <div className={`font-mono ${
+                    screenTask.stage === 'update_realtime' ? 'text-cyan' :
+                    screenTask.stage === 'update_data' ? 'text-purple-400' :
+                    screenTask.stage === 'screening' ? 'text-amber' :
+                    'text-cyan'
+                  }`}>
+                    {screenTask.processed_stocks}
+                  </div>
+                </div>
+                <div className="bg-white/[0.03] rounded px-2 py-1.5">
+                  <div className="text-muted">耗时</div>
+                  <div className="text-white font-mono">
+                    {screenTask.elapsed_seconds > 0
+                      ? `${Math.floor(screenTask.elapsed_seconds / 60)}分${Math.floor(screenTask.elapsed_seconds % 60)}秒`
+                      : '-'}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* 完成/取消/失败时显示总数 */}
+            {screenTask.total_stocks > 0 && screenTask.status !== 'running' && (
               <div className="grid grid-cols-2 gap-2 mb-3 text-xs">
                 <div className="bg-white/[0.03] rounded px-2 py-1.5">
                   <div className="text-muted">总股票数</div>
                   <div className="text-white font-mono">{screenTask.total_stocks}</div>
                 </div>
                 <div className="bg-white/[0.03] rounded px-2 py-1.5">
-                  <div className="text-muted">已处理</div>
-                  <div className="text-cyan font-mono">{screenTask.processed_stocks}</div>
+                  <div className="text-muted">耗时</div>
+                  <div className="text-white font-mono">
+                    {screenTask.elapsed_seconds > 0
+                      ? `${Math.floor(screenTask.elapsed_seconds / 60)}分${Math.floor(screenTask.elapsed_seconds % 60)}秒`
+                      : '-'}
+                  </div>
                 </div>
               </div>
             )}
@@ -880,13 +956,6 @@ const StockSelectorPage: React.FC = () => {
               <div className="text-xs text-muted mb-3">
                 当前: <span className="text-white font-mono">{screenTask.current_code}</span>
                 {screenTask.current_name && <span className="ml-1 text-white/70">{screenTask.current_name}</span>}
-              </div>
-            )}
-
-            {/* 耗时 */}
-            {screenTask.elapsed_seconds > 0 && (
-              <div className="text-xs text-muted mb-3">
-                耗时: {Math.floor(screenTask.elapsed_seconds / 60)}分{Math.floor(screenTask.elapsed_seconds % 60)}秒
               </div>
             )}
 
@@ -924,6 +993,21 @@ const StockSelectorPage: React.FC = () => {
                 <div className="text-xs text-emerald">
                   已筛选 {screenTask.result.candidates.length} 只股票
                 </div>
+              )}
+              {screenTask.status === 'running' && (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      if (screenTask.task_id) {
+                        await stockSelectorApi.cancelScreenAsync(screenTask.task_id);
+                      }
+                    } catch {}
+                  }}
+                  className="px-3 py-1.5 text-xs font-medium rounded border border-red-500/30 text-red-400 hover:text-red-300 hover:border-red-500/60 transition-colors"
+                >
+                  取消
+                </button>
               )}
             </div>
           </div>

@@ -229,3 +229,6 @@ class BatchDownloadStatus(BaseModel):
     elapsed_seconds: float = 0.0
     errors: List[dict] = Field(default_factory=list)  # [{"code": ..., "error": ...}], 最多 20 条
     date: str = ""
+    paused: bool = False
+    waiting_retry: bool = False
+    retry_countdown: int = 0

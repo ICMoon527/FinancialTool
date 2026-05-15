@@ -55,4 +55,11 @@ export const stockSelectorApi = {
     );
     return response.data;
   },
+
+  async cancelScreenAsync(taskId: string): Promise<ScreenProgressStatus> {
+    const response = await apiClient.post<ScreenProgressStatus>(
+      `/api/v1/stock-selector/screen-async/cancel?task_id=${encodeURIComponent(taskId)}`,
+    );
+    return response.data;
+  },
 };

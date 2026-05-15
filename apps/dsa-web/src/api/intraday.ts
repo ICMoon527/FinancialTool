@@ -174,10 +174,14 @@ export interface SimulationReportResponse {
 export async function getIntradayData(
   stockCode: string,
   date?: string,
+  strategy?: string,
 ): Promise<IntradayDataResponse> {
   const params = new URLSearchParams();
   if (date) {
     params.set('date', date.replace(/-/g, ''));
+  }
+  if (strategy) {
+    params.set('strategy', strategy);
   }
   const query = params.toString();
   const url = `${API_BASE}/data/${stockCode}${query ? `?${query}` : ''}`;
@@ -264,6 +268,9 @@ export interface BatchDownloadStatus {
   elapsed_seconds: number;
   errors: { code: string; error: string }[];
   date: string;
+  paused: boolean;
+  waiting_retry: boolean;
+  retry_countdown: number;
 }
 
 export async function startBatchDownload(
@@ -308,5 +315,17 @@ export async function cancelBatchDownload(
     body: JSON.stringify({ task_id: taskId }),
   });
   if (!resp.ok) throw new Error(`取消失败: ${resp.status}`);
+  return resp.json();
+}
+
+export async function togglePauseBatchDownload(
+  taskId: string,
+): Promise<{ message: string; paused: boolean }> {
+  const resp = await fetch(`${API_BASE}/batch-download/pause`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ task_id: taskId }),
+  });
+  if (!resp.ok) throw new Error(`暂停/继续失败: ${resp.status}`);
   return resp.json();
 }

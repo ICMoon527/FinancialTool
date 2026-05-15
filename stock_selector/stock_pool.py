@@ -153,18 +153,18 @@ class StockPoolManager:
         Returns:
             List of tuples (code, name, market)
         """
-        # Try Tushare first (most reliable)
-        stock_list = self._fetch_from_tushare()
-        if stock_list:
-            return stock_list
-        
-        # Try Baostock
+        # Try Baostock first (fastest, no quota limits)
         stock_list = self._fetch_from_baostock()
         if stock_list:
             return stock_list
         
         # Try Pytdx
         stock_list = self._fetch_from_pytdx()
+        if stock_list:
+            return stock_list
+        
+        # Try Tushare (slow, quota-limited, last resort)
+        stock_list = self._fetch_from_tushare()
         if stock_list:
             return stock_list
         

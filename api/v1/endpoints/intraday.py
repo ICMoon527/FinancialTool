@@ -133,6 +133,64 @@ def _extract_date_from_klines(klines: list, fallback: str = "") -> str:
     return fallback or datetime.now().strftime("%Y-%m-%d")
 
 
+def _is_data_fresh_for_today(klines: list) -> bool:
+    """检查K线数据是否是今日的有效数据（日期匹配 + 交易时段内不过于陈旧）
+
+    返回 False 意味着数据应该被丢弃并重新从 API 获取。
+    """
+    if not klines or len(klines) == 0:
+        return False
+
+    # 检查数据日期是否匹配今天
+    actual_date = _extract_date_from_klines(klines)
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    if actual_date != today_str:
+        logger.debug(f"数据日期 {actual_date} 与今日 {today_str} 不匹配，标记为陈旧")
+        return False
+
+    # 交易时段内，检查最后一根K线是否过于陈旧（超过5分钟无新数据需重取）
+    now = datetime.now()
+    if _is_in_trading_window(now):
+        last_ts = klines[-1].get('timestamp', '')
+        if last_ts:
+            try:
+                last_dt = datetime.fromisoformat(last_ts)
+                if (now - last_dt).total_seconds() > 300:
+                    logger.debug(
+                        f"最后一根K线时间 {last_ts} 距今 {(now - last_dt).total_seconds():.0f} 秒，"
+                        f"超过5分钟阈值，标记为陈旧"
+                    )
+                    return False
+            except (ValueError, TypeError):
+                pass
+
+    return True
+
+
+def _is_in_trading_window(now: datetime = None) -> bool:
+    """判断当前是否处于A股盘中交易时段（9:30-15:00）
+
+    使用交易日历判断，避免误判节假日。
+    返回 True 表示当前是交易日且处于盘中交易时段。
+    """
+    if now is None:
+        now = datetime.now()
+
+    today = now.date()
+    try:
+        from stock_selector.trading_calendar import is_trading_day
+        if not is_trading_day(today):
+            return False
+    except ImportError:
+        # 回退：仅用工作日判断
+        if now.weekday() >= 5:
+            return False
+
+    market_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
+    market_close = now.replace(hour=15, minute=0, second=0, microsecond=0)
+    return market_open <= now <= market_close
+
+
 def _try_multiple_sources(
     fetch_functions: list[tuple[str, Callable]],
     data_type: str = "数据"
@@ -1347,6 +1405,10 @@ def _inject_avg_price(klines: list):
 def get_intraday_data(
     stock_code: str,
     date: Optional[str] = Query(None, description="日期 YYYYMMDD 或 YYYY-MM-DD，默认当日"),
+    strategy: str = Query(
+        "auto",
+        description="数据获取策略: auto=自动判断(盘中优先缓存,盘后可联网), cache_only=仅缓存/DB, full=包括API联网",
+    ),
     db_manager: DatabaseManager = Depends(get_database_manager),
 ) -> IntradayDataResponse:
     """获取分时K线数据和信号"""
@@ -1367,28 +1429,66 @@ def get_intraday_data(
             is_today = q_date == date_type.today()
             date_str = date
 
+        # 解析实际策略
+        # auto: 优先走缓存/DB，无数据时自动降级为 full（允许 API 兜底）
+        # cache_only: 严格不联网，无数据时返回 404
+        # full: 完整 fallback（缓存→DB→API）
+        actual_strategy = strategy
+        if strategy == "auto":
+            actual_strategy = "cache_only"  # 优先只走缓存/DB
+        logger.debug(f"[手动查询] {code}: strategy={strategy} → actual={actual_strategy} (is_today={is_today})")
+
         # 当日数据优先走完整响应缓存（轮询已计算好，直接返回）
         if is_today:
             cached = _get_cached_full_response(code)
             if cached is not None:
-                logger.info(f"[数据源] {code}: 命中完整内存缓存")
-                return cached
+                # 校验缓存数据日期是否匹配今日，防止缓存了昨日数据
+                if _is_data_fresh_for_today([k.model_dump() for k in cached.kline_data]):
+                    logger.info(f"[手动查询] {code}: 命中完整内存缓存")
+                    return cached
+                else:
+                    logger.info(f"[手动查询] {code}: 缓存数据已陈旧，丢弃并重新获取")
 
         klines = None
         # 优先从数据库获取（包括当日：收盘后轮询停止，缓存过期时DB是最快路径）
         klines = db_manager.load_intraday_klines(code, q_date)
         if klines:
-            logger.info(f"[数据源] {code}: 命中数据库，共 {len(klines)} 条K线")
+            # 校验DB数据新鲜度（防止存储了昨日数据或盘中断数据）
+            if _is_data_fresh_for_today(klines):
+                logger.info(f"[手动查询] {code}: 命中数据库，共 {len(klines)} 条K线")
+            else:
+                logger.info(f"[手动查询] {code}: 数据库数据已陈旧，丢弃并重新获取")
+                klines = None
 
         if not klines:
             klines = _get_cached_klines(code)
             if klines:
-                logger.info(f"[数据源] {code}: 命中K线内存缓存，共 {len(klines)} 条K线")
+                if _is_data_fresh_for_today(klines):
+                    logger.info(f"[手动查询] {code}: 命中K线内存缓存，共 {len(klines)} 条K线")
+                else:
+                    logger.info(f"[手动查询] {code}: K线内存缓存已陈旧，丢弃并重新获取")
+                    klines = None
+
+        # cache_only 策略：不联网，缓存/DB 无数据时返回 404
+        # 但如果是 auto 策略降级来的，则允许回退到 API
+        if not klines and actual_strategy == "cache_only":
+            if strategy == "auto":
+                logger.info(f"[手动查询] {code}: auto策略下缓存/DB均无数据，降级为full走API")
+            else:
+                if is_today:
+                    logger.info(f"[手动查询] {code}: cache_only 策略下缓存/DB均无数据，可能尚未开盘或数据尚未到达")
+                raise HTTPException(
+                    status_code=404,
+                    detail={
+                        "error": "no_data",
+                        "message": "缓存和数据库中暂无该股票的最新分时数据，请等待盘中轮询更新后再查看",
+                    },
+                )
 
         if not klines:
             klines = _get_intraday_klines(code, date_str)
             if klines:
-                logger.info(f"[数据源] {code}: 通过API联网获取，共 {len(klines)} 条K线")
+                logger.info(f"[手动查询] {code}: 通过API联网获取，共 {len(klines)} 条K线")
         if not klines:
             raise HTTPException(status_code=404, detail={"error": "no_data", "message": "未获取到分时K线数据"})
 
@@ -1481,59 +1581,110 @@ def _compute_daily_summary_from_klines(klines: list) -> dict:
 
 def _schedule_intraday_storage(code: str, klines: list, q_date: date_type, db_manager: DatabaseManager):
     """异步调度分时K线存储任务（不阻塞主请求）
+    使用 K 线实际日期而非查询日期，防止盘后/凌晨获取到昨日数据时日期错配。
     注意：使用 daemon 线程，如果主请求结束但 uvicon 进程存活，线程将继续执行
     """
+    actual_date_str = _extract_date_from_klines(klines, q_date.isoformat())
+    try:
+        actual_q_date = date_type.fromisoformat(actual_date_str)
+    except (ValueError, TypeError):
+        actual_q_date = q_date
+
     def _store():
         try:
-            count = db_manager.save_intraday_klines(code, q_date, klines)
-            logger.debug(f"后台存储完成: {code} {q_date}, {count} 条")
+            count = db_manager.save_intraday_klines(code, actual_q_date, klines)
+            logger.debug(f"后台存储完成: {code} {actual_q_date}, {count} 条")
         except Exception as e:
             traceback.print_exc()
-            logger.warning(f"后台存储分时K线失败 {code} {q_date}: {e}")
+            logger.warning(f"后台存储分时K线失败 {code} {actual_q_date}: {e}")
 
     t = threading.Thread(target=_store, daemon=True)
     t.start()
-    logger.debug(f"已调度后台存储: {code} {q_date}, 共 {len(klines)} 条K线")
+    logger.debug(f"已调度后台存储: {code} {actual_q_date}, 共 {len(klines)} 条K线")
 
 
 def _schedule_daily_summary(code: str, klines: list, q_date: date_type, db_manager: DatabaseManager):
     """异步调度每日快照存储任务（不阻塞主请求）
+    使用 K 线实际日期而非查询日期，防止日期错配。
     注意：使用 daemon 线程，如果主请求结束但 uvicon 进程存活，线程将继续执行
     """
+    actual_date_str = _extract_date_from_klines(klines, q_date.isoformat())
+    try:
+        actual_q_date = date_type.fromisoformat(actual_date_str)
+    except (ValueError, TypeError):
+        actual_q_date = q_date
+
     def _store():
         try:
             # 计算指标快照
             indicators = _compute_daily_summary_from_klines(klines)
-            ok = db_manager.save_daily_summary(code, q_date, klines, indicators)
-            logger.debug(f"后台快照存储完成: {code} {q_date}, 成功={ok}")
+            ok = db_manager.save_daily_summary(code, actual_q_date, klines, indicators)
+            logger.debug(f"后台快照存储完成: {code} {actual_q_date}, 成功={ok}")
         except Exception as e:
             traceback.print_exc()
-            logger.warning(f"后台存储每日快照失败 {code} {q_date}: {e}")
+            logger.warning(f"后台存储每日快照失败 {code} {actual_q_date}: {e}")
 
     t = threading.Thread(target=_store, daemon=True)
     t.start()
-    logger.debug(f"已调度快照存储: {code} {q_date}")
+    logger.debug(f"已调度快照存储: {code} {actual_q_date}")
 
 
 # ---------- 批量状态查询 ----------
 
 
-def _compute_signal_alert(code: str) -> Optional[dict]:
-    """计算单只股票的最新信号告警
-    获取分时K线 → 注入均价 → 运行策略 → 提取最新信号
-    同时将K线数据写入内存缓存，供 get_intraday_data 复用
-    Args:
-        code: 股票代码
-    Returns:
-        信号告警字典 {stock_code, signal_type, trigger_time, price} 或 None
-    """
+def _fetch_one_and_store(code: str, db_manager: DatabaseManager) -> Optional[dict]:
+    """获取单只股票K线并写入DB和缓存"""
     try:
         klines = _get_intraday_klines(code, None)
+        if not klines:
+            return None
+        actual_date = _extract_date_from_klines(klines)
+        _schedule_intraday_storage(code, klines, date_type.today(), db_manager)
+        _schedule_daily_summary(code, klines, date_type.today(), db_manager)
+        _set_cached_klines(code, klines)
+        return {"klines": klines, "actual_date": actual_date}
+    except Exception as e:
+        logger.warning(f"[batch-fetch] {code}: 获取K线失败: {e}")
+        return None
+
+
+def _batch_fetch_and_store_all(codes: list, db_manager: DatabaseManager) -> dict:
+    """并行获取所有标的K线，写DB和缓存"""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    if not codes:
+        return {}
+
+    results: dict = {}
+    with ThreadPoolExecutor(max_workers=min(5, len(codes))) as executor:
+        future_to_code = {
+            executor.submit(_fetch_one_and_store, code, db_manager): code
+            for code in codes
+        }
+        for future in as_completed(future_to_code):
+            code = future_to_code[future]
+            try:
+                result = future.result(timeout=15)
+                if result:
+                    results[code] = result
+            except Exception as e:
+                logger.warning(f"[batch-fetch] {code}: 超时或异常: {e}")
+
+    return results
+
+
+def _compute_signal_alert(code: str, db_manager=None) -> Optional[dict]:
+    """计算单只股票的最新信号告警
+    优先从步骤2已更新的K线缓存获取，避免重复API请求和DB写入。
+    """
+    try:
+        klines = _get_cached_klines(code)
+        if not klines:
+            klines = _get_intraday_klines(code, None)
         if not klines or len(klines) < 2:
             return None
         _inject_avg_price(klines)
-        # 缓存K线供后续点击切换时复用
-        _set_cached_klines(code, klines)
+
         signals, _summary = _run_t0_strategy(klines, None)
         if not signals:
             return None
@@ -1549,12 +1700,13 @@ def _compute_signal_alert(code: str) -> Optional[dict]:
         return None
 
 
-def _batch_compute_signal_alerts(codes: list, skip_code: str = None) -> dict:
+def _batch_compute_signal_alerts(codes: list, skip_code: str = None, db_manager=None) -> dict:
     """批量并行计算多只股票的信号告警
     使用 ThreadPoolExecutor 并行获取K线和运行策略，单只超时 10 秒
     Args:
         codes: 股票代码列表
         skip_code: 跳过的股票代码（已在 batch-status 中刷新过）
+        db_manager: 数据库管理器（可选，用于交易时段写入DB）
     Returns:
         {code: SignalAlert字典 或 None}
     """
@@ -1568,7 +1720,7 @@ def _batch_compute_signal_alerts(codes: list, skip_code: str = None) -> dict:
     if not codes_to_process:
         return results
     with ThreadPoolExecutor(max_workers=min(5, len(codes_to_process))) as executor:
-        future_to_code = {executor.submit(_compute_signal_alert, c): c for c in codes_to_process}
+        future_to_code = {executor.submit(_compute_signal_alert, c, db_manager): c for c in codes_to_process}
         for future in future_to_code:
             code = future_to_code[future]
             try:
@@ -1751,78 +1903,61 @@ def get_batch_status(
             else:
                 snapshots[code] = StockSnapshot(stock_code=code)
 
-        # 2. 检查当前展示股票是否有新数据
+        # 2. 并行获取所有标的的K线 → 写DB → 写klines缓存
+        batch_results = _batch_fetch_and_store_all(stock_codes, db_manager)
+
+        # 3. 对 current_code 计算信号并更新 full 缓存
         current_code = body.current_code.strip()
         current_updated = False
         current_full_data = None
 
-        if current_code and current_code in raw_snapshots:
+        if current_code and current_code in batch_results:
             code = _normalize_stock_code(current_code)
-            sn = raw_snapshots[current_code]
+            info = batch_results[current_code]
+            actual_date = info["actual_date"]
+            klines = info["klines"]
+            today_str = datetime.now().strftime("%Y-%m-%d")
 
-            # 先检查完整响应缓存，避免重复计算参考线/信号/指标
-            cached_full = _get_cached_full_response(code)
-            if cached_full is not None:
-                logger.info(f"[batch-status] {code}: 命中完整内存缓存，跳过重复计算")
-                current_full_data = cached_full
+            if actual_date == today_str:
                 current_updated = True
-            else:
                 try:
-                    klines = _get_intraday_klines(code, None)
-                    if klines:
-                        latest_kline_time = klines[-1].get("时间", "") if klines else ""
-                        latest_snapshot_time = sn.get("timestamp", "")
-                        # 比较：如果K线最新时间和快照时间接近，说明数据已同步
-                        if latest_kline_time and latest_snapshot_time:
-                            kt = latest_kline_time.replace(":", "")
-                            st = latest_snapshot_time.replace(":", "").replace(" ", "")
-                            if kt[:4] != st[:4]:
-                                current_updated = True
-                        else:
-                            current_updated = True
+                    _inject_avg_price(klines)
+                    reference_lines = _compute_reference_lines(klines, code, db_manager, None)
+                    signals, summary = _run_t0_strategy(klines, reference_lines)
+                    indicator_sub_charts = _generate_indicator_sub_charts(klines)
+                    kline_points = [IntradayKlinePoint(**k) for k in klines]
+                    sn = raw_snapshots.get(current_code, {})
+                    stock_name = sn.get("stock_name", "")
+                    if not stock_name:
+                        try:
+                            fetcher_manager = DataFetcherManager()
+                            stock_name = fetcher_manager.get_stock_name(code, skip_realtime=True) or ""
+                        except Exception:
+                            pass
 
-                        if current_updated:
-                            # 注入累计分时均价
-                            _inject_avg_price(klines)
-                            # 计算参考线
-                            reference_lines = _compute_reference_lines(klines, code, db_manager, None)
-                            # 运行做T策略
-                            signals, summary = _run_t0_strategy(klines, reference_lines)
-                            # 生成指标子图
-                            indicator_sub_charts = _generate_indicator_sub_charts(klines)
-                            # 构建K线响应
-                            kline_points = [IntradayKlinePoint(**k) for k in klines]
-                            # 从实际K线数据提取日期
-                            actual_date = _extract_date_from_klines(klines)
-                            # 获取股票名称
-                            stock_name = sn.get("stock_name", "")
-                            if not stock_name:
-                                try:
-                                    fetcher_manager = DataFetcherManager()
-                                    stock_name = fetcher_manager.get_stock_name(code, skip_realtime=True) or ""
-                                except Exception:
-                                    pass
-
-                            current_full_data = IntradayDataResponse(
-                                stock_code=code,
-                                stock_name=stock_name,
-                                date=actual_date,
-                                kline_data=kline_points,
-                                signals=signals,
-                                reference_lines=reference_lines,
-                                indicator_sub_charts=indicator_sub_charts,
-                                signal_summary=summary,
-                            )
-                            # 缓存完整响应，供后续手动点击时即时返回
-                            _set_cached_full_response(code, current_full_data)
+                    current_full_data = IntradayDataResponse(
+                        stock_code=code,
+                        stock_name=stock_name,
+                        date=actual_date,
+                        kline_data=kline_points,
+                        signals=signals,
+                        reference_lines=reference_lines,
+                        indicator_sub_charts=indicator_sub_charts,
+                        signal_summary=summary,
+                    )
+                    _set_cached_full_response(code, current_full_data)
                 except Exception as e:
-                    logger.warning(f"检查当前股票 {current_code} 更新失败: {e}")
+                    logger.warning(f"计算当前股票 {current_code} 信号失败: {e}")
+            else:
+                logger.warning(
+                    f"[batch-status] {code}: K线日期({actual_date})与今日({today_str})不一致，跳过UI更新"
+                )
 
-        # 3. 信号检测（用于铃铛通知，跳过当前股——它已在上面刷新）
+        # 4. 信号检测（复用步骤2已缓存的klines，不再重复获取API/写DB）
         signal_alerts = None
         if body.include_signals:
             try:
-                signal_alerts = _batch_compute_signal_alerts(stock_codes, skip_code=current_code)
+                signal_alerts = _batch_compute_signal_alerts(stock_codes, skip_code=current_code, db_manager=db_manager)
             except Exception as e:
                 logger.warning(f"批量信号检测失败: {e}")
                 signal_alerts = None
@@ -1908,7 +2043,22 @@ def _run_batch_download(task_id: str, target_date: str, max_workers: int, force:
         batch_size = 20
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
+        # 记录需要重试的股票代码（因频率限制导致的连接错误）
+        retry_codes: list = []
+
         for i in range(0, len(ordered_codes), batch_size):
+            # 检查是否被暂停
+            while True:
+                with _batch_download_lock:
+                    if task.get("cancelled"):
+                        task["status"] = "cancelled"
+                        task["end_time"] = time.time()
+                        return
+                    paused = task.get("paused", False)
+                if not paused:
+                    break
+                time.sleep(1)
+
             with _batch_download_lock:
                 if task.get("cancelled"):
                     task["status"] = "cancelled"
@@ -1932,7 +2082,13 @@ def _run_batch_download(task_id: str, target_date: str, max_workers: int, force:
                         return code, False, "无分时数据"
 
                     _inject_avg_price(klines)
-                    db.save_intraday_klines(code, q_date, klines)
+                    # 使用K线实际日期存储，防止盘后获取昨日数据时日期错配
+                    actual_date_str = _extract_date_from_klines(klines, q_date.isoformat())
+                    try:
+                        actual_q_date = date_type.fromisoformat(actual_date_str)
+                    except (ValueError, TypeError):
+                        actual_q_date = q_date
+                    db.save_intraday_klines(code, actual_q_date, klines)
                     # 缓存 K 线供后续使用
                     _set_cached_klines(code, klines)
                     return code, True, False  # success, not skipped
@@ -1944,6 +2100,8 @@ def _run_batch_download(task_id: str, target_date: str, max_workers: int, force:
                 # 记录未完成的 future，超时时将其标记为失败并继续下一批
                 from concurrent.futures import TimeoutError as FuturesTimeoutError
                 remaining_futures = dict(futures)
+
+                batch_failed_codes = []  # 当前批次因连接错误失败的股票
 
                 try:
                     for future in as_completed(futures, timeout=30):
@@ -1961,6 +2119,18 @@ def _run_batch_download(task_id: str, target_date: str, max_workers: int, force:
                                 processed += 1
                         else:
                             failed += 1
+                            # 检查是否为连接相关错误（频率限制）
+                            error_str = str(info)
+                            is_connection_error = any(
+                                kw in error_str.lower()
+                                for kw in [
+                                    "connection", "remote end closed", "timeout",
+                                    "remoteDisconnected", "ConnectionError",
+                                    "Connection aborted", "too many", "rate limit",
+                                ]
+                            )
+                            if is_connection_error:
+                                batch_failed_codes.append(code)
                             with _batch_download_lock:
                                 if len(task["errors"]) < 20:
                                     task["errors"].append({"code": code, "error": str(info)})
@@ -1983,6 +2153,7 @@ def _run_batch_download(task_id: str, target_date: str, max_workers: int, force:
                     for future, code in remaining_futures.items():
                         future.cancel()
                         failed += 1
+                        batch_failed_codes.append(code)
                         with _batch_download_lock:
                             if len(task["errors"]) < 20:
                                 task["errors"].append({"code": code, "error": "获取分时数据超时"})
@@ -1991,8 +2162,103 @@ def _run_batch_download(task_id: str, target_date: str, max_workers: int, force:
                             task["current_name"] = code_to_name.get(code, "")
                             task["elapsed_seconds"] = time.time() - task["start_time"]
 
-            # 每批之间暂停 0.3s，避免 API 限流
-            time.sleep(0.3)
+            # 如果当前批次有因频率限制导致的连接错误，等待1分钟后重试
+            if batch_failed_codes:
+                logger.warning(
+                    f"批次 {i // batch_size + 1}: {len(batch_failed_codes)} 只股票因连接错误/频率限制失败，"
+                    f"等待 60 秒后重试..."
+                )
+                retry_codes.extend(batch_failed_codes)
+                # 更新任务状态，通知前端即将等待
+                with _batch_download_lock:
+                    task["waiting_retry"] = True
+                    task["retry_countdown"] = 60
+
+                # 倒计时等待，同时检查暂停/取消
+                for sec in range(60, 0, -1):
+                    with _batch_download_lock:
+                        if task.get("cancelled"):
+                            task["status"] = "cancelled"
+                            task["end_time"] = time.time()
+                            return
+                        paused = task.get("paused", False)
+                    if paused:
+                        # 暂停期间不减少倒计时，等待恢复
+                        while True:
+                            with _batch_download_lock:
+                                if task.get("cancelled"):
+                                    task["status"] = "cancelled"
+                                    task["end_time"] = time.time()
+                                    return
+                                paused = task.get("paused", False)
+                            if not paused:
+                                break
+                            time.sleep(1)
+                    with _batch_download_lock:
+                        task["retry_countdown"] = sec
+                    time.sleep(1)
+
+                with _batch_download_lock:
+                    task["waiting_retry"] = False
+                    task["retry_countdown"] = 0
+
+                # 重试失败的股票（逐个重试，降低频率压力）
+                logger.info(f"开始重试 {len(batch_failed_codes)} 只失败股票...")
+                for code in batch_failed_codes:
+                    with _batch_download_lock:
+                        if task.get("cancelled"):
+                            task["status"] = "cancelled"
+                            task["end_time"] = time.time()
+                            return
+                        paused = task.get("paused", False)
+                    while paused:
+                        with _batch_download_lock:
+                            if task.get("cancelled"):
+                                task["status"] = "cancelled"
+                                task["end_time"] = time.time()
+                                return
+                            paused = task.get("paused", False)
+                        if not paused:
+                            break
+                        time.sleep(1)
+
+                    with _batch_download_lock:
+                        task["current_code"] = code
+                        task["current_name"] = code_to_name.get(code, "")
+                        task["elapsed_seconds"] = time.time() - task["start_time"]
+
+                    try:
+                        klines_retry = _get_intraday_klines(code, target_date)
+                        if klines_retry:
+                            _inject_avg_price(klines_retry)
+                            # 使用K线实际日期存储
+                            actual_date_str = _extract_date_from_klines(klines_retry, q_date.isoformat())
+                            try:
+                                actual_q_date = date_type.fromisoformat(actual_date_str)
+                            except (ValueError, TypeError):
+                                actual_q_date = q_date
+                            db.save_intraday_klines(code, actual_q_date, klines_retry)
+                            _set_cached_klines(code, klines_retry)
+                            processed += 1
+                            failed -= 1
+                            with _batch_download_lock:
+                                task["completed"] = processed + skipped
+                                task["failed"] = failed
+                            logger.debug(f"重试成功: {code}")
+                        else:
+                            logger.debug(f"重试仍无数据: {code}")
+                    except Exception as retry_err:
+                        logger.debug(f"重试失败: {code}: {retry_err}")
+
+                    # 重试之间间隔 0.5 秒
+                    time.sleep(0.5)
+
+                    with _batch_download_lock:
+                        task["completed"] = processed + skipped
+                        task["elapsed_seconds"] = time.time() - task["start_time"]
+            else:
+                # 每批之间暂停 0.3s，避免 API 限流
+                time.sleep(0.3)
 
         with _batch_download_lock:
             task["status"] = "completed"
@@ -2061,6 +2327,9 @@ def start_batch_download(
         "errors": [],
         "date": target_date,
         "cancelled": False,
+        "paused": False,
+        "waiting_retry": False,
+        "retry_countdown": 0,
     }
 
     with _batch_download_lock:
@@ -2125,6 +2394,9 @@ def get_batch_download_status(
             elapsed_seconds=round(elapsed, 1),
             errors=task.get("errors", [])[-20:],
             date=task.get("date", ""),
+            paused=task.get("paused", False),
+            waiting_retry=task.get("waiting_retry", False),
+            retry_countdown=task.get("retry_countdown", 0),
         )
 
 
@@ -2145,6 +2417,25 @@ def cancel_batch_download(
         task["status"] = "cancelled"
         task["end_time"] = time.time()
     return {"message": "已发送取消请求", "task_id": task_id}
+
+
+@router.post(
+    "/batch-download/pause",
+    summary="暂停/继续批量下载任务",
+)
+def toggle_pause_batch_download(
+    task_id: str = Body(..., embed=True),
+) -> dict:
+    with _batch_download_lock:
+        task = _batch_download_tasks.get(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail="任务不存在")
+        if task["status"] != "running":
+            raise HTTPException(status_code=400, detail="任务已结束，无法暂停/继续")
+        task["paused"] = not task.get("paused", False)
+        new_state = task["paused"]
+    action = "已暂停" if new_state else "已继续"
+    return {"message": action, "task_id": task_id, "paused": new_state}
 
 
 # ---------- 搜索历史 ----------
