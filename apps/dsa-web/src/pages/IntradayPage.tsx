@@ -932,7 +932,7 @@ const IntradayPage: React.FC = () => {
         buyWeights.push({ key: 'absorption_required', label: '主力吸筹(必备条件)', weight: 0, triggered: false, score: 0 });
       } else {
         const factors: [string, string, number, boolean][] = [
-          ['absorption_active', '主力吸筹活跃', 0, absActive],
+          ['absorption_active', '主力吸筹活跃', 5, absActive],
           ['cyw_cross_ma_up', 'CYW上穿MA', 1, cywCrossUp],
           ['main_in_signal', '主力进出金叉', 1, mainInCrossUp],
           ['price_cross_ma5_up', '价格上穿MA5', 1, sn.price_cross_ma5_up],
@@ -992,6 +992,13 @@ const IntradayPage: React.FC = () => {
       // ── 标记初始化阶段开始：阻止子图时间轴变更反向传播到主图 ──
       isInitialRenderRef.current = true;
 
+      // ── 先退订十字线事件，防止销毁图表时触发旧图表 crosshair 事件扰乱引擎状态 ──
+      crosshairSubsRef.current.forEach((unsub) => {
+        try { unsub(); } catch (e) { /* ignore */ }
+      });
+      crosshairSubsRef.current = [];
+      syncEngineRef.current.clear();
+
       // ── 销毁旧图表以完全重置内部状态（包括用户手动调整的 scale）──
       if (chartRef.current) {
         try { chartRef.current.remove(); } catch (e) { /* ignore */ }
@@ -1014,11 +1021,6 @@ const IntradayPage: React.FC = () => {
       });
       indicatorChartsRef.current.clear();
       indicatorSeriesRef.current.clear();
-      syncEngineRef.current.clear();
-      crosshairSubsRef.current.forEach((unsub) => {
-        try { unsub(); } catch (e) { /* ignore */ }
-      });
-      crosshairSubsRef.current = [];
 
       // ── 清空所有容器DOM，确保完全干净（防御性措施，解决chart.remove()可能残留canvas的问题）──
       try { container.innerHTML = ''; } catch (e) { /* ignore */ }
@@ -1299,7 +1301,11 @@ const IntradayPage: React.FC = () => {
       syncEngineRef.current.setCallbacks({
         onMove: (time) => {
           currentCrosshairTimeRef.current = time;
-          computeSignalsAtTime(time);
+          try {
+            computeSignalsAtTime(time);
+          } catch (e) {
+            console.error('[Engine] computeSignalsAtTime error', e);
+          }
         },
         onLeave: () => {
           setIsCrosshairActive(false);
@@ -1640,10 +1646,10 @@ const IntradayPage: React.FC = () => {
                 color: '#4488FF',
                 lineWidth: 1,
                 priceLineVisible: false,
-                lastValueVisible: false,
+                lastValueVisible: true,
                 crosshairMarkerVisible: true,
               });
-              ls.setData(pts);
+              ls.setData(pts.filter((p: any) => p.value != null));
               lineSeriesList.push(ls);
               engineLastValueSeries = ls;
             } else if ((line.name === 'rsi_overbought' || line.name === 'RSI_Overbought') && pts.length > 0) {
@@ -1674,7 +1680,8 @@ const IntradayPage: React.FC = () => {
               color: line.color,
               lineWidth: 1,
               priceLineVisible: false,
-              lastValueVisible: false,
+              lastValueVisible: true,
+              crosshairMarkerVisible: true,
             });
 
             const points = line.data
@@ -1693,7 +1700,7 @@ const IntradayPage: React.FC = () => {
               engineData = points.slice();
               engineDataCollected = true;
             }
-            ls.setData(points);
+            ls.setData(points.filter((p: any) => p.value != null));
             lineSeriesList.push(ls);
           }
         }
@@ -1704,7 +1711,6 @@ const IntradayPage: React.FC = () => {
             try { return s.seriesType?.() !== 'Histogram'; } catch { return true; }
           },
         ) || lineSeriesList[0];
-        console.log(`[SubChart] sc.id=${sc.id} engineDataLen=${engineData.length} hasPrimarySeries=${!!primarySeries} seriesCount=${lineSeriesList.length} engineDataFirstTime=${engineData.length > 0 ? engineData[0].time : 'N/A'} engineDataLastTime=${engineData.length > 0 ? engineData[engineData.length - 1].time : 'N/A'} firstKlineTime=${firstKlineTime}`);
         if (engineData.length > 0 && primarySeries) {
           syncEngineRef.current.register(
             sc.id,

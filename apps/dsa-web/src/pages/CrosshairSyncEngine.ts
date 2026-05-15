@@ -44,7 +44,6 @@ export class CrosshairSyncEngine {
         /* ignore */
       }
     }
-    console.log(`[Engine] register id=${id} dataLen=${data.length} hasLastValue=${!!options?.lastValueSeries} orig=${entry.lastValueVisibleOrig}`);
     this.entries.set(id, entry);
   }
 
@@ -53,7 +52,9 @@ export class CrosshairSyncEngine {
   }
 
   clear(): void {
+    this.syncDepth = 0;
     this.crosshairActive = false;
+    this.callbacks = {};
     this.entries.clear();
   }
 
@@ -76,7 +77,6 @@ export class CrosshairSyncEngine {
           this.crosshairActive = true;
           this._toggleLastValueVisible(false);
         }
-        console.log(`[Engine] handleMove source=${sourceId} time=${param.time} entries=${this.entries.size}`);
         this.entries.forEach((entry, id) => {
           if (id === sourceId) return;
           this._setCrosshair(entry, param.time, id);
@@ -109,11 +109,9 @@ export class CrosshairSyncEngine {
   }
 
   syncTimeRange(range: { from: Time; to: Time }): void {
-    console.log(`[Engine] syncTimeRange from=${range.from} to=${range.to} entries=${this.entries.size}`);
     this.entries.forEach((entry, id) => {
       try {
         entry.chart.timeScale().setVisibleRange(range);
-        console.log(`[Engine] syncTimeRange OK id=${id}`);
       } catch (e) {
         console.warn(`[Engine] syncTimeRange FAILED id=${id} error=`, e);
       }
@@ -153,7 +151,6 @@ export class CrosshairSyncEngine {
         }
         value = bestVal;
       }
-      console.log(`[Engine] _setCrosshair id=${targetId} time=${timeNum} dataLen=${data.length} found=${value != null} value=${value} firstTime=${data.length > 0 ? data[0].time : 'none'} lastTime=${data.length > 0 ? data[data.length - 1].time : 'none'} allNull=${data.length > 0 ? data.every(d => d.value == null || isNaN(d.value)) : 'empty'}`);
       if (value != null && isFinite(value) && !isNaN(value)) {
         chart.setCrosshairPosition(value, time, primarySeries);
       }

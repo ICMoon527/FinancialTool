@@ -561,7 +561,7 @@ class SignalEvaluator:
     """基于多指标评分的买卖信号评估器，含引力场模型"""
 
     BUY_WEIGHTS = {
-        "absorption_active": 0,
+        "absorption_active": 5,
         "cyw_cross_ma_up": 1,
         "main_in_signal": 1,
         "price_cross_ma5_up": 1,
@@ -965,7 +965,7 @@ class IntradayT0Strategy:
                 "positions": {"strong": "全仓", "medium": "半仓", "weak": "1/3仓"},
                 "confidence": {"strong": 0.85, "medium": 0.65, "weak": 0.40},
                 "weights": {
-                    "absorption_active": 0,
+                    "absorption_active": 5,
                     "cyw_cross_ma_up": 1,
                     "main_in_signal": 1,
                     "price_cross_ma5_up": 1,
