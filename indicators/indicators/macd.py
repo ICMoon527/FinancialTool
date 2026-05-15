@@ -39,10 +39,12 @@ class MACD(BaseIndicator):
     - DIF: 差离值（EMA12 - EMA26）
     - DEA: 信号线（DIF的9日EMA）
     - MACD_Bar: MACD柱状图（2*(DIF-DEA)）
-    - EMA12: 快速EMA
-    - EMA26: 慢速EMA
-    - golden_cross: 金叉信号
-    - death_cross: 死叉信号
+- MACD_Bar_Sum: 柱高和（全部累计求和，与前端展示一致）
+- MACD_Bar_Diff: 柱高差（当前MACD_Bar − 前一MACD_Bar）
+- EMA12: 快速EMA
+- EMA26: 慢速EMA
+- golden_cross: 金叉信号
+- death_cross: 死叉信号
 
     注意事项：
     - MACD是趋势指标，在震荡市中容易产生伪信号
@@ -119,6 +121,9 @@ class MACD(BaseIndicator):
 
         MACD_Bar = 2 * (DIF - DEA)
 
+        MACD_Bar_Sum = MACD_Bar.cumsum()
+        MACD_Bar_Diff = MACD_Bar - MACD_Bar.shift(1)
+
         golden_cross = (DIF > DEA) & (DIF.shift(1) <= DEA.shift(1))
         death_cross = (DIF < DEA) & (DIF.shift(1) >= DEA.shift(1))
 
@@ -127,6 +132,8 @@ class MACD(BaseIndicator):
         result["DIF"] = DIF
         result["DEA"] = DEA
         result["MACD_Bar"] = MACD_Bar
+        result["MACD_Bar_Sum"] = MACD_Bar_Sum
+        result["MACD_Bar_Diff"] = MACD_Bar_Diff
         result["golden_cross"] = golden_cross
         result["death_cross"] = death_cross
 

@@ -65,7 +65,7 @@ signals:
   buy:
     thresholds:
       strong: 100   # 强买入
-      medium: 100    # 中买入
+      medium: 15    # 中买入
       weak: 10      # 弱买入
     positions:
       strong: "全仓"
@@ -80,16 +80,17 @@ signals:
       cyw_cross_ma_up: 0     # CYW上穿MA
       main_in_signal: 0      # 主力进出金叉
       price_cross_ma5_up: 0  # 价格上穿MA5
-      avg_price_oversold_fix: 2  # 均价超卖修复
+      avg_price_oversold_fix: 0  # 均价超卖修复
       price_above_ma20: 0    # 价格>MA20趋势加成
-      volume_surge: 1        # 量能放大
-      macd_golden_cross: 2     # MACD金叉
+      volume_surge: 0        # 量能放大
+      macd_golden_cross: 0     # MACD金叉
+      macd_bearish_recovering: 5   # MACD空头动能衰竭(买)
       rsi_oversold: 5          # RSI超卖
 
   sell:
     thresholds:
       strong: 100   # 强卖出
-      medium: 100    # 中卖出
+      medium: 15    # 中卖出
       weak: 10      # 弱卖出
     positions:
       strong: "全仓卖出"
@@ -103,10 +104,11 @@ signals:
       distribution_active: 5        # 主力出货活跃
       main_out_signal: 0            # 主力进出死叉
       cyw_cross_ma_down: 0          # CYW下穿MA
-      volume_stagnation: 3          # 放量滞涨
+      volume_stagnation: 0          # 放量滞涨
       price_cross_ma5_down: 0       # 价格下穿MA5
-      avg_price_overbought_fix: 2   # 均价超买回落
-      macd_death_cross: 2      # MACD死叉
+      avg_price_overbought_fix: 0   # 均价超买回落
+      macd_death_cross: 0      # MACD死叉
+      macd_bullish_weakening: 5    # MACD多头动能衰减(卖)
       rsi_overbought: 5        # RSI超买
 
   # 引力场模型配置（连续化版本，暂时禁用）

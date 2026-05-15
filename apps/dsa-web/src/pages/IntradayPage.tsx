@@ -623,9 +623,20 @@ const IntradayPage: React.FC = () => {
           return `${h}:${m}`;
         },
         barSpacing: 8,
+        fixLeftEdge: true,
+        fixRightEdge: true,
       },
-      handleScroll: {},
-      handleScale: {},
+      handleScroll: {
+        mouseWheel: false,
+        pressedMouseMove: true,
+        horzTouchDrag: true,
+        vertTouchDrag: true,
+      },
+      handleScale: {
+        mouseWheel: true,
+        axisPressedMouseMove: false,
+        pinch: true,
+      },
     });
 
     const candleSeries = chart.addSeries(lightweightCharts.CandlestickSeries, {
@@ -666,9 +677,20 @@ const IntradayPage: React.FC = () => {
         timeVisible: false,
         secondsVisible: false,
         tickMarkFormatter: () => '',
+        fixLeftEdge: true,
+        fixRightEdge: true,
       },
-      handleScroll: {},
-      handleScale: {},
+      handleScroll: {
+        mouseWheel: false,
+        pressedMouseMove: true,
+        horzTouchDrag: true,
+        vertTouchDrag: true,
+      },
+      handleScale: {
+        mouseWheel: true,
+        axisPressedMouseMove: false,
+        pinch: true,
+      },
     });
 
     const volSeries = volChart.addSeries(lightweightCharts.HistogramSeries, {
@@ -763,6 +785,10 @@ const IntradayPage: React.FC = () => {
     MACD_Bar: number;
     macd_golden_cross: boolean;
     macd_death_cross: boolean;
+    macd_bullish_weakening: boolean;
+    macd_bearish_recovering: boolean;
+    macd_bar_sum: number;
+    macd_bar_diff: number;
     RSI: number;
     rsi_oversold: boolean;
     rsi_overbought: boolean;
@@ -941,6 +967,7 @@ const IntradayPage: React.FC = () => {
           ['price_above_ma20', '价格>MA20趋势', 1, sn.price_above_ma20],
           ['volume_surge', '量能放大', 1, false],
           ['macd_golden_cross', 'MACD金叉', 2, macdGoldenCross],
+          ['macd_bearish_recovering', 'MACD空头动能衰竭', 5, sn.macd_bearish_recovering],
           ['rsi_oversold', 'RSI超卖', 5, rsiOversold],
         ];
         let buyScore = 0;
@@ -963,6 +990,7 @@ const IntradayPage: React.FC = () => {
           ['price_cross_ma5_down', '价格下穿MA5', 2, sn.price_cross_ma5_down],
           ['avg_price_overbought_fix', '均价超买回落', 2, sn.deviation_overbought && sn.deviation_peaking],
           ['macd_death_cross', 'MACD死叉', 2, macdDeathCross],
+          ['macd_bullish_weakening', 'MACD多头动能衰减', 5, sn.macd_bullish_weakening],
           ['rsi_overbought', 'RSI超买', 5, rsiOverbought],
         ];
         let sellScore = 0;
@@ -1067,9 +1095,20 @@ const IntradayPage: React.FC = () => {
             return `${h}:${m}`;
           },
           barSpacing: 8,
+          fixLeftEdge: true,
+          fixRightEdge: true,
         },
-        handleScroll: {},
-        handleScale: {},
+        handleScroll: {
+          mouseWheel: false,
+          pressedMouseMove: true,
+          horzTouchDrag: true,
+          vertTouchDrag: true,
+        },
+        handleScale: {
+          mouseWheel: true,
+          axisPressedMouseMove: false,
+          pinch: true,
+        },
       });
       chartRef.current = chart;
 
@@ -1098,9 +1137,20 @@ const IntradayPage: React.FC = () => {
           timeVisible: false,
           secondsVisible: false,
           tickMarkFormatter: () => '',
+          fixLeftEdge: true,
+          fixRightEdge: true,
         },
-        handleScroll: {},
-        handleScale: {},
+        handleScroll: {
+          mouseWheel: false,
+          pressedMouseMove: true,
+          horzTouchDrag: true,
+          vertTouchDrag: true,
+        },
+        handleScale: {
+          mouseWheel: true,
+          axisPressedMouseMove: false,
+          pinch: true,
+        },
       });
       const volSeries = volChart.addSeries(lightweightCharts.HistogramSeries, {
         color: '#66666688',
@@ -1430,6 +1480,17 @@ const IntradayPage: React.FC = () => {
           const prevDif = prev && !isNaN(prev.DIF) ? prev.DIF : 0;
           const prevDea = prev && !isNaN(prev.DEA) ? prev.DEA : 0;
           const curRsi = isNaN(cur.RSI) ? 50 : cur.RSI;
+          const macdBarSum = (() => {
+            let sum = 0;
+            for (let j = 0; j <= i; j++) {
+              const v = raw[j].MACD_Bar;
+              if (!isNaN(v)) sum += v;
+            }
+            return sum;
+          })();
+          const macdBarDiff = prev
+            ? (isNaN(cur.MACD_Bar) ? 0 : cur.MACD_Bar) - (isNaN(prev.MACD_Bar) ? 0 : prev.MACD_Bar)
+            : 0;
           return {
             ...cur,
             absorption_active: absorption_val > 0,
@@ -1444,6 +1505,10 @@ const IntradayPage: React.FC = () => {
             deviation_peaking: dev >= OVERBOUGHT && prev ? (dev < prevDev) : false,
             macd_golden_cross: prev ? (prevDif <= prevDea && curDif > curDea) : false,
             macd_death_cross: prev ? (prevDif >= prevDea && curDif < curDea) : false,
+            macd_bar_sum: macdBarSum,
+            macd_bar_diff: macdBarDiff,
+            macd_bullish_weakening: curDif > curDea && macdBarSum >= 0 && macdBarDiff >= 0,
+            macd_bearish_recovering: curDif < curDea && macdBarSum <= 0 && macdBarDiff <= 0,
             rsi_oversold: curRsi <= RSI_OVERSOLD,
             rsi_overbought: curRsi >= RSI_OVERBOUGHT,
           };

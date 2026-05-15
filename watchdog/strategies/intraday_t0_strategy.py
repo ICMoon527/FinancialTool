@@ -89,6 +89,8 @@ class IndicatorSnapshot:
     macd_bar: float = 0.0
     macd_golden_cross: bool = False
     macd_death_cross: bool = False
+    macd_bullish_weakening: bool = False    # MACD多头动能衰减(卖)
+    macd_bearish_recovering: bool = False   # MACD空头动能衰竭(买)
 
     # RSI
     rsi_value: float = 50.0
@@ -569,6 +571,7 @@ class SignalEvaluator:
         "price_above_ma20": 1,
         "volume_surge": 1,
         "macd_golden_cross": 2,
+        "macd_bearish_recovering": 5,   # MACD空头动能衰竭(买)
         "rsi_oversold": 5,
     }
     BUY_LABELS = {
@@ -580,6 +583,7 @@ class SignalEvaluator:
         "price_above_ma20": "价格>MA20趋势",
         "volume_surge": "量能放大",
         "macd_golden_cross": "MACD金叉",
+        "macd_bearish_recovering": "MACD空头动能衰竭",
         "rsi_oversold": "RSI超卖",
     }
 
@@ -591,6 +595,7 @@ class SignalEvaluator:
         "price_cross_ma5_down": 2,
         "avg_price_overbought_fix": 2,
         "macd_death_cross": 2,
+        "macd_bullish_weakening": 5,    # MACD多头动能衰减(卖)
         "rsi_overbought": 5,
     }
     SELL_LABELS = {
@@ -601,6 +606,7 @@ class SignalEvaluator:
         "price_cross_ma5_down": "价格下穿MA5",
         "avg_price_overbought_fix": "均价超买回落",
         "macd_death_cross": "MACD死叉",
+        "macd_bullish_weakening": "MACD多头动能衰减",
         "rsi_overbought": "RSI超买",
     }
 
@@ -791,6 +797,8 @@ class SignalEvaluator:
                 triggered = status.volume_surge
             elif key == "macd_golden_cross":
                 triggered = status.macd_golden_cross
+            elif key == "macd_bearish_recovering":
+                triggered = status.macd_bearish_recovering
             elif key == "rsi_oversold":
                 triggered = status.rsi_oversold
 
@@ -868,6 +876,8 @@ class SignalEvaluator:
                 triggered = status.deviation_overbought and status.deviation_peaking
             elif key == "macd_death_cross":
                 triggered = status.macd_death_cross
+            elif key == "macd_bullish_weakening":
+                triggered = status.macd_bullish_weakening
             elif key == "rsi_overbought":
                 triggered = status.rsi_overbought
 
@@ -973,6 +983,7 @@ class IntradayT0Strategy:
                     "price_above_ma20": 1,
                     "volume_surge": 1,
                     "macd_golden_cross": 2,
+                    "macd_bearish_recovering": 5,
                     "rsi_oversold": 5,
                 },
             },
@@ -988,6 +999,7 @@ class IntradayT0Strategy:
                     "price_cross_ma5_down": 2,
                     "avg_price_overbought_fix": 2,
                     "macd_death_cross": 2,
+                    "macd_bullish_weakening": 5,
                     "rsi_overbought": 5,
                 },
             },
@@ -1109,6 +1121,16 @@ class IntradayT0Strategy:
             macd_bar=float(row.get("MACD_Bar", 0)),
             macd_golden_cross=bool(row.get("macd_golden_cross", False)),
             macd_death_cross=bool(row.get("macd_death_cross", False)),
+            macd_bullish_weakening=(
+                float(row.get("DIF", 0)) > float(row.get("DEA", 0))
+                and float(row.get("MACD_Bar_Sum", 0)) >= 0
+                and (float(row.get("MACD_Bar_Diff", 0)) if not pd.isna(row.get("MACD_Bar_Diff")) else 0) >= 0
+            ),
+            macd_bearish_recovering=(
+                float(row.get("DIF", 0)) < float(row.get("DEA", 0))
+                and float(row.get("MACD_Bar_Sum", 0)) <= 0
+                and (float(row.get("MACD_Bar_Diff", 0)) if not pd.isna(row.get("MACD_Bar_Diff")) else 0) <= 0
+            ),
             rsi_value=float(row.get("RSI", 50)),
             rsi_oversold=bool(row.get("rsi_oversold", False)),
             rsi_overbought=bool(row.get("rsi_overbought", False)),
