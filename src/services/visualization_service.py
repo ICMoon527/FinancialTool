@@ -28,6 +28,7 @@ from indicators.indicators.momentum_2 import Momentum2
 from indicators.indicators.strong_detonation import StrongDetonation
 from indicators.indicators.resonance_chase import ResonanceChase
 from indicators.indicators.dmi import DMI
+from indicators.indicators.macd import MACD
 from indicators.indicators.chip_distribution import ChipDistribution
 from src.storage import DatabaseManager, get_db
 from src.core.trading_calendar import get_start_date_by_trading_days, get_market_for_stock
@@ -159,7 +160,8 @@ AVAILABLE_INDICATORS = [
     'momentum_2',
     'strong_detonation',
     'resonance_chase',
-    'dmi'
+    'dmi',
+    'macd'
 ]
 
 # 指标计算器映射
@@ -172,7 +174,8 @@ INDICATOR_CALCULATORS = {
     'momentum_2': Momentum2,
     'strong_detonation': StrongDetonation,
     'resonance_chase': ResonanceChase,
-    'dmi': DMI
+    'dmi': DMI,
+    'macd': MACD
 }
 
 
@@ -515,7 +518,35 @@ class VisualizationService:
                             logger.warning(f"获取最新资金流向数据失败: {e}")
                     else:
                         logger.info(f"主力成本未添加资金流向 metadata: fund_flow_data is None={fund_flow_data is None}")
-                    
+
+                    # MACD 指标元数据：柱高和、柱高差、信号文本
+                    if indicator_type == 'macd' and not result_df.empty:
+                        try:
+                            last_row = result_df.iloc[-1]
+                            bar_sum = float(last_row.get('MACD_Bar_Sum', 0)) if pd.notna(last_row.get('MACD_Bar_Sum')) else 0
+                            bar_diff = float(last_row.get('MACD_Bar_Diff', 0)) if pd.notna(last_row.get('MACD_Bar_Diff')) else 0
+                            last_golden = bool(last_row.get('golden_cross', False)) if pd.notna(last_row.get('golden_cross')) else False
+                            last_death = bool(last_row.get('death_cross', False)) if pd.notna(last_row.get('death_cross')) else False
+                            last_dif = float(last_row.get('DIF', 0)) if pd.notna(last_row.get('DIF')) else 0
+                            last_dea = float(last_row.get('DEA', 0)) if pd.notna(last_row.get('DEA')) else 0
+
+                            if last_golden:
+                                signal_text = 'MACD金叉 \u2191'
+                            elif last_death:
+                                signal_text = 'MACD死叉 \u2193'
+                            elif last_dif > last_dea:
+                                signal_text = 'MACD多头 \u2197'
+                            else:
+                                signal_text = 'MACD空头 \u2198'
+
+                            indicator_metadata = {
+                                'bar_sum': round(bar_sum, 2),
+                                'bar_diff': round(bar_diff, 2),
+                                'signal_text': signal_text,
+                            }
+                        except Exception as e:
+                            logger.warning(f"MACD metadata 计算失败: {e}")
+
                     indicators_data.append({
                         'indicator_type': indicator_type,
                         'data': indicator_data_list,

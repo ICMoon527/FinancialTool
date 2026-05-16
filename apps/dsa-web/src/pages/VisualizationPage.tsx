@@ -12,10 +12,11 @@ import ChipDistributionChart from '../components/charts/ChipDistributionChart';
 // 定义指标配置
 const INDICATOR_OPTIONS = [
   { id: 'volume', name: '成交量', description: '成交量柱状图', color: '#666666' },
-  { id: 'banker_control', name: '庄家控盘', description: '庄家控盘程度指标', color: '#FFAA00' },
+  { id: 'macd', name: 'MACD', description: '指数平滑异同移动平均线 (DIF/DEA/Bar)', color: '#FFFFFF' },
   { id: 'main_capital_absorption', name: '主力吸筹', description: '主力资金吸筹情况', color: '#AA44FF' },
   { id: 'main_cost', name: '主力成本', description: '主力资金成本', color: '#FFAA00' },
   { id: 'main_trading', name: '主力操盘', description: '主力操盘三线', color: '#FF4444' },
+  { id: 'banker_control', name: '庄家控盘', description: '庄家控盘程度指标', color: '#FFAA00' },
   { id: 'momentum_2', name: '动能二号', description: '动能二号指标，四种颜色表示不同动能状态', color: '#FF4444' },
   { id: 'strong_detonation', name: '强势起爆', description: '强势起爆指标，识别强势起爆阶段', color: '#AA44FF' },
   { id: 'resonance_chase', name: '共振追涨', description: '共振追涨指标，识别共振追涨机会', color: '#AA44FF' },
@@ -61,7 +62,7 @@ const VisualizationPage: React.FC = () => {
   const [selectedHistoryId, setSelectedHistoryId] = useState<number | null>(null);
   const [historySnapshots, setHistorySnapshots] = useState<Record<string, StockSnapshot>>({});
   const [selectedIndicators, setSelectedIndicators] = useState<string[]>(
-    filterValidIndicators(['volume', 'main_capital_absorption', 'banker_control', 'main_trading', 'main_cost'])
+    filterValidIndicators(['volume', 'macd', 'main_capital_absorption', 'main_cost', 'main_trading'])
   );
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [selectedDateRange, setSelectedDateRange] = useState('1y');
@@ -90,6 +91,9 @@ const VisualizationPage: React.FC = () => {
     mainNetBuyWan?: number;
     mainDirection?: 'inflow' | 'outflow';
     turnoverRatio?: number;
+    macdBarSum?: number;
+    macdBarDiff?: number;
+    macdSignal?: string;
   }>({});
 
   useEffect(() => {
@@ -285,6 +289,12 @@ const VisualizationPage: React.FC = () => {
       mainNetBuyWan?: number;
       mainDirection?: 'inflow' | 'outflow';
       turnoverRatio?: number;
+      macdDIF?: number;
+      macdDEA?: number;
+      macdBar?: number;
+      macdBarSum?: number;
+      macdBarDiff?: number;
+      macdSignal?: string;
     } = {};
 
     const bankerData = getIndicatorDataItem('banker_control', time);
@@ -328,6 +338,36 @@ const VisualizationPage: React.FC = () => {
       values.dmiPdi = dmiData.PDI;
       values.dmiMdi = dmiData.MDI;
       values.dmiAdx = dmiData.ADX;
+    }
+
+    const macdData = getIndicatorDataItem('macd', time);
+    if (macdData) {
+      values.macdDIF = macdData.DIF;
+      values.macdDEA = macdData.DEA;
+      values.macdBar = macdData.MACD_Bar;
+
+      const macdIndicatorData = indicatorsDataRef.current['macd'];
+      if (macdIndicatorData && macdIndicatorData.data) {
+        let timeStr = time;
+        if (typeof time === 'number') {
+          const date = new Date(time * 1000);
+          timeStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+        }
+        const idx = macdIndicatorData.data.findIndex((d: any) => {
+          const dTime = d.date || d.time;
+          return dTime === timeStr;
+        });
+        if (idx >= 0) {
+          const barDataUpToIdx = macdIndicatorData.data.slice(0, idx + 1);
+          values.macdBarSum = barDataUpToIdx.reduce((sum: number, d: any) => sum + (Number(d.MACD_Bar) || 0), 0);
+          values.macdBarDiff = idx > 0
+            ? (Number(macdIndicatorData.data[idx].MACD_Bar) || 0) - (Number(macdIndicatorData.data[idx - 1].MACD_Bar) || 0)
+            : 0;
+          const dif = Number(macdIndicatorData.data[idx].DIF) || 0;
+          const dea = Number(macdIndicatorData.data[idx].DEA) || 0;
+          values.macdSignal = dif > dea ? 'MACD多头 \u2197' : 'MACD空头 \u2198';
+        }
+      }
     }
 
     return values;
@@ -625,6 +665,10 @@ const VisualizationPage: React.FC = () => {
                         if (dataPoint.PDI !== undefined && dataPoint.PDI !== null) {
                           price = dataPoint.PDI;
                         }
+                      } else if (indicatorId === 'macd') {
+                        if (dataPoint.DIF !== undefined && dataPoint.DIF !== null) {
+                          price = dataPoint.DIF;
+                        }
                       }
                     }
                   }
@@ -718,6 +762,9 @@ const VisualizationPage: React.FC = () => {
                   mainNetBuyWan: indicatorValues.mainNetBuyWan,
                   mainDirection: indicatorValues.mainDirection,
                   turnoverRatio: indicatorValues.turnoverRatio,
+                  macdBarSum: indicatorValues.macdBarSum,
+                  macdBarDiff: indicatorValues.macdBarDiff,
+                  macdSignal: indicatorValues.macdSignal,
                 });
               } else {
                 const klinePoint = klineDataRef.current.find((item: any) => item.time === param.time);
@@ -735,6 +782,9 @@ const VisualizationPage: React.FC = () => {
                   mainNetBuyWan: indicatorValues.mainNetBuyWan,
                   mainDirection: indicatorValues.mainDirection,
                   turnoverRatio: indicatorValues.turnoverRatio,
+                  macdBarSum: indicatorValues.macdBarSum,
+                  macdBarDiff: indicatorValues.macdBarDiff,
+                  macdSignal: indicatorValues.macdSignal,
                 });
               }
             }
@@ -1598,9 +1648,57 @@ const VisualizationPage: React.FC = () => {
             adxSeries.setData(adxData);
           }
 
-        }
+        } else if (indicatorId === 'macd' && indicatorData) {
+          const filteredIndicatorData = filterDataByTimeRange(indicatorData.data, 'date');
 
-        // 处理窗口大小变化
+          const difData = filteredIndicatorData.map((item: any) => ({
+            time: item.date,
+            value: Number((item.DIF || 0).toFixed(4)),
+          })).filter((d: any) => d.value !== null && d.value !== undefined && !isNaN(d.value));
+
+          const deaData = filteredIndicatorData.map((item: any) => ({
+            time: item.date,
+            value: Number((item.DEA || 0).toFixed(4)),
+          })).filter((d: any) => d.value !== null && d.value !== undefined && !isNaN(d.value));
+
+          const barData = filteredIndicatorData.map((item: any) => {
+            const val = Number((item.MACD_Bar || 0).toFixed(4));
+            return {
+              time: item.date,
+              value: val,
+              color: val >= 0 ? '#FF4444' : '#44FF44',
+            };
+          }).filter((d: any) => d.value !== null && d.value !== undefined && !isNaN(d.value));
+
+          if (difData.length > 0) {
+            const difSeries = chart.addSeries(lightweightCharts.LineSeries, {
+              color: '#FFFFFF',
+              lineWidth: 1,
+              priceLineVisible: false,
+              lastValueVisible: false,
+            });
+            difSeries.setData(difData);
+            subChartSeriesRefs.current[indicatorId] = difSeries;
+          }
+
+          if (deaData.length > 0) {
+            const deaSeries = chart.addSeries(lightweightCharts.LineSeries, {
+              color: '#FFD700',
+              lineWidth: 1,
+              priceLineVisible: false,
+              lastValueVisible: false,
+            });
+            deaSeries.setData(deaData);
+          }
+
+          if (barData.length > 0) {
+            const barSeries = chart.addSeries(lightweightCharts.HistogramSeries, {
+              priceFormat: { type: 'volume' },
+            } as any);
+            barSeries.setData(barData);
+          }
+
+        }
         const resizeObserver = new ResizeObserver(entries => {
           if (entries.length === 0) return;
           const { width } = entries[0].contentRect;
@@ -1725,6 +1823,10 @@ const VisualizationPage: React.FC = () => {
                             if (otherDataPoint.PDI !== undefined && otherDataPoint.PDI !== null) {
                               otherPrice = otherDataPoint.PDI;
                             }
+                          } else if (otherIndicatorId === 'macd') {
+                            if (otherDataPoint.DIF !== undefined && otherDataPoint.DIF !== null && !isNaN(otherDataPoint.DIF)) {
+                              otherPrice = otherDataPoint.DIF;
+                            }
                           }
                         }
                       }
@@ -1804,6 +1906,9 @@ const VisualizationPage: React.FC = () => {
                     mainNetBuyWan: indicatorValues.mainNetBuyWan,
                     mainDirection: indicatorValues.mainDirection,
                     turnoverRatio: indicatorValues.turnoverRatio,
+                    macdBarSum: indicatorValues.macdBarSum,
+                    macdBarDiff: indicatorValues.macdBarDiff,
+                    macdSignal: indicatorValues.macdSignal,
                   });
                 } else {
                   // 即使没有主图数据，也要更新所有子图指标的值
@@ -1822,6 +1927,9 @@ const VisualizationPage: React.FC = () => {
                     mainNetBuyWan: indicatorValues.mainNetBuyWan,
                     mainDirection: indicatorValues.mainDirection,
                     turnoverRatio: indicatorValues.turnoverRatio,
+                    macdBarSum: indicatorValues.macdBarSum,
+                    macdBarDiff: indicatorValues.macdBarDiff,
+                    macdSignal: indicatorValues.macdSignal,
                   });
                 }
               }
@@ -1963,7 +2071,7 @@ const VisualizationPage: React.FC = () => {
     setStockCode(item.stock_code);
     setSelectedHistoryId(item.id);
     // 不使用历史记录中的指标，使用默认指标
-    setSelectedIndicators(filterValidIndicators(['volume', 'main_capital_absorption', 'banker_control', 'main_trading']));
+    setSelectedIndicators(filterValidIndicators(['volume', 'macd', 'main_capital_absorption', 'main_cost', 'main_trading']));
     setSidebarOpen(false);
 
     setIsLoading(true);
@@ -1980,7 +2088,7 @@ const VisualizationPage: React.FC = () => {
       const response = await visualizationApi.getVisualizationData(
         item.stock_code,
         item.days || 3650,
-        filterValidIndicators(['volume', 'main_capital_absorption', 'banker_control', 'main_trading']),
+        filterValidIndicators(['volume', 'macd', 'main_capital_absorption', 'main_cost', 'main_trading']),
         startDateStr
       );
       // 创建全新对象，确保React能检测到变化
@@ -2608,6 +2716,66 @@ const VisualizationPage: React.FC = () => {
                           <span className="text-xs font-mono text-[#44AA44]">-DI:{cursorValues.dmiMdi?.toFixed(2)}</span>
                           <span className="text-xs font-mono text-[#AA44FF]">ADX:{cursorValues.dmiAdx?.toFixed(2)}</span>
                         </span>
+                      )}
+                      {/* MACD 标题栏：信号文本 + 柱高和 + 柱高差 */}
+                      {indicatorId === 'macd' && indicatorData && (
+                        <div className="flex items-center gap-2 ml-auto">
+                          {(() => {
+                            const metadata = (indicatorData as any).metadata;
+                            let signalText = cursorValues.macdSignal;
+                            let barSum = cursorValues.macdBarSum;
+                            let barDiff = cursorValues.macdBarDiff;
+
+                            if (signalText === undefined && metadata?.signal_text) {
+                              signalText = metadata.signal_text;
+                            }
+                            if (barSum === undefined && metadata?.bar_sum !== undefined) {
+                              barSum = metadata.bar_sum;
+                            }
+                            if (barDiff === undefined && metadata?.bar_diff !== undefined) {
+                              barDiff = metadata.bar_diff;
+                            }
+
+                            const isBuySignal = signalText && (signalText.includes('\u91d1') || signalText.includes('\u591a'));
+                            const signalColor = signalText ? (isBuySignal ? '#FF4444' : '#44FF44') : '#888';
+                            const signalBgColor = signalText ? (isBuySignal ? 'rgba(255,68,68,0.1)' : 'rgba(68,255,68,0.1)') : undefined;
+
+                            return (
+                              <>
+                                {signalText && (
+                                  <span className="text-[11px] font-semibold px-1.5 py-px rounded"
+                                    style={{ color: signalColor, backgroundColor: signalBgColor }}>
+                                    {signalText}
+                                  </span>
+                                )}
+                                {barSum !== undefined && (
+                                  <span className="text-[10px] font-mono font-medium px-1.5 py-px rounded"
+                                    style={{ color: barSum >= 0 ? '#FF4444' : '#44FF44', backgroundColor: barSum >= 0 ? 'rgba(255,68,68,0.1)' : 'rgba(68,255,68,0.1)' }}>
+                                    柱高和 {barSum >= 0 ? '+' : ''}{barSum.toFixed(2)}
+                                  </span>
+                                )}
+                                {barDiff !== undefined && (
+                                  <span className="text-[10px] font-mono font-medium px-1.5 py-px rounded"
+                                    style={{ color: barDiff >= 0 ? '#FF4444' : '#44FF44', backgroundColor: barDiff >= 0 ? 'rgba(255,68,68,0.1)' : 'rgba(68,255,68,0.1)' }}>
+                                    柱高差 {barDiff >= 0 ? '+' : ''}{barDiff.toFixed(2)}
+                                  </span>
+                                )}
+                                <div className="flex items-center gap-1 ml-2">
+                                  <span className="w-2.5 h-0.5 rounded" style={{ backgroundColor: '#FFFFFF' }}></span>
+                                  <span className="text-[10px] text-muted/60">DIF</span>
+                                </div>
+                                <div className="flex items-center gap-1">
+                                  <span className="w-2.5 h-0.5 rounded" style={{ backgroundColor: '#FFD700' }}></span>
+                                  <span className="text-[10px] text-muted/60">DEA</span>
+                                </div>
+                                <div className="flex items-center gap-0.5">
+                                  <div className="w-2 h-1.5 rounded-sm" style={{ backgroundColor: '#FF4444' }}></div>
+                                  <div className="w-2 h-1.5 rounded-sm" style={{ backgroundColor: '#44FF44' }}></div>
+                                </div>
+                              </>
+                            );
+                          })()}
+                        </div>
                       )}
                     </div>
                     <div 
