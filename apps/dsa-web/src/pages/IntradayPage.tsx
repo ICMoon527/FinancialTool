@@ -1603,6 +1603,18 @@ const IntradayPage: React.FC = () => {
           const curDea = isNaN(cur.DEA) ? 0 : cur.DEA;
           const prevDif = prev && !isNaN(prev.DIF) ? prev.DIF : 0;
           const prevDea = prev && !isNaN(prev.DEA) ? prev.DEA : 0;
+          // 检查前一根K线是否发生了金叉/死叉
+          const prevPrev = i > 1 ? raw[i - 2] : null;
+          const prevPrevDif = prevPrev && !isNaN(prevPrev.DIF) ? prevPrev.DIF : 0;
+          const prevPrevDea = prevPrev && !isNaN(prevPrev.DEA) ? prevPrev.DEA : 0;
+          const prevGoldenCross = prev ? (prevPrevDif <= prevPrevDea && prevDif > prevDea) : false;
+          const prevDeathCross = prev ? (prevPrevDif >= prevPrevDea && prevDif < prevDea) : false;
+          // 检查前两根K线是否发生了金叉/死叉
+          const prevPrevPrev = i > 2 ? raw[i - 3] : null;
+          const prevPrevPrevDif = prevPrevPrev && !isNaN(prevPrevPrev.DIF) ? prevPrevPrev.DIF : 0;
+          const prevPrevPrevDea = prevPrevPrev && !isNaN(prevPrevPrev.DEA) ? prevPrevPrev.DEA : 0;
+          const prevPrevGoldenCross = prevPrev ? (prevPrevPrevDif <= prevPrevPrevDea && prevPrevDif > prevPrevDea) : false;
+          const prevPrevDeathCross = prevPrev ? (prevPrevPrevDif >= prevPrevPrevDea && prevPrevDif < prevPrevDea) : false;
           const curRsi = isNaN(cur.RSI) ? 50 : cur.RSI;
           const macdBarSum = (() => {
             let sum = 0;
@@ -1631,8 +1643,8 @@ const IntradayPage: React.FC = () => {
             macd_death_cross: prev ? (prevDif >= prevDea && curDif < curDea) : false,
             macd_bar_sum: macdBarSum,
             macd_bar_diff: macdBarDiff,
-            macd_bullish_weakening: curDif > curDea && macdBarSum >= 0 && macdBarDiff >= 0,
-            macd_bearish_recovering: curDif < curDea && macdBarSum <= 0 && macdBarDiff <= 0,
+            macd_bullish_weakening: curDif > curDea && macdBarSum >= -0.015 && macdBarDiff >= -0.005 && !(prev ? (prevDif <= prevDea && curDif > curDea) : false) && !(prev ? (prevDif >= prevDea && curDif < curDea) : false) && !prevGoldenCross && !prevPrevGoldenCross,
+            macd_bearish_recovering: curDif < curDea && macdBarSum <= 0 && macdBarDiff <= 0 && !(prev ? (prevDif <= prevDea && curDif > curDea) : false) && !(prev ? (prevDif >= prevDea && curDif < curDea) : false) && !prevDeathCross && !prevPrevDeathCross,
             rsi_oversold: curRsi <= RSI_OVERSOLD,
             rsi_overbought: curRsi >= RSI_OVERBOUGHT,
           };

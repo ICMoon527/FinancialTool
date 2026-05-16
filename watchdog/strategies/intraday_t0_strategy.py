@@ -1152,8 +1152,22 @@ class IntradayT0Strategy:
             except Exception as e:
                 logger.error(f"信号回调执行失败: {e}")
 
-    def _build_snapshot(self, row: pd.Series) -> IndicatorSnapshot:
-        """从 DataFrame 行构建指标快照"""
+    def _build_snapshot(self, row: pd.Series, prev_row: Optional[pd.Series] = None,
+                         prev2_row: Optional[pd.Series] = None) -> IndicatorSnapshot:
+        """从 DataFrame 行构建指标快照
+
+        Args:
+            row: 当前K线对应的指标行
+            prev_row: 前一根K线对应的指标行（用于检测前一根K线的金叉/死叉状态）
+            prev2_row: 前两根K线对应的指标行（用于检测前两根K线的金叉/死叉状态）
+        """
+        # 检查前一根K线是否发生了金叉/死叉
+        prev_golden = bool(prev_row.get("macd_golden_cross", False)) if prev_row is not None else False
+        prev_death = bool(prev_row.get("macd_death_cross", False)) if prev_row is not None else False
+        # 检查前两根K线是否发生了金叉/死叉
+        prev2_golden = bool(prev2_row.get("macd_golden_cross", False)) if prev2_row is not None else False
+        prev2_death = bool(prev2_row.get("macd_death_cross", False)) if prev2_row is not None else False
+
         return IndicatorSnapshot(
             absorption_value=float(row.get("absorption", 0)),
             absorption_active=float(row.get("absorption", 0)) > 0,
@@ -1189,13 +1203,19 @@ class IntradayT0Strategy:
             macd_death_cross=bool(row.get("macd_death_cross", False)),
             macd_bullish_weakening=(
                 float(row.get("DIF", 0)) > float(row.get("DEA", 0))
-                and float(row.get("MACD_Bar_Sum", 0)) >= 0
-                and (float(row.get("MACD_Bar_Diff", 0)) if not pd.isna(row.get("MACD_Bar_Diff")) else 0) >= 0
+                and float(row.get("MACD_Bar_Sum", 0)) >= -0.015
+                and (float(row.get("MACD_Bar_Diff", 0)) if not pd.isna(row.get("MACD_Bar_Diff")) else 0) >= -0.005
+                and not(bool(row.get("macd_death_cross", False)) or bool(row.get("macd_golden_cross", False)))
+                and not prev_golden
+                and not prev2_golden
             ),
             macd_bearish_recovering=(
                 float(row.get("DIF", 0)) < float(row.get("DEA", 0))
                 and float(row.get("MACD_Bar_Sum", 0)) <= 0
                 and (float(row.get("MACD_Bar_Diff", 0)) if not pd.isna(row.get("MACD_Bar_Diff")) else 0) <= 0
+                and not(bool(row.get("macd_death_cross", False)) or bool(row.get("macd_golden_cross", False)))
+                and not prev_death
+                and not prev2_death
             ),
             rsi_value=float(row.get("RSI", 50)),
             rsi_oversold=bool(row.get("rsi_oversold", False)),
@@ -1238,7 +1258,9 @@ class IntradayT0Strategy:
             return None
 
         latest = df.iloc[-1]
-        snapshot = self._build_snapshot(latest)
+        prev = df.iloc[-2] if len(df) >= 2 else None
+        prev2 = df.iloc[-3] if len(df) >= 3 else None
+        snapshot = self._build_snapshot(latest, prev, prev2)
         price = self.buffer.get_latest_price() or 0.0
 
         self.evaluator._current_bar = self.buffer.length
