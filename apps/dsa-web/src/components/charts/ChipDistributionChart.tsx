@@ -18,8 +18,14 @@ const ChipDistributionChart: React.FC<ChipDistributionChartProps> = ({
   const chartRef = useRef<ReactECharts>(null);
 
   useEffect(() => {
-    if (chartRef.current) {
-      chartRef.current.getEchartsInstance()?.setOption(getOption() as any);
+    if (chartRef.current && (data || priceRange || cursorPrice !== undefined)) {
+      const instance = chartRef.current.getEchartsInstance();
+      if (instance) {
+        const option = getOption();
+        if (Object.keys(option).length > 0) {
+          instance.setOption(option as any, { notMerge: true });
+        }
+      }
     }
   }, [cursorPrice, data, priceRange]);
 
@@ -28,9 +34,31 @@ const ChipDistributionChart: React.FC<ChipDistributionChartProps> = ({
       return {};
     }
 
-    const priceBins = data.price_bins;
-    const profitVolumes = data.profit_volumes;
-    const lossVolumes = data.loss_volumes;
+    const priceBins = [...data.price_bins];
+    const profitVolumes = [...data.profit_volumes];
+    const lossVolumes = [...data.loss_volumes];
+    const chipVolumes = data.chip_volumes ? [...data.chip_volumes] : [];
+
+    if (priceRange && priceBins.length >= 2) {
+      const step = priceBins[1] - priceBins[0];
+
+      while (priceBins[0] > priceRange.min + step * 0.5) {
+        const padPrice = priceBins[0] - step;
+        priceBins.unshift(padPrice);
+        profitVolumes.unshift(0);
+        lossVolumes.unshift(0);
+        chipVolumes.unshift(0);
+      }
+
+      while (priceBins[priceBins.length - 1] < priceRange.max - step * 0.5) {
+        const padPrice = priceBins[priceBins.length - 1] + step;
+        priceBins.push(padPrice);
+        profitVolumes.push(0);
+        lossVolumes.push(0);
+        chipVolumes.push(0);
+      }
+    }
+
     const totalVolumes = profitVolumes.map((v, i) => (v || 0) + (lossVolumes[i] || 0));
 
     const markLines = [];
@@ -116,7 +144,7 @@ const ChipDistributionChart: React.FC<ChipDistributionChartProps> = ({
           }
           const dataIndex = params[0].dataIndex;
           const price = priceBins[dataIndex];
-          const probabilityDensity = data?.chip_volumes?.[dataIndex] || 0;
+          const probabilityDensity = chipVolumes?.[dataIndex] || 0;
           const circulatingShares = data?.circulating_shares;
           if (import.meta.env.DEV) {
             console.log('circulatingShares:', circulatingShares, 'probabilityDensity:', probabilityDensity);
@@ -137,8 +165,8 @@ const ChipDistributionChart: React.FC<ChipDistributionChartProps> = ({
       grid: {
         left: 0,
         right: 20,
-        top: 10,
-        bottom: 10,
+        top: 0,
+        bottom: 0,
         containLabel: false
       },
       yAxis: {
@@ -194,12 +222,14 @@ const ChipDistributionChart: React.FC<ChipDistributionChartProps> = ({
           yAxisIndex: 0,
           startValue: (() => {
             let idx = priceBins.findIndex(p => p >= priceRange.min);
-            return idx === -1 ? 0 : idx;
+            if (idx === -1) idx = 0;
+            return priceBins[idx].toFixed(2);
           })(),
           endValue: (() => {
             let idx = priceBins.findIndex(p => p > priceRange.max);
-            if (idx === -1) return priceBins.length - 1;
-            return Math.max(0, idx - 1);
+            if (idx === -1) idx = priceBins.length;
+            idx = Math.max(1, idx - 1);
+            return priceBins[idx].toFixed(2);
           })(),
           zoomLock: true
         }
@@ -227,7 +257,7 @@ const ChipDistributionChart: React.FC<ChipDistributionChartProps> = ({
         <ReactECharts
           ref={chartRef}
           option={getOption()}
-          style={{ height: '100%', width: '100%' }}
+          style={{ height: '479px', width: '100%', marginTop: '-5px' }}
           notMerge={true}
           lazyUpdate={true}
         />

@@ -72,6 +72,7 @@ const VisualizationPage: React.FC = () => {
   const [priceRange, setPriceRange] = useState<{ min: number; max: number } | null>(null);
   const [cursorPrice, setCursorPrice] = useState<number | null>(null);
   const chipDistributionTimerRef = useRef<number | null>(null); // 防抖定时器
+  const handlePriceRangeChangeRef = useRef<(() => void) | null>(null); // 价格范围更新函数引用
   const lastChipDistributionDateRef = useRef<string | null>(null); // 记录上次请求的日期，避免重复请求
   const [cursorValues, setCursorValues] = useState<{
     attackLine?: number;
@@ -251,7 +252,6 @@ const VisualizationPage: React.FC = () => {
   // 确保showChipDistributionRef始终与最新状态同步
   useEffect(() => {
     showChipDistributionRef.current = showChipDistribution;
-    console.log('showChipDistributionRef已更新:', showChipDistribution);
   }, [showChipDistribution]);
   
   // 当显示筹码峰且有股票数据时,自动获取筹码峰数据
@@ -523,18 +523,28 @@ const VisualizationPage: React.FC = () => {
       
       // 订阅主图价格范围变化，同步到筹码分布图
       const handlePriceRangeChange = () => {
-        if (!mainChartRef.current || !candlestickSeriesRef.current) return;
+        if (!mainChartRef.current || !candlestickSeriesRef.current) {
+          return;
+        }
         try {
-          // 获取价格范围
           const priceScale = mainChartRef.current.priceScale('right');
           const visibleRange = priceScale.getVisibleRange();
           if (visibleRange) {
-            setPriceRange({ min: visibleRange.from, max: visibleRange.to });
+            const options = priceScale.options() as any;
+            const bottomMargin = options.scaleMargins?.bottom ?? 0.1;
+            const topMargin = options.scaleMargins?.top ?? 0.2;
+            const totalMargin = bottomMargin + topMargin;
+            const visibleSize = visibleRange.to - visibleRange.from;
+            const totalSize = visibleSize / (1 - totalMargin);
+            const fullFrom = visibleRange.from - totalSize * bottomMargin;
+            const fullTo = visibleRange.to + totalSize * topMargin;
+            setPriceRange({ min: fullFrom, max: fullTo });
           }
         } catch (e) {
           console.warn('Failed to get price range from main chart:', e);
         }
       };
+      handlePriceRangeChangeRef.current = handlePriceRangeChange;
       
       // 初始获取价格范围
       setTimeout(() => {
@@ -874,6 +884,11 @@ const VisualizationPage: React.FC = () => {
       if (mainChartRef.current) {
         mainChartRef.current.timeScale().fitContent();
       }
+      
+      // K线数据加载后，等待图表完成价格轴计算再更新价格范围（含 scaleMargins）
+      setTimeout(() => {
+        handlePriceRangeChangeRef.current?.();
+      }, 200);
     } catch (error) {
       console.error('Error updating K-line data:', error);
     }
