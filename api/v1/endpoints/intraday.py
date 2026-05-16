@@ -690,6 +690,52 @@ def _cross_down(a_series, b_series, lookback: int = 3) -> bool:
     return False
 
 
+def _detect_kdj_top_divergence(close_series, k_series, lookback: int = 10) -> bool:
+    """检测KDJ顶背离：价格创新高但K值未创新高 → 卖出信号"""
+    import pandas as pd
+
+    n = min(len(close_series), len(k_series))
+    if n < lookback:
+        return False
+    recent_close = close_series.iloc[-lookback:]
+    recent_k = k_series.iloc[-lookback:]
+    half = lookback // 2
+    left_close = recent_close.iloc[:half].dropna()
+    right_close = recent_close.iloc[half:].dropna()
+    left_k = recent_k.iloc[:half].dropna()
+    right_k = recent_k.iloc[half:].dropna()
+    if len(left_close) == 0 or len(right_close) == 0 or len(left_k) == 0 or len(right_k) == 0:
+        return False
+    left_close_max = float(left_close.max())
+    right_close_max = float(right_close.max())
+    left_k_max = float(left_k.max())
+    right_k_max = float(right_k.max())
+    return right_close_max > left_close_max and right_k_max < left_k_max
+
+
+def _detect_kdj_bottom_divergence(close_series, k_series, lookback: int = 10) -> bool:
+    """检测KDJ底背离：价格创新低但K值未创新低 → 买入信号"""
+    import pandas as pd
+
+    n = min(len(close_series), len(k_series))
+    if n < lookback:
+        return False
+    recent_close = close_series.iloc[-lookback:]
+    recent_k = k_series.iloc[-lookback:]
+    half = lookback // 2
+    left_close = recent_close.iloc[:half].dropna()
+    right_close = recent_close.iloc[half:].dropna()
+    left_k = recent_k.iloc[:half].dropna()
+    right_k = recent_k.iloc[half:].dropna()
+    if len(left_close) == 0 or len(right_close) == 0 or len(left_k) == 0 or len(right_k) == 0:
+        return False
+    left_close_min = float(left_close.min())
+    right_close_min = float(right_close.min())
+    left_k_min = float(left_k.min())
+    right_k_min = float(right_k.min())
+    return right_close_min < left_close_min and right_k_min > left_k_min
+
+
 def _compute_main_in_out_signal(result) -> str:
     """计算主力进出信号：基于交叉与阈值判断正T/反T"""
     try:
@@ -800,8 +846,9 @@ def _compute_kdj_signal(
     oversold: float = 20,
     golden_cross_max: float = 50,
     death_cross_min: float = 80,
+    divergence_lookback: int = 10,
 ) -> str:
-    """计算KDJ信号文本"""
+    """计算KDJ信号文本，包含超买超卖、金叉死叉、顶底背离"""
     try:
         if not all(c in result.columns for c in ['K', 'D', 'J']):
             return ''
@@ -811,6 +858,10 @@ def _compute_kdj_signal(
         last_k = float(k_vals.iloc[-1]) if len(k_vals) > 0 else 50
         last_d = float(d_vals.iloc[-1]) if len(d_vals) > 0 else 50
         last_j = float(j_vals.iloc[-1]) if len(j_vals) > 0 else 50
+
+        close_vals = None
+        if 'Close' in result.columns:
+            close_vals = result['Close']
 
         # 超买/超卖判断
         if last_k > overbought and last_d > overbought and last_j > overbought:
@@ -829,6 +880,13 @@ def _compute_kdj_signal(
             return 'KDJ死叉(高位) \u2193'
         elif down:
             return 'KDJ死叉 \u2198'
+
+        # 顶背离/底背离判断
+        if close_vals is not None and len(result) >= divergence_lookback:
+            if _detect_kdj_top_divergence(close_vals, result['K'], divergence_lookback):
+                return 'KDJ顶背离 \u2193'
+            if _detect_kdj_bottom_divergence(close_vals, result['K'], divergence_lookback):
+                return 'KDJ底背离 \u2191'
 
         if last_k > last_d:
             return 'KDJ多头 \u2197'
@@ -888,6 +946,7 @@ def _generate_indicator_sub_charts(klines: list) -> list:
             oversold=engine.kdj_oversold,
             golden_cross_max=engine.kdj_golden_cross_max,
             death_cross_min=engine.kdj_death_cross_min,
+            divergence_lookback=engine.kdj_divergence_lookback,
         )
 
         # ── 1. 主力吸筹 ──
