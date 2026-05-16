@@ -820,6 +820,8 @@ class SignalEvaluator:
             return 0.0, "none", "", 0.0, weight_details
 
         for key, weight in self.BUY_WEIGHTS.items():
+            if weight == 0:
+                continue
             triggered = False
             if key == "absorption_active":
                 triggered = status.absorption_active
@@ -905,6 +907,8 @@ class SignalEvaluator:
             return 0.0, "none", "", 0.0, weight_details
 
         for key, weight in self.SELL_WEIGHTS.items():
+            if weight == 0:
+                continue
             triggered = False
             if key == "distribution_active":
                 triggered = status.distribution_active

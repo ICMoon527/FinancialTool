@@ -1084,6 +1084,7 @@ const IntradayPage: React.FC = () => {
         ];
         let buyScore = 0;
         for (const [key, label, w, trig] of factors) {
+          if (w === 0) continue;
           buyScore += trig ? w : 0;
           buyWeights.push({ key, label, weight: w, triggered: trig, score: trig ? w : 0 });
         }
@@ -1109,6 +1110,7 @@ const IntradayPage: React.FC = () => {
         ];
         let sellScore = 0;
         for (const [key, label, w, trig] of factors) {
+          if (w === 0) continue;
           sellScore += trig ? w : 0;
           sellWeights.push({ key, label, weight: w, triggered: trig, score: trig ? w : 0 });
         }

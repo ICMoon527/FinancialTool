@@ -77,7 +77,7 @@ signals:
     thresholds:
       strong: 100   # 强买入
       medium: 20    # 中买入
-      weak: 15      # 弱买入
+      weak: 10      # 弱买入
     positions:
       strong: "全仓"
       medium: "半仓"
@@ -96,15 +96,15 @@ signals:
       volume_surge: 0        # 量能放大
       macd_golden_cross: 0     # MACD金叉
       macd_bearish_recovering: 10   # MACD空头动能衰竭(买)
-      rsi_oversold: 5          # RSI超卖
-      kdj_oversold: 5          # KDJ超卖(K/D/J均<20)
+      rsi_oversold: 0          # RSI超卖
+      kdj_oversold: 0          # KDJ超卖(K/D/J均<20)
       kdj_golden_cross: 0      # KDJ金叉(低位)
 
   sell:
     thresholds:
       strong: 100   # 强卖出
       medium: 20    # 中卖出
-      weak: 15      # 弱卖出
+      weak: 10      # 弱卖出
     positions:
       strong: "全仓卖出"
       medium: "半仓卖出"
@@ -117,13 +117,13 @@ signals:
       distribution_active: 0        # 主力出货活跃
       main_out_signal: 0            # 主力进出死叉
       cyw_cross_ma_down: 0          # CYW下穿MA
-      volume_stagnation: 5          # 放量滞涨
+      volume_stagnation: 0          # 放量滞涨
       price_cross_ma5_down: 0       # 价格下穿MA5
       avg_price_overbought_fix: 0   # 均价超买回落
       macd_death_cross: 0      # MACD死叉
       macd_bullish_weakening: 10    # MACD多头动能衰减(卖)
-      rsi_overbought: 5        # RSI超买
-      kdj_overbought: 5        # KDJ超买(K/D/J均>80)
+      rsi_overbought: 0        # RSI超买
+      kdj_overbought: 0        # KDJ超买(K/D/J均>80)
       kdj_death_cross: 0       # KDJ死叉(高位)
 
   # 引力场模型配置（连续化版本，暂时禁用）

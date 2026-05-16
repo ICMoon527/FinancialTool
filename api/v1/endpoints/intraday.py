@@ -166,36 +166,47 @@ def _extract_date_from_klines(klines: list, fallback: str = "") -> str:
     return fallback or datetime.now().strftime("%Y-%m-%d")
 
 
-def _is_data_fresh_for_today(klines: list) -> bool:
-    """检查K线数据是否是今日的有效数据（日期匹配 + 交易时段内不过于陈旧）
+def _is_data_fresh(klines: list, target_date: str) -> bool:
+    """检查K线数据相对于目标日期是否新鲜
 
-    返回 False 意味着数据应该被丢弃并重新从 API 获取。
+    校验规则:
+      1. klines 为空 → 陈旧
+      2. 数据日期 ≠ 目标日期 → 陈旧
+      3. 非交易时段: 最后一条K线时间戳为 15:00（收盘）→ 新鲜，否则 → 陈旧
+      4. 交易时段内: 最后一根K线距今 ≤ 30秒 → 新鲜，否则 → 陈旧
     """
     if not klines or len(klines) == 0:
         return False
 
-    # 检查数据日期是否匹配今天
     actual_date = _extract_date_from_klines(klines)
-    today_str = datetime.now().strftime("%Y-%m-%d")
-    if actual_date != today_str:
-        logger.debug(f"数据日期 {actual_date} 与今日 {today_str} 不匹配，标记为陈旧")
+    if actual_date != target_date:
+        logger.debug(f"数据日期 {actual_date} 与目标日期 {target_date} 不匹配，标记为陈旧")
         return False
 
-    # 交易时段内，检查最后一根K线是否过于陈旧（超过5分钟无新数据需重取）
     now = datetime.now()
     if _is_in_trading_window(now):
         last_ts = klines[-1].get('timestamp', '')
         if last_ts:
             try:
                 last_dt = datetime.fromisoformat(last_ts)
-                if (now - last_dt).total_seconds() > 300:
+                if (now - last_dt).total_seconds() > 30:
                     logger.debug(
                         f"最后一根K线时间 {last_ts} 距今 {(now - last_dt).total_seconds():.0f} 秒，"
-                        f"超过5分钟阈值，标记为陈旧"
+                        f"超过30秒阈值，标记为陈旧"
                     )
                     return False
             except (ValueError, TypeError):
                 pass
+    else:
+        last_ts = klines[-1].get('timestamp', '')
+        if last_ts:
+            import re
+            match = re.search(r'(\d{2}):(\d{2})', last_ts)
+            if match:
+                hh, mm = int(match.group(1)), int(match.group(2))
+                if hh != 15 or mm > 1:
+                    logger.debug(f"非交易时段，最后一条K线时间 {last_ts} 非15:00收盘，标记为陈旧")
+                    return False
 
     return True
 
@@ -222,6 +233,33 @@ def _is_in_trading_window(now: datetime = None) -> bool:
     market_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
     market_close = now.replace(hour=15, minute=0, second=0, microsecond=0)
     return market_open <= now <= market_close
+
+
+def _is_trading_day(target_date):
+    """判断指定日期是否为A股交易日（使用交易日历）"""
+    try:
+        from stock_selector.trading_calendar import is_trading_day
+        return is_trading_day(target_date)
+    except ImportError:
+        return target_date.weekday() < 5
+
+
+def _get_nearest_trading_day(target_date):
+    """获取目标日期之前（含当天）的最近一个交易日，最多向前查找30天"""
+    try:
+        from stock_selector.trading_calendar import get_previous_trading_day
+        result = get_previous_trading_day(target_date)
+        if result is not None:
+            return result
+    except ImportError:
+        pass
+
+    current = target_date
+    for _ in range(30):
+        if current.weekday() < 5:
+            return current
+        current = current - timedelta(days=1)
+    return target_date
 
 
 def _try_multiple_sources(
@@ -1586,19 +1624,30 @@ def get_intraday_data(
     try:
         code = _normalize_stock_code(stock_code)
 
-        # 确定查询日期（仅当日数据走缓存，历史数据不缓存）
+        # 确定查询日期
+        # 原则: 如果今天非交易日或盘前(<9:30), 查询上一交易日; 否则查询今天
         if date is None:
-            q_date = date_type.today()
-            date_str = q_date.isoformat()
-            is_today = True
+            raw_date = date_type.today()
         elif len(date) == 8:
-            q_date = date_type(int(date[:4]), int(date[4:6]), int(date[6:8]))
-            date_str = f"{date[:4]}-{date[4:6]}-{date[6:8]}"
-            is_today = q_date == date_type.today()
+            raw_date = date_type(int(date[:4]), int(date[4:6]), int(date[6:8]))
         else:
-            q_date = date_type.fromisoformat(date)
-            is_today = q_date == date_type.today()
-            date_str = date
+            raw_date = date_type.fromisoformat(date)
+
+        # 非交易日或盘前，回退至最近交易日
+        q_date = raw_date
+        if _is_trading_day(raw_date):
+            now = datetime.now()
+            market_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
+            if now < market_open:
+                q_date = _get_nearest_trading_day(raw_date - timedelta(days=1))
+        else:
+            q_date = _get_nearest_trading_day(raw_date)
+
+        if q_date != raw_date:
+            logger.info(f"日期调整: {raw_date} → {q_date} (今天{'非交易日' if not _is_trading_day(raw_date) else '盘前'})")
+
+        date_str = q_date.isoformat()
+        is_today = q_date == date_type.today()
 
         # 解析实际策略
         # auto: 优先走缓存/DB，无数据时自动降级为 full（允许 API 兜底）
@@ -1613,8 +1662,8 @@ def get_intraday_data(
         if is_today:
             cached = _get_cached_full_response(code)
             if cached is not None:
-                # 校验缓存数据日期是否匹配今日，防止缓存了昨日数据
-                if _is_data_fresh_for_today([k.model_dump() for k in cached.kline_data]):
+                # 校验缓存数据日期是否匹配目标日期，防止缓存了错误日期的数据
+                if _is_data_fresh([k.model_dump() for k in cached.kline_data], date_str):
                     logger.info(f"[手动查询] {_format_stock_display(code)}: 命中完整内存缓存")
                     return cached
                 else:
@@ -1624,8 +1673,8 @@ def get_intraday_data(
         # 优先从数据库获取（包括当日：收盘后轮询停止，缓存过期时DB是最快路径）
         klines = db_manager.load_intraday_klines(code, q_date)
         if klines:
-            # 校验DB数据新鲜度（防止存储了昨日数据或盘中断数据）
-            if _is_data_fresh_for_today(klines):
+            # 校验DB数据新鲜度（防止存储了错误日期或盘中断数据）
+            if _is_data_fresh(klines, date_str):
                 logger.info(f"[手动查询] {_format_stock_display(code)}: 命中数据库，共 {len(klines)} 条K线")
             else:
                 logger.info(f"[手动查询] {_format_stock_display(code)}: 数据库数据已陈旧，丢弃并重新获取")
@@ -1634,7 +1683,7 @@ def get_intraday_data(
         if not klines:
             klines = _get_cached_klines(code)
             if klines:
-                if _is_data_fresh_for_today(klines):
+                if _is_data_fresh(klines, date_str):
                     logger.info(f"[手动查询] {_format_stock_display(code)}: 命中K线内存缓存，共 {len(klines)} 条K线")
                 else:
                     logger.info(f"[手动查询] {_format_stock_display(code)}: K线内存缓存已陈旧，丢弃并重新获取")
@@ -2080,8 +2129,10 @@ def get_batch_status(
             else:
                 snapshots[code] = StockSnapshot(stock_code=code)
 
-        # 2. 并行获取所有标的的K线 → 写DB → 写klines缓存
-        batch_results = _batch_fetch_and_store_all(stock_codes, db_manager)
+        # 2. 并行获取所有标的的K线 → 写DB → 写klines缓存（可视化页面跳过）
+        batch_results = {}
+        if not body.skip_kline_fetch:
+            batch_results = _batch_fetch_and_store_all(stock_codes, db_manager)
 
         # 3. 对 current_code 计算信号并更新 full 缓存
         current_code = body.current_code.strip()

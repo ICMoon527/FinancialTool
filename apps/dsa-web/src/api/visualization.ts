@@ -157,6 +157,7 @@ export const visualizationApi = {
     const response = await apiClient.post('/api/v1/intraday/batch-status', {
       stock_codes: stockCodes,
       current_code: '',
+      skip_kline_fetch: true,
     });
     return response.data;
   },

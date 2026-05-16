@@ -165,6 +165,7 @@ class BatchStatusRequest(BaseModel):
     stock_codes: List[str] = Field(..., description="需要查询的股票代码列表")
     current_code: str = Field("", description="当前展示的股票代码")
     include_signals: bool = Field(False, description="是否对全部股票进行信号检测（用于铃铛通知）")
+    skip_kline_fetch: bool = Field(False, description="是否跳过K线拉取（仅返回快照，可视化页面使用）")
 
 
 class SignalAlert(BaseModel):
