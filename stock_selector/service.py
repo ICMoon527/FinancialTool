@@ -72,6 +72,7 @@ class StockSelectorService:
         top_n: Optional[int] = None,
         progress_callback: Optional[Callable[[int, int, str, str], None]] = None,
         cancel_event: Optional[threading.Event] = None,
+        verbose: bool = True,
     ) -> List[StockCandidate]:
         config = get_config()
         if top_n is None:
@@ -271,7 +272,8 @@ class StockSelectorService:
                     concurrent.futures.as_completed(futures),
                     total=len(futures),
                     desc="Screening stocks",
-                    unit="stock"
+                    unit="stock",
+                    disable=not verbose,
                 ):
                     if cancel_event and cancel_event.is_set():
                         logger.info("选股任务已被取消，停止等待剩余结果")
@@ -279,7 +281,7 @@ class StockSelectorService:
                     result = future.result()
                     results.append(result)
                     completed += 1
-                    if progress_callback and completed % 10 == 0:
+                    if progress_callback:
                         code = futures[future]
                         name = code_to_name_map.get(code, code)
                         progress_callback(completed, len(stock_codes), code, name)
@@ -288,14 +290,15 @@ class StockSelectorService:
             for idx, code in enumerate(tqdm(
                 stock_codes,
                 desc="Screening stocks",
-                unit="stock"
+                unit="stock",
+                disable=not verbose,
             )):
                 if cancel_event and cancel_event.is_set():
                     logger.info("选股任务已被取消，停止筛选")
                     break
                 result = process_stock(code)
                 results.append(result)
-                if progress_callback and (idx + 1) % 10 == 0:
+                if progress_callback:
                     name = code_to_name_map.get(code, code)
                     progress_callback(idx + 1, len(stock_codes), code, name)
 
@@ -528,22 +531,9 @@ class StockSelectorService:
                 logger.debug(f"Failed to get data from database for {stock_code}: {e}")
                 daily_data = None
 
-        # 如果数据库中没有足够的数据，才从数据提供者获取
-        if daily_data is None and self.strategy_manager._data_provider:
-            try:
-                # 获取日线数据（至少150天，确保计算指标有足够数据）
-                daily_data_result = self.strategy_manager._data_provider.get_daily_data(stock_code, days=150)
-                if isinstance(daily_data_result, tuple) and len(daily_data_result) == 2:
-                    daily_data, _ = daily_data_result
-                else:
-                    daily_data = daily_data_result
-                
-                # 尝试从日线数据获取涨跌幅
-                if daily_data is not None and isinstance(daily_data, pd.DataFrame) and not daily_data.empty:
-                    if 'pct_chg' in daily_data.columns:
-                        change_pct = float(daily_data['pct_chg'].iloc[-1]) if pd.notna(daily_data['pct_chg'].iloc[-1]) else None
-            except Exception as e:
-                logger.debug(f"Failed to get daily data from provider for {stock_code}: {e}")
+        # 数据库中无足够数据时不再调用外部API，直接使用已有数据（或返回None）
+        if daily_data is None:
+            logger.debug(f"数据库中无 {stock_code} 的足够日线数据，跳过外部API获取")
 
         # 如果有日线数据但还没有计算控盘度和连紫数，才计算
         if daily_data is not None and isinstance(daily_data, pd.DataFrame) and not daily_data.empty:
@@ -670,12 +660,8 @@ class StockSelectorService:
             daily_data = daily_data[daily_data['date'].apply(is_trading_day)]
             
             if daily_data.empty or len(daily_data) < 30:
-                logger.debug(f"预加载数据清洗后不足30条，回退到原来的方法")
-                try:
-                    return self._screen_single_stock(stock_code, strategy_ids)
-                except Exception as e:
-                    logger.error("Failed to screen stock %s with fallback: %s", stock_code, e)
-                    return None
+                logger.debug(f"预加载数据清洗后不足30条，{stock_code} 数据不足，跳过")
+                return None
             
             if 'pct_chg' in daily_data.columns:
                 change_pct = float(daily_data['pct_chg'].iloc[-1]) if pd.notna(daily_data['pct_chg'].iloc[-1]) else None
@@ -690,12 +676,8 @@ class StockSelectorService:
             
             purple_days = self._calculate_purple_days(daily_data, market_data)
         else:
-            # 如果没有预加载的数据，回退到原来的方法
-            try:
-                return self._screen_single_stock(stock_code, strategy_ids)
-            except Exception as e:
-                logger.error("Failed to screen stock %s with fallback: %s", stock_code, e)
-                return None
+            logger.debug(f"无预加载数据，{stock_code} 数据不足，跳过")
+            return None
 
         # 从日线数据获取涨跌幅，不调用外部API
         # 如果日线数据中没有涨跌幅，则保持为None

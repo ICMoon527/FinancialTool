@@ -242,6 +242,7 @@ const StockSelectorPage: React.FC = () => {
   // 异步选股进度追踪
   const [screenTask, setScreenTask] = useState<ScreenProgressStatus | null>(null);
   const [showScreenModal, setShowScreenModal] = useState(false);
+  const [isStartingScreen, setIsStartingScreen] = useState(false);
   const screenTaskRef = useRef<ScreenProgressStatus | null>(null);
   screenTaskRef.current = screenTask;
   const screenPollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -382,6 +383,7 @@ const StockSelectorPage: React.FC = () => {
   }, [fetchStrategies]);
 
   const handleScreen = useCallback(async () => {
+    setIsStartingScreen(true);
     setScreeningError(null);
 
     const codes = stockCodes.trim() ? stockCodes.trim().split(/[,\s]+/).filter(Boolean) : undefined;
@@ -399,6 +401,8 @@ const StockSelectorPage: React.FC = () => {
     } catch (err) {
       setScreeningError(err instanceof Error ? err.message : '选股启动失败');
       setShowScreenModal(false);
+    } finally {
+      setIsStartingScreen(false);
     }
   }, [stockCodes, updateData, updateRealtime, selectedStrategyIds]);
 
@@ -618,10 +622,10 @@ const StockSelectorPage: React.FC = () => {
           <button
             type="button"
             onClick={handleScreen}
-            disabled={screenTask?.status === 'running'}
+            disabled={isStartingScreen || screenTask?.status === 'running'}
             className="btn-primary flex items-center gap-1.5 whitespace-nowrap"
           >
-            {screenTask?.status === 'running' ? (
+            {(isStartingScreen || screenTask?.status === 'running') ? (
               <>
                 <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
                   <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
@@ -830,12 +834,14 @@ const StockSelectorPage: React.FC = () => {
       </main>
 
       {/* 异步选股进度弹窗 */}
-      {showScreenModal && screenTask && (
+      {showScreenModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
           <div className="absolute inset-0 bg-black/60" onClick={() => {
-            if (screenTask?.status !== 'running') setShowScreenModal(false);
+            if (!isStartingScreen && screenTask?.status !== 'running') setShowScreenModal(false);
           }} />
           <div className="relative terminal-card border border-white/10 rounded-xl shadow-2xl p-5 w-full max-w-md mx-4">
+            {screenTask ? (
+              <>
             {/* 标题 + 阶段图标 */}
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2">
@@ -1010,6 +1016,17 @@ const StockSelectorPage: React.FC = () => {
                 </button>
               )}
             </div>
+                </>
+            ) : (
+              <div className="flex flex-col items-center justify-center py-8">
+                <svg className="w-8 h-8 animate-spin text-white/40 mb-3" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                </svg>
+                <p className="text-sm text-white/70 font-medium mb-1">正在启动选股任务</p>
+                <p className="text-xs text-muted">获取股票列表...</p>
+              </div>
+            )}
           </div>
         </div>
       )}

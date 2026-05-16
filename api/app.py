@@ -52,6 +52,25 @@ class CustomJSONResponse(JSONResponse):
         ).encode("utf-8")
 
 
+import logging
+
+
+class _SuppressPollingFilter(logging.Filter):
+    """过滤 uvicorn access 日志中的轮询请求。"""
+    _POLLING_PATHS = ("screen-async/status",)
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return not any(path in msg for path in self._POLLING_PATHS)
+
+
+def _suppress_access_logs() -> None:
+    """静默 uvicorn access log 中对 screen-async/status 轮询的日志输出。"""
+    uvicorn_access = logging.getLogger("uvicorn.access")
+    if uvicorn_access:
+        uvicorn_access.addFilter(_SuppressPollingFilter())
+
+
 @asynccontextmanager
 async def app_lifespan(app: FastAPI):
     """Initialize and release shared services for the app lifecycle."""
@@ -144,6 +163,9 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
     
     app.include_router(api_v1_router)
     add_error_handlers(app)
+    
+    # 静默 screen-async 轮询的 uvicorn access 日志
+    _suppress_access_logs()
     
     # ============================================================
     # 根路由和健康检查

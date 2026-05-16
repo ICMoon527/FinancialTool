@@ -563,6 +563,8 @@ def _run_screen_async(task_id: str, request: StockSelectorRequest):
             realtime_codes = request.stock_codes if request.stock_codes else all_codes
             realtime_updater = get_realtime_updater()
 
+            logger.info(f"阶段1: 开始更新实时数据，共 {len(realtime_codes)} 只股票")
+
             # 分批次更新，报告进度
             batch_size = 300
             total_batches = (len(realtime_codes) + batch_size - 1) // batch_size
@@ -605,33 +607,37 @@ def _run_screen_async(task_id: str, request: StockSelectorRequest):
             config = get_config()
             update_codes = request.stock_codes if request.stock_codes else all_codes
 
+            logger.info(f"阶段2: 开始更新历史数据，共 {len(update_codes)} 只股票")
+
             try:
                 from stock_selector.tushare_data_downloader import get_tushare_downloader
 
                 downloader = get_tushare_downloader(rate_limit_per_minute=50)
+                downloader.reset_rate_limit()
+                task["tushare_downloader"] = downloader
 
-                # Tushare 每次处理10只股票
-                tushare_batch_size = 10
-                total_batches = (len(update_codes) + tushare_batch_size - 1) // tushare_batch_size
-                for i in range(0, len(update_codes), tushare_batch_size):
+                with _screen_lock:
+                    task["current_code"] = update_codes[0] if update_codes else ""
+                    task["current_name"] = code_to_name.get(update_codes[0], "") if update_codes else ""
+
+                def download_progress(completed: int, total: int, current_code: str, current_name: str):
                     with _screen_lock:
                         if task.get("cancelled"):
-                            task["status"] = "cancelled"
-                            task["end_time"] = time.time()
+                            downloader.stop()
                             return
-
-                    batch = update_codes[i : i + tushare_batch_size]
-                    with _screen_lock:
-                        task["current_code"] = batch[0] if batch else ""
-                        task["current_name"] = code_to_name.get(batch[0], "") if batch else ""
-                        task["processed_stocks"] = i
-                        task["stage_progress"] = round((i / len(update_codes)) * 100, 1)
+                        task["stage_progress"] = round((completed / total) * 100, 1) if total > 0 else 0
+                        task["processed_stocks"] = completed
+                        task["current_code"] = current_code
+                        task["current_name"] = code_to_name.get(current_code, current_name)
+                        task["total_stocks"] = total
                         task["elapsed_seconds"] = time.time() - task["start_time"]
 
-                    try:
-                        downloader.download_data(stock_codes=batch, days=config.update_data_default_days)
-                    except Exception as e:
-                        logger.warning(f"Tushare下载批次失败: {batch[0]}-{batch[-1]}: {e}")
+                downloader.download_data(
+                    stock_codes=update_codes,
+                    days=config.update_data_default_days,
+                    verbose=False,
+                    progress_callback=download_progress,
+                )
 
             except Exception as e:
                 logger.warning(f"Tushare下载器失败: {e}")
@@ -642,6 +648,7 @@ def _run_screen_async(task_id: str, request: StockSelectorRequest):
             with _screen_lock:
                 task["stage_progress"] = 100
                 task["processed_stocks"] = len(update_codes)
+                task["elapsed_seconds"] = time.time() - task["start_time"]
 
         # --- 阶段3: 选股 ---
         with _screen_lock:
@@ -650,6 +657,8 @@ def _run_screen_async(task_id: str, request: StockSelectorRequest):
             task["processed_stocks"] = 0
             if not task.get("total_stocks"):
                 task["total_stocks"] = len(all_codes)
+
+        logger.info(f"阶段3: 开始策略筛选，共 {task['total_stocks']} 只股票")
 
         MarketDataCache.set_force_update(False)
 
@@ -675,6 +684,7 @@ def _run_screen_async(task_id: str, request: StockSelectorRequest):
             top_n=request.top_n,
             progress_callback=screening_progress,
             cancel_event=cancel_event,
+            verbose=False,
         )
 
         with _screen_lock:
@@ -866,6 +876,9 @@ def cancel_screen_async(
             cancel_event = task.get("cancel_event")
             if cancel_event:
                 cancel_event.set()
+            tushare_downloader = task.get("tushare_downloader")
+            if tushare_downloader:
+                tushare_downloader.stop()
 
         elapsed = task.get("end_time", time.time()) - task["start_time"]
 

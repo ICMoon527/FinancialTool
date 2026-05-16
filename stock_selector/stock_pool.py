@@ -148,27 +148,15 @@ class StockPoolManager:
     
     def _fetch_stock_list_from_sources(self) -> List[tuple]:
         """
-        Fetch stock list from data sources.
+        从数据源获取股票列表（仅使用 Tushare，失败则回退到数据库缓存）。
         
         Returns:
             List of tuples (code, name, market)
         """
-        # Try Baostock first (fastest, no quota limits)
-        stock_list = self._fetch_from_baostock()
-        if stock_list:
-            return stock_list
-        
-        # Try Pytdx
-        stock_list = self._fetch_from_pytdx()
-        if stock_list:
-            return stock_list
-        
-        # Try Tushare (slow, quota-limited, last resort)
         stock_list = self._fetch_from_tushare()
         if stock_list:
             return stock_list
-        
-        logger.error("All data sources failed to fetch stock list")
+
         return []
     
     def _fetch_from_tushare(self) -> List[tuple]:
@@ -415,5 +403,21 @@ def get_all_stock_code_name_pairs(force_refresh: bool = False) -> List[tuple]:
     if stock_list:
         manager._save_stock_list_to_cache(stock_list)
         logger.info(f"Fetched and cached {len(stock_list)} stocks")
-    
-    return [(code, name) for code, name, _ in stock_list]
+        return [(code, name) for code, name, _ in stock_list]
+
+    logger.warning("Tushare 获取股票列表失败，回退使用数据库缓存数据")
+    try:
+        with manager.db_manager.get_session() as session:
+            results = session.execute(
+                select(StockPoolItem.code, StockPoolItem.name)
+                .order_by(StockPoolItem.code)
+            ).all()
+            db_list = [(row.code, row.name) for row in results]
+            if db_list:
+                logger.info(f"从数据库缓存读取了 {len(db_list)} 只股票")
+                return db_list
+    except Exception as e:
+        logger.error(f"从数据库缓存读取股票列表也失败: {e}")
+
+    logger.error("所有数据源（包括数据库缓存）均无法获取股票列表")
+    return []

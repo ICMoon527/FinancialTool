@@ -235,6 +235,16 @@ class TushareFetcher(BaseFetcher):
         
         return False
     
+    def reset_rate_limit(self) -> None:
+        """
+        重置速率限制计数器
+        
+        在每次新的任务开始前调用，确保计数器不会跨任务累积。
+        """
+        self._call_count = 0
+        self._minute_start = None
+        logger.debug("Tushare 速率限制计数器已重置")
+
     def _check_rate_limit(self) -> None:
         """
         检查并执行速率限制

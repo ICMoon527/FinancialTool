@@ -15,7 +15,7 @@ warnings.filterwarnings('ignore', category=FutureWarning)
 import logging
 import time
 from datetime import date, datetime, timedelta
-from typing import Optional, List, Tuple, Dict
+from typing import Any, Callable, Optional, List, Tuple, Dict
 from tqdm import tqdm
 
 import pandas as pd
@@ -71,7 +71,15 @@ class TushareDataDownloader:
         """
         logger.info("TushareDataDownloader 收到停止信号")
         self._should_stop = True
-    
+
+    def reset_rate_limit(self) -> None:
+        """
+        重置 Tushare 速率限制计数器
+        
+        在每次新的 screen 任务开始前调用，确保计数器不会跨任务累积。
+        """
+        self.tushare_fetcher.reset_rate_limit()
+
     def _estimate_trading_days(self, start_date, end_date):
         """
         计算日期范围内的交易日数量（使用精确的交易日历）
@@ -512,7 +520,7 @@ class TushareDataDownloader:
         logger.info(f"使用日历日计算（1.5倍）：日期范围 {start_date} 至 {end_date}")
         return start_date, end_date, trading_days
     
-    def _process_batch_data(self, batch_df: pd.DataFrame, batch_stocks: List[str], start_date: date, end_date: date, stats: Dict[str, any]):
+    def _process_batch_data(self, batch_df: pd.DataFrame, batch_stocks: List[str], start_date: date, end_date: date, stats: Dict[str, Any]):
         """
         批量处理数据并保存到数据库（性能优化版）。
 
@@ -660,7 +668,7 @@ class TushareDataDownloader:
             stats['stocks_failed'] += len(codes_in_df)
             stats['failed_stocks'].extend([{'code': code, 'error': str(e)} for code in codes_in_df])
     
-    def _process_efinance_batch_data(self, batch_result: Dict[str, pd.DataFrame], batch_stocks: List[str], start_date: date, end_date: date, stats: Dict[str, any]):
+    def _process_efinance_batch_data(self, batch_result: Dict[str, pd.DataFrame], batch_stocks: List[str], start_date: date, end_date: date, stats: Dict[str, Any]):
         """
         处理 efinance 批量获取的数据
         
@@ -811,8 +819,10 @@ class TushareDataDownloader:
         self,
         stock_codes: Optional[List[str]] = None,
         days: Optional[int] = None,
-        tushare_batch_size: Optional[int] = None
-    ) -> Dict[str, any]:
+        tushare_batch_size: Optional[int] = None,
+        verbose: bool = True,
+        progress_callback: Optional[Callable[[int, int, str, str], None]] = None,
+    ) -> Dict[str, Any]:
         """
         下载股票数据
         
@@ -824,6 +834,8 @@ class TushareDataDownloader:
             stock_codes: 股票代码列表（默认所有股票）
             days: 获取多少个交易日的数据（默认 365）
             tushare_batch_size: Tushare 每批处理多少只股票（默认 13）
+            verbose: 是否输出详细进度日志（含 tqdm 进度条），后台调用时建议设为 False
+            progress_callback: 进度回调 (completed, total, current_code, current_name)
             
         Returns:
             下载统计信息
@@ -872,24 +884,25 @@ class TushareDataDownloader:
         # 按增量需求分组
         groups = self._group_stocks_by_update_need(stock_codes, start_date, end_date, days)
 
-        print("\n" + "=" * 80)
-        print(f"开始下载：{len(stock_codes)} 只股票，{days} 个交易日数据")
-        if filtered_count > 0:
-            print(f"（已过滤 {filtered_count} 只北交所股票）")
-        print(f"日期范围：{start_date} 至 {end_date}")
-        print(f"数据源：仅使用 Tushare 批量获取，失败则直接停止")
-        print("=" * 80)
-        for gk, gi in groups.items():
-            print(f"  [{gk}] {len(gi['stocks'])} 只，{gi['max_trading_days']} 天，{gi['batch_size']} 只/批，"
-                  f"日期: {gi['start_date']} ~ {gi['end_date']}")
-        print("=" * 80 + "\n")
+        if verbose:
+            logger.info("=" * 80)
+            logger.info(f"开始下载：{len(stock_codes)} 只股票，{days} 个交易日数据")
+            if filtered_count > 0:
+                logger.info(f"（已过滤 {filtered_count} 只北交所股票）")
+            logger.info(f"日期范围：{start_date} 至 {end_date}")
+            logger.info(f"数据源：仅使用 Tushare 批量获取，失败则直接停止")
+            logger.info("=" * 80)
+            for gk, gi in groups.items():
+                logger.info(f"  [{gk}] {len(gi['stocks'])} 只，{gi['max_trading_days']} 天，{gi['batch_size']} 只/批，"
+                            f"日期: {gi['start_date']} ~ {gi['end_date']}")
+            logger.info("=" * 80 + "\n")
 
         try:
             total_batches = sum(
                 (len(gi['stocks']) + gi['batch_size'] - 1) // gi['batch_size']
                 for gi in groups.values()
             )
-            pbar = tqdm(range(total_batches), desc="总体进度", unit="batch")
+            pbar = tqdm(range(total_batches), desc="总体进度", unit="batch", disable=not verbose)
             batch_count = 0
 
             for group_name, group_info in groups.items():
@@ -928,8 +941,15 @@ class TushareDataDownloader:
                             for code in batch_stocks
                         ])
                         pbar.update(1)
-                        batch_count += 1
-                        continue
+                    batch_count += 1
+                    if progress_callback:
+                        progress_callback(
+                            stats['stocks_success'] + stats['stocks_failed'],
+                            len(stock_codes),
+                            batch_stocks[-1] if batch_stocks else "",
+                            ""
+                        )
+                    continue
 
                     try:
                         batch_df = self.tushare_fetcher.get_daily_data_batch(
@@ -964,6 +984,13 @@ class TushareDataDownloader:
 
                     pbar.update(1)
                     batch_count += 1
+                    if progress_callback:
+                        progress_callback(
+                            stats['stocks_success'] + stats['stocks_failed'],
+                            len(stock_codes),
+                            batch_stocks[-1] if batch_stocks else "",
+                            ""
+                        )
 
                 stats['group_details'][group_name] = {
                     'stocks': len(group_stocks),
@@ -974,35 +1001,36 @@ class TushareDataDownloader:
                 }
         
         except KeyboardInterrupt:
-            print("\n\n下载被用户中断")
+            logger.info("\n下载被用户中断")
         except Exception as e:
-            print(f"\n\n下载过程中发生错误：{e}")
+            logger.error(f"\n下载过程中发生错误：{e}")
             logger.error(f"Download error: {e}")
         
         stats['end_time'] = datetime.now()
         duration = (stats['end_time'] - stats['start_time']).total_seconds()
         
-        print("\n" + "=" * 80)
-        print("下载完成！")
-        print("=" * 80)
-        print(f"总股票数：{stats['total_stocks']}")
-        print(f"成功：{stats['stocks_success']}")
-        print(f"跳过（已最新）：{stats.get('stocks_skipped', 0)}")
-        print(f"失败：{stats['stocks_failed']}")
-        print(f"总记录数：{stats['total_records']}")
-        for gk, gi in stats.get('group_details', {}).items():
-            print(f"  [{gk}] {gi['stocks']} 只 ({gi['trading_days']}天) | "
-                  f"成功={gi['success']} 失败={gi['failed']} | {gi['date_range']}")
-        print(f"总耗时：{duration:.2f} 秒")
-        
-        if stats['failed_stocks']:
-            print(f"\n失败股票 ({len(stats['failed_stocks'])}):")
-            for i, failed in enumerate(stats['failed_stocks'][:20], 1):
-                print(f"  {i}. {failed['code']}: {failed['error']}")
-            if len(stats['failed_stocks']) > 20:
-                print(f"  ... 还有 {len(stats['failed_stocks']) - 20} 只")
-        
-        print("=" * 80 + "\n")
+        if verbose:
+            logger.info("=" * 80)
+            logger.info("下载完成！")
+            logger.info("=" * 80)
+            logger.info(f"总股票数：{stats['total_stocks']}")
+            logger.info(f"成功：{stats['stocks_success']}")
+            logger.info(f"跳过（已最新）：{stats.get('stocks_skipped', 0)}")
+            logger.info(f"失败：{stats['stocks_failed']}")
+            logger.info(f"总记录数：{stats['total_records']}")
+            for gk, gi in stats.get('group_details', {}).items():
+                logger.info(f"  [{gk}] {gi['stocks']} 只 ({gi['trading_days']}天) | "
+                            f"成功={gi['success']} 失败={gi['failed']} | {gi['date_range']}")
+            logger.info(f"总耗时：{duration:.2f} 秒")
+
+            if stats['failed_stocks']:
+                logger.info(f"\n失败股票 ({len(stats['failed_stocks'])}):")
+                for i, failed in enumerate(stats['failed_stocks'][:20], 1):
+                    logger.info(f"  {i}. {failed['code']}: {failed['error']}")
+                if len(stats['failed_stocks']) > 20:
+                    logger.info(f"  ... 还有 {len(stats['failed_stocks']) - 20} 只")
+
+            logger.info("=" * 80 + "\n")
         
         return stats
     
@@ -1012,7 +1040,7 @@ class TushareDataDownloader:
         start_date: Optional[date] = None,
         end_date: Optional[date] = None,
         tushare_batch_size: Optional[int] = None
-    ) -> Dict[str, any]:
+    ) -> Dict[str, Any]:
         """
         下载指定日期范围的股票数据
         
