@@ -136,6 +136,15 @@ def _get_rsi_thresholds():
     return rsi_cfg.get("overbought", 65), rsi_cfg.get("oversold", 20)
 
 
+def _get_signal_weights():
+    """获取买卖信号权重配置，来自策略配置文件"""
+    config = _load_indicator_config()
+    signals_cfg = config.get("signals", {})
+    buy_cfg = signals_cfg.get("buy", {})
+    sell_cfg = signals_cfg.get("sell", {})
+    return buy_cfg.get("weights", {}), sell_cfg.get("weights", {})
+
+
 router = APIRouter()
 
 
@@ -785,6 +794,51 @@ def _compute_rsi_signal(result, overbought: float = 70, oversold: float = 30) ->
         return ''
 
 
+def _compute_kdj_signal(
+    result,
+    overbought: float = 80,
+    oversold: float = 20,
+    golden_cross_max: float = 50,
+    death_cross_min: float = 80,
+) -> str:
+    """计算KDJ信号文本"""
+    try:
+        if not all(c in result.columns for c in ['K', 'D', 'J']):
+            return ''
+        k_vals = result['K'].dropna()
+        d_vals = result['D'].dropna()
+        j_vals = result['J'].dropna()
+        last_k = float(k_vals.iloc[-1]) if len(k_vals) > 0 else 50
+        last_d = float(d_vals.iloc[-1]) if len(d_vals) > 0 else 50
+        last_j = float(j_vals.iloc[-1]) if len(j_vals) > 0 else 50
+
+        # 超买/超卖判断
+        if last_k > overbought and last_d > overbought and last_j > overbought:
+            return 'KDJ超买 \u2193'
+        if last_k < oversold and last_d < oversold and last_j < oversold:
+            return 'KDJ超卖 \u2191'
+
+        # 金叉/死叉判断
+        up = _cross_up(result['K'], result['D'])
+        down = _cross_down(result['K'], result['D'])
+        if up and last_k < golden_cross_max:
+            return 'KDJ金叉(低位) \u2191'
+        elif up:
+            return 'KDJ金叉 \u2197'
+        if down and last_k > death_cross_min:
+            return 'KDJ死叉(高位) \u2193'
+        elif down:
+            return 'KDJ死叉 \u2198'
+
+        if last_k > last_d:
+            return 'KDJ多头 \u2197'
+        else:
+            return 'KDJ空头 \u2198'
+    except Exception as e:
+        logger.warning(f'计算KDJ信号失败: {e}')
+        return ''
+
+
 def _generate_indicator_sub_charts(klines: list) -> list:
     """根据分时K线计算四大指标，生成子图数据
 
@@ -828,6 +882,13 @@ def _generate_indicator_sub_charts(klines: list) -> list:
         cyw_signal = _compute_cyw_signal(result)
         macd_signal = _compute_macd_signal(result)
         rsi_signal = _compute_rsi_signal(result, overbought=engine.rsi_overbought, oversold=engine.rsi_oversold)
+        kdj_signal = _compute_kdj_signal(
+            result,
+            overbought=engine.kdj_overbought,
+            oversold=engine.kdj_oversold,
+            golden_cross_max=engine.kdj_golden_cross_max,
+            death_cross_min=engine.kdj_death_cross_min,
+        )
 
         # ── 1. 主力吸筹 ──
         if 'absorption' in result.columns:
@@ -885,7 +946,34 @@ def _generate_indicator_sub_charts(klines: list) -> list:
                 )
             )
 
-        # ── 3. RSI ──
+        # ── 3. KDJ ──
+        kdj_k_data = []
+        kdj_d_data = []
+        kdj_j_data = []
+        if all(c in result.columns for c in ['K', 'D', 'J']):
+            for i in range(len(result)):
+                tl = time_labels[i] if i < len(time_labels) else ''
+                if not pd.isna(result['K'].iloc[i]):
+                    kdj_k_data.append(IndicatorLinePoint(time=tl, value=round(float(result['K'].iloc[i]), 2)))
+                if not pd.isna(result['D'].iloc[i]):
+                    kdj_d_data.append(IndicatorLinePoint(time=tl, value=round(float(result['D'].iloc[i]), 2)))
+                if not pd.isna(result['J'].iloc[i]):
+                    kdj_j_data.append(IndicatorLinePoint(time=tl, value=round(float(result['J'].iloc[i]), 2)))
+            sub_charts.append(
+                IndicatorSubChart(
+                    id="kdj",
+                    label="KDJ",
+                    height=110,
+                    lines=[
+                        IndicatorLine(name="K", label="K", color="#FFFF00", data=kdj_k_data),
+                        IndicatorLine(name="D", label="D", color="#4488FF", data=kdj_d_data),
+                        IndicatorLine(name="J", label="J", color="#AA44FF", data=kdj_j_data),
+                    ],
+                    signal_text=kdj_signal,
+                )
+            )
+
+        # ── 4. RSI ──
         rsi_data = []
         if 'RSI' in result.columns:
             for i in range(len(result)):
@@ -914,7 +1002,7 @@ def _generate_indicator_sub_charts(klines: list) -> list:
                 )
             )
 
-        # ── 4. 主力进出 ──
+        # ── 5. 主力进出 ──
         main_in_data = []
         main_out_data = []
         in_out_line_data = []
@@ -941,7 +1029,7 @@ def _generate_indicator_sub_charts(klines: list) -> list:
                 )
             )
 
-        # ── 5. CYW 主力控盘 ──
+        # ── 6. CYW 主力控盘 ──
         cyw_data = []
         cyw_ma_data = []
         if all(c in result.columns for c in ['CYW', 'CYW_MA']):
@@ -964,7 +1052,7 @@ def _generate_indicator_sub_charts(klines: list) -> list:
                 )
             )
 
-        # ── 6. 价格均线关系 ──
+        # ── 7. 价格均线关系 ──
         ma5_data = []
         ma20_data = []
         close_data = []
@@ -991,7 +1079,7 @@ def _generate_indicator_sub_charts(klines: list) -> list:
                 )
             )
 
-        # ── 7. 均价偏离度 ──
+        # ── 8. 均价偏离度 ──
         deviation_data = []
         if 'deviation_pct' in result.columns:
             for i in range(len(result)):
@@ -1553,6 +1641,7 @@ def get_intraday_data(
         # 加载前日快照用于指标预热
         warm_up = db_manager.load_previous_daily_summary(code, q_date)
         rsi_ob, rsi_os = _get_rsi_thresholds()
+        buy_weights, sell_weights = _get_signal_weights()
 
         response = IntradayDataResponse(
             stock_code=code,
@@ -1566,6 +1655,8 @@ def get_intraday_data(
             warm_up_summary=warm_up,
             rsi_overbought=rsi_ob,
             rsi_oversold=rsi_os,
+            buy_weights=buy_weights,
+            sell_weights=sell_weights,
         )
 
         # 当日数据写入缓存，避免 batch-status 轮询时重复计算
@@ -1963,6 +2054,7 @@ def get_batch_status(
                             pass
 
                     rsi_ob, rsi_os = _get_rsi_thresholds()
+                    buy_weights, sell_weights = _get_signal_weights()
                     current_full_data = IntradayDataResponse(
                         stock_code=code,
                         stock_name=stock_name,
@@ -1974,6 +2066,8 @@ def get_batch_status(
                         signal_summary=summary,
                         rsi_overbought=rsi_ob,
                         rsi_oversold=rsi_os,
+                        buy_weights=buy_weights,
+                        sell_weights=sell_weights,
                     )
                     _set_cached_full_response(code, current_full_data)
                 except Exception as e:

@@ -96,6 +96,8 @@ export interface IntradayDataResponse {
   };
   rsi_overbought?: number;
   rsi_oversold?: number;
+  buy_weights?: Record<string, number>;
+  sell_weights?: Record<string, number>;
 }
 
 export interface SearchHistoryItem {

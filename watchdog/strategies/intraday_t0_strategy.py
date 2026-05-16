@@ -97,6 +97,15 @@ class IndicatorSnapshot:
     rsi_oversold: bool = False
     rsi_overbought: bool = False
 
+    # KDJ
+    kdj_k: float = 50.0
+    kdj_d: float = 50.0
+    kdj_j: float = 50.0
+    kdj_oversold: bool = False
+    kdj_overbought: bool = False
+    kdj_golden_cross: bool = False
+    kdj_death_cross: bool = False
+
 
 @dataclass
 class T0Signal:
@@ -289,6 +298,17 @@ class IntradayIndicatorEngine:
         self.rsi_period = rsi_cfg.get("period", 14)
         self.rsi_overbought = rsi_cfg.get("overbought", 65)
         self.rsi_oversold = rsi_cfg.get("oversold", 20)
+
+        # KDJ参数
+        kdj_cfg = indicator_cfg.get("kdj", {})
+        self.kdj_n_period = kdj_cfg.get("n_period", 9)
+        self.kdj_m1_period = kdj_cfg.get("m1_period", 3)
+        self.kdj_m2_period = kdj_cfg.get("m2_period", 3)
+        self.kdj_overbought = kdj_cfg.get("overbought", 80)
+        self.kdj_oversold = kdj_cfg.get("oversold", 20)
+        self.kdj_golden_cross_max = kdj_cfg.get("golden_cross_max", 50)
+        self.kdj_death_cross_min = kdj_cfg.get("death_cross_min", 80)
+        self.kdj_divergence_lookback = kdj_cfg.get("divergence_lookback", 10)
 
     # ---------- 工具函数 ----------
 
@@ -535,6 +555,17 @@ class IntradayIndicatorEngine:
         result["rsi_oversold"] = result["oversold"]
         return result
 
+    # ---------- KDJ ----------
+
+    def calc_kdj(self, data: pd.DataFrame) -> pd.DataFrame:
+        """计算KDJ指标（复用 indicators.indicators.kdj.KDJ 类）"""
+        from indicators.indicators.kdj import KDJ
+        kdj = KDJ(n_period=self.kdj_n_period, m1_period=self.kdj_m1_period, m2_period=self.kdj_m2_period)
+        result = kdj.calculate(data)
+        result["kdj_golden_cross"] = result["golden_cross"]
+        result["kdj_death_cross"] = result["death_cross"]
+        return result
+
     # ---------- 综合计算 ----------
 
     def calculate_all(self, data: pd.DataFrame) -> pd.DataFrame:
@@ -544,6 +575,7 @@ class IntradayIndicatorEngine:
         df = self.calc_distribution(df)
         df = self.calc_macd(df)
         df = self.calc_rsi(df)
+        df = self.calc_kdj(df)
         df = self.calc_main_in_out(df)
         df = self.calc_cyw(df)
         df = IntradayIndicatorEngine.calc_volume_surge(df, self.vol_ma_period, self.vol_surge_ratio)
@@ -573,6 +605,8 @@ class SignalEvaluator:
         "macd_golden_cross": 2,
         "macd_bearish_recovering": 5,   # MACD空头动能衰竭(买)
         "rsi_oversold": 5,
+        "kdj_oversold": 5,              # KDJ超卖
+        "kdj_golden_cross": 3,          # KDJ金叉(低位)
     }
     BUY_LABELS = {
         "absorption_active": "主力吸筹活跃",
@@ -585,6 +619,8 @@ class SignalEvaluator:
         "macd_golden_cross": "MACD金叉",
         "macd_bearish_recovering": "MACD空头动能衰竭",
         "rsi_oversold": "RSI超卖",
+        "kdj_oversold": "KDJ超卖",
+        "kdj_golden_cross": "KDJ金叉",
     }
 
     SELL_WEIGHTS = {
@@ -597,6 +633,8 @@ class SignalEvaluator:
         "macd_death_cross": 2,
         "macd_bullish_weakening": 5,    # MACD多头动能衰减(卖)
         "rsi_overbought": 5,
+        "kdj_overbought": 5,            # KDJ超买
+        "kdj_death_cross": 3,           # KDJ死叉(高位)
     }
     SELL_LABELS = {
         "distribution_active": "主力出货活跃",
@@ -608,6 +646,8 @@ class SignalEvaluator:
         "macd_death_cross": "MACD死叉",
         "macd_bullish_weakening": "MACD多头动能衰减",
         "rsi_overbought": "RSI超买",
+        "kdj_overbought": "KDJ超买",
+        "kdj_death_cross": "KDJ死叉",
     }
 
     BUY_THRESHOLDS = {"strong": 6, "medium": 5, "weak": 4}
@@ -801,6 +841,10 @@ class SignalEvaluator:
                 triggered = status.macd_bearish_recovering
             elif key == "rsi_oversold":
                 triggered = status.rsi_oversold
+            elif key == "kdj_oversold":
+                triggered = status.kdj_oversold
+            elif key == "kdj_golden_cross":
+                triggered = status.kdj_golden_cross
 
             score += weight if triggered else 0
             weight_details.append({
@@ -880,6 +924,10 @@ class SignalEvaluator:
                 triggered = status.macd_bullish_weakening
             elif key == "rsi_overbought":
                 triggered = status.rsi_overbought
+            elif key == "kdj_overbought":
+                triggered = status.kdj_overbought
+            elif key == "kdj_death_cross":
+                triggered = status.kdj_death_cross
 
             score += weight if triggered else 0
             weight_details.append({
@@ -968,6 +1016,16 @@ class IntradayT0Strategy:
             "avg_price_deviation": {"oversold_threshold": -2.5, "overbought_threshold": 2.5},
             "macd": {"fast_period": 12, "slow_period": 26, "signal_period": 9},
             "rsi": {"period": 14, "overbought": 65, "oversold": 20},
+            "kdj": {
+                "n_period": 9,
+                "m1_period": 3,
+                "m2_period": 3,
+                "overbought": 80,
+                "oversold": 20,
+                "golden_cross_max": 50,
+                "death_cross_min": 80,
+                "divergence_lookback": 10,
+            },
         },
         "signals": {
             "buy": {
@@ -985,6 +1043,8 @@ class IntradayT0Strategy:
                     "macd_golden_cross": 2,
                     "macd_bearish_recovering": 5,
                     "rsi_oversold": 5,
+                    "kdj_oversold": 5,
+                    "kdj_golden_cross": 3,
                 },
             },
             "sell": {
@@ -1001,6 +1061,8 @@ class IntradayT0Strategy:
                     "macd_death_cross": 2,
                     "macd_bullish_weakening": 5,
                     "rsi_overbought": 5,
+                    "kdj_overbought": 5,
+                    "kdj_death_cross": 3,
                 },
             },
             "gravity": {
@@ -1134,6 +1196,21 @@ class IntradayT0Strategy:
             rsi_value=float(row.get("RSI", 50)),
             rsi_oversold=bool(row.get("rsi_oversold", False)),
             rsi_overbought=bool(row.get("rsi_overbought", False)),
+            kdj_k=float(row.get("K", 50)),
+            kdj_d=float(row.get("D", 50)),
+            kdj_j=float(row.get("J", 50)),
+            kdj_oversold=(
+                float(row.get("K", 50)) < 20
+                and float(row.get("D", 50)) < 20
+                and float(row.get("J", 50)) < 20
+            ),
+            kdj_overbought=(
+                float(row.get("K", 50)) > 80
+                and float(row.get("D", 50)) > 80
+                and float(row.get("J", 50)) > 80
+            ),
+            kdj_golden_cross=bool(row.get("kdj_golden_cross", False)),
+            kdj_death_cross=bool(row.get("kdj_death_cross", False)),
         )
 
     def feed_kline(self, kline: Dict[str, Any],

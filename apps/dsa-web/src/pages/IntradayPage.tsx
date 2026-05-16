@@ -203,6 +203,9 @@ const IntradayPage: React.FC = () => {
   const [crosshairMacdSum, setCrosshairMacdSum] = useState<number | null>(null);
   const [crosshairMacdDiff, setCrosshairMacdDiff] = useState<number | null>(null);
   const [crosshairRsiValue, setCrosshairRsiValue] = useState<number | null>(null);
+  const [crosshairKdjKValue, setCrosshairKdjKValue] = useState<number | null>(null);
+  const [crosshairKdjDValue, setCrosshairKdjDValue] = useState<number | null>(null);
+  const [crosshairKdjJValue, setCrosshairKdjJValue] = useState<number | null>(null);
   const [hoveredWeightDetails, setHoveredWeightDetails] = useState<{
     buy: WeightContribution[];
     sell: WeightContribution[];
@@ -410,6 +413,7 @@ const IntradayPage: React.FC = () => {
   const cywContainerRef = useRef<HTMLDivElement>(null);
   const macdContainerRef = useRef<HTMLDivElement>(null);
   const rsiContainerRef = useRef<HTMLDivElement>(null);
+  const kdjContainerRef = useRef<HTMLDivElement>(null);
 
   // 指标子图实例管理
   const indicatorChartsRef = useRef<Map<string, lightweightCharts.IChartApi>>(new Map());
@@ -790,9 +794,17 @@ const IntradayPage: React.FC = () => {
     macd_bar_sum: number;
     macd_bar_diff: number;
     RSI: number;
+    K: number;
+    D: number;
+    J: number;
     rsi_oversold: boolean;
     rsi_overbought: boolean;
   }>>([]);
+
+  const weightsConfigRef = useRef<{ buy: Record<string, number>; sell: Record<string, number> }>({
+    buy: {},
+    sell: {},
+  });
 
   const _crossUpTs = (aArr: number[], bArr: number[], lookback: number = 3): boolean => {
     if (aArr.length < 2 || bArr.length < 2) return false;
@@ -812,6 +824,50 @@ const IntradayPage: React.FC = () => {
       if (aArr[i - 1] >= bArr[i - 1] && aArr[i] < bArr[i]) return true;
     }
     return false;
+  };
+
+  const _detectTopDivergence = (closeArr: number[], kArr: number[], lookback: number = 10): boolean => {
+    const n = Math.min(closeArr.length, kArr.length);
+    if (n < lookback) return false;
+    const recentClose = closeArr.slice(-lookback);
+    const recentK = kArr.slice(-lookback);
+    const half = Math.floor(lookback / 2);
+    const leftClose = recentClose.slice(0, half);
+    const rightClose = recentClose.slice(half);
+    const leftK = recentK.slice(0, half);
+    const rightK = recentK.slice(half);
+    const validLeftClose = leftClose.filter((v) => !isNaN(v));
+    const validRightClose = rightClose.filter((v) => !isNaN(v));
+    const validLeftK = leftK.filter((v) => !isNaN(v));
+    const validRightK = rightK.filter((v) => !isNaN(v));
+    if (validLeftClose.length === 0 || validRightClose.length === 0 || validLeftK.length === 0 || validRightK.length === 0) return false;
+    const leftCloseMax = Math.max(...validLeftClose);
+    const rightCloseMax = Math.max(...validRightClose);
+    const leftKMax = Math.max(...validLeftK);
+    const rightKMax = Math.max(...validRightK);
+    return rightCloseMax > leftCloseMax && rightKMax < leftKMax;
+  };
+
+  const _detectBottomDivergence = (closeArr: number[], kArr: number[], lookback: number = 10): boolean => {
+    const n = Math.min(closeArr.length, kArr.length);
+    if (n < lookback) return false;
+    const recentClose = closeArr.slice(-lookback);
+    const recentK = kArr.slice(-lookback);
+    const half = Math.floor(lookback / 2);
+    const leftClose = recentClose.slice(0, half);
+    const rightClose = recentClose.slice(half);
+    const leftK = recentK.slice(0, half);
+    const rightK = recentK.slice(half);
+    const validLeftClose = leftClose.filter((v) => !isNaN(v));
+    const validRightClose = rightClose.filter((v) => !isNaN(v));
+    const validLeftK = leftK.filter((v) => !isNaN(v));
+    const validRightK = rightK.filter((v) => !isNaN(v));
+    if (validLeftClose.length === 0 || validRightClose.length === 0 || validLeftK.length === 0 || validRightK.length === 0) return false;
+    const leftCloseMin = Math.min(...validLeftClose);
+    const rightCloseMin = Math.min(...validRightClose);
+    const leftKMin = Math.min(...validLeftK);
+    const rightKMin = Math.min(...validRightK);
+    return rightCloseMin < leftCloseMin && rightKMin > leftKMin;
   };
 
   const computeSignalsAtTime = (time: Time) => {
@@ -897,6 +953,44 @@ const IntradayPage: React.FC = () => {
       }
     }
 
+    // KDJ
+    const kArr = slice.map((s) => s.K);
+    const dArr = slice.map((s) => s.D);
+    const jArr = slice.map((s) => s.J);
+    const closeArr = slice.map((s) => s.close);
+    const lastK = kArr[kArr.length - 1];
+    const lastD = dArr[dArr.length - 1];
+    const lastJ = jArr[jArr.length - 1];
+    if (!isNaN(lastK) && !isNaN(lastD) && !isNaN(lastJ)) {
+      const kdjOb = 80;
+      const kdjOs = 20;
+      if (lastK > kdjOb && lastD > kdjOb && lastJ > kdjOb) {
+        signals.kdj = 'KDJ超买 \u2193';
+      } else if (lastK < kdjOs && lastD < kdjOs && lastJ < kdjOs) {
+        signals.kdj = 'KDJ超卖 \u2191';
+      } else if (_crossUpTs(kArr, dArr)) {
+        if (lastK < 50) {
+          signals.kdj = 'KDJ金叉(低位) \u2191';
+        } else {
+          signals.kdj = 'KDJ金叉 \u2197';
+        }
+      } else if (_crossDownTs(kArr, dArr)) {
+        if (lastK > 80) {
+          signals.kdj = 'KDJ死叉(高位) \u2193';
+        } else {
+          signals.kdj = 'KDJ死叉 \u2198';
+        }
+      } else if (_detectTopDivergence(closeArr, kArr)) {
+        signals.kdj = 'KDJ顶背离 \u2193';
+      } else if (_detectBottomDivergence(closeArr, kArr)) {
+        signals.kdj = 'KDJ底背离 \u2191';
+      } else if (lastK > lastD) {
+        signals.kdj = 'KDJ多头 \u2197';
+      } else {
+        signals.kdj = 'KDJ空头 \u2198';
+      }
+    }
+
     // 主力吸筹不输出信号
     signals.absorption = '';
 
@@ -904,6 +998,10 @@ const IntradayPage: React.FC = () => {
     setCrosshairSignals({ ...signals });
 
     setCrosshairRsiValue(isNaN(lastRsi) ? null : lastRsi);
+
+    setCrosshairKdjKValue(isNaN(lastK) ? null : lastK);
+    setCrosshairKdjDValue(isNaN(lastD) ? null : lastD);
+    setCrosshairKdjJValue(isNaN(lastJ) ? null : lastJ);
 
     // 累计到当前时间点的MACD柱高度和
     const macdSum = slice.reduce((sum, s) => sum + (s.MACD_Bar || 0), 0);
@@ -941,6 +1039,15 @@ const IntradayPage: React.FC = () => {
       const rsiOversold = sn.rsi_oversold;
       const macdDeathCross = sn.macd_death_cross;
       const rsiOverbought = sn.rsi_overbought;
+      const kdjK = sn.K;
+      const kdjD = sn.D;
+      const kdjJ = sn.J;
+      const kdjKArr = slice.map((s: any) => s.K);
+      const kdjDArr = slice.map((s: any) => s.D);
+      const kdjOversold = !isNaN(kdjK) && !isNaN(kdjD) && !isNaN(kdjJ) && kdjK < 20 && kdjD < 20 && kdjJ < 20;
+      const kdjOverbought = !isNaN(kdjK) && !isNaN(kdjD) && !isNaN(kdjJ) && kdjK > 80 && kdjD > 80 && kdjJ > 80;
+      const kdjGoldenCross = _crossUpTs(kdjKArr, kdjDArr);
+      const kdjDeathCross = _crossDownTs(kdjKArr, kdjDArr);
       const mainInArr = slice.map((s) => s.main_in);
       const mainOutArr = slice.map((s) => s.main_out);
       const cywVals = slice.map((s) => s.CYW);
@@ -954,21 +1061,26 @@ const IntradayPage: React.FC = () => {
       const buyWeights: WeightContribution[] = [];
       const sellWeights: WeightContribution[] = [];
 
+      const bwMap = weightsConfigRef.current.buy;
+      const swMap = weightsConfigRef.current.sell;
+
       // 买入权重
       if (!absActive) {
         buyWeights.push({ key: 'absorption_required', label: '主力吸筹(必备条件)', weight: 0, triggered: false, score: 0 });
       } else {
         const factors: [string, string, number, boolean][] = [
-          ['absorption_active', '主力吸筹活跃', 5, absActive],
-          ['cyw_cross_ma_up', 'CYW上穿MA', 1, cywCrossUp],
-          ['main_in_signal', '主力进出金叉', 1, mainInCrossUp],
-          ['price_cross_ma5_up', '价格上穿MA5', 1, sn.price_cross_ma5_up],
-          ['avg_price_oversold_fix', '均价超卖修复', 2, sn.deviation_oversold && sn.deviation_narrowing],
-          ['price_above_ma20', '价格>MA20趋势', 1, sn.price_above_ma20],
-          ['volume_surge', '量能放大', 1, false],
-          ['macd_golden_cross', 'MACD金叉', 2, macdGoldenCross],
-          ['macd_bearish_recovering', 'MACD空头动能衰竭', 5, sn.macd_bearish_recovering],
-          ['rsi_oversold', 'RSI超卖', 5, rsiOversold],
+          ['absorption_active', '主力吸筹活跃', bwMap.absorption_active ?? 5, absActive],
+          ['cyw_cross_ma_up', 'CYW上穿MA', bwMap.cyw_cross_ma_up ?? 1, cywCrossUp],
+          ['main_in_signal', '主力进出金叉', bwMap.main_in_signal ?? 1, mainInCrossUp],
+          ['price_cross_ma5_up', '价格上穿MA5', bwMap.price_cross_ma5_up ?? 1, sn.price_cross_ma5_up],
+          ['avg_price_oversold_fix', '均价超卖修复', bwMap.avg_price_oversold_fix ?? 2, sn.deviation_oversold && sn.deviation_narrowing],
+          ['price_above_ma20', '价格>MA20趋势', bwMap.price_above_ma20 ?? 1, sn.price_above_ma20],
+          ['volume_surge', '量能放大', bwMap.volume_surge ?? 1, false],
+          ['macd_golden_cross', 'MACD金叉', bwMap.macd_golden_cross ?? 2, macdGoldenCross],
+          ['macd_bearish_recovering', 'MACD空头动能衰竭', bwMap.macd_bearish_recovering ?? 5, sn.macd_bearish_recovering],
+          ['rsi_oversold', 'RSI超卖', bwMap.rsi_oversold ?? 5, rsiOversold],
+          ['kdj_oversold', 'KDJ超卖', bwMap.kdj_oversold ?? 5, kdjOversold],
+          ['kdj_golden_cross', 'KDJ金叉', bwMap.kdj_golden_cross ?? 3, kdjGoldenCross],
         ];
         let buyScore = 0;
         for (const [key, label, w, trig] of factors) {
@@ -983,15 +1095,17 @@ const IntradayPage: React.FC = () => {
         sellWeights.push({ key: 'distribution_required', label: '主力出货(必备条件)', weight: 0, triggered: false, score: 0 });
       } else {
         const factors: [string, string, number, boolean][] = [
-          ['distribution_active', '主力出货活跃', 0, distActive],
-          ['main_out_signal', '主力进出死叉', 0, mainInCrossDown],
-          ['cyw_cross_ma_down', 'CYW下穿MA', 0, cywCrossDown],
-          ['volume_stagnation', '放量滞涨', 3, false],
-          ['price_cross_ma5_down', '价格下穿MA5', 2, sn.price_cross_ma5_down],
-          ['avg_price_overbought_fix', '均价超买回落', 2, sn.deviation_overbought && sn.deviation_peaking],
-          ['macd_death_cross', 'MACD死叉', 2, macdDeathCross],
-          ['macd_bullish_weakening', 'MACD多头动能衰减', 5, sn.macd_bullish_weakening],
-          ['rsi_overbought', 'RSI超买', 5, rsiOverbought],
+          ['distribution_active', '主力出货活跃', swMap.distribution_active ?? 0, distActive],
+          ['main_out_signal', '主力进出死叉', swMap.main_out_signal ?? 0, mainInCrossDown],
+          ['cyw_cross_ma_down', 'CYW下穿MA', swMap.cyw_cross_ma_down ?? 0, cywCrossDown],
+          ['volume_stagnation', '放量滞涨', swMap.volume_stagnation ?? 3, false],
+          ['price_cross_ma5_down', '价格下穿MA5', swMap.price_cross_ma5_down ?? 2, sn.price_cross_ma5_down],
+          ['avg_price_overbought_fix', '均价超买回落', swMap.avg_price_overbought_fix ?? 2, sn.deviation_overbought && sn.deviation_peaking],
+          ['macd_death_cross', 'MACD死叉', swMap.macd_death_cross ?? 2, macdDeathCross],
+          ['macd_bullish_weakening', 'MACD多头动能衰减', swMap.macd_bullish_weakening ?? 5, sn.macd_bullish_weakening],
+          ['rsi_overbought', 'RSI超买', swMap.rsi_overbought ?? 5, rsiOverbought],
+          ['kdj_overbought', 'KDJ超买', swMap.kdj_overbought ?? 5, kdjOverbought],
+          ['kdj_death_cross', 'KDJ死叉', swMap.kdj_death_cross ?? 3, kdjDeathCross],
         ];
         let sellScore = 0;
         for (const [key, label, w, trig] of factors) {
@@ -1054,7 +1168,7 @@ const IntradayPage: React.FC = () => {
       // ── 清空所有容器DOM，确保完全干净（防御性措施，解决chart.remove()可能残留canvas的问题）──
       try { container.innerHTML = ''; } catch (e) { /* ignore */ }
       try { volContainer.innerHTML = ''; } catch (e) { /* ignore */ }
-      [absorptionContainerRef, mainInOutContainerRef, cywContainerRef, macdContainerRef, rsiContainerRef].forEach((ref) => {
+      [absorptionContainerRef, mainInOutContainerRef, cywContainerRef, macdContainerRef, rsiContainerRef, kdjContainerRef].forEach((ref) => {
         if (ref.current) {
           try { ref.current.innerHTML = ''; } catch (e) { /* ignore */ }
         }
@@ -1363,6 +1477,9 @@ const IntradayPage: React.FC = () => {
           setCrosshairMacdSum(null);
           setCrosshairMacdDiff(null);
           setCrosshairRsiValue(null);
+          setCrosshairKdjKValue(null);
+          setCrosshairKdjDValue(null);
+          setCrosshairKdjJValue(null);
         },
       });
       syncEngineRef.current.register(
@@ -1432,6 +1549,7 @@ const IntradayPage: React.FC = () => {
           CYW: number; CYW_MA: number; absorption: number;
           close: number; ma5: number; ma20: number; deviation_pct: number;
           DIF: number; DEA: number; MACD_Bar: number; RSI: number;
+          K: number; D: number; J: number;
         }>();
         (data.indicator_sub_charts || []).forEach((sc) => {
           (sc.lines || []).forEach((line) => {
@@ -1444,6 +1562,7 @@ const IntradayPage: React.FC = () => {
                 CYW: NaN, CYW_MA: NaN, absorption: NaN,
                 close: NaN, ma5: NaN, ma20: NaN, deviation_pct: NaN,
                 DIF: NaN, DEA: NaN, MACD_Bar: NaN, RSI: NaN,
+                K: NaN, D: NaN, J: NaN,
               });
               const entry = map.get(t)!;
               if (line.name === 'dominant_power') entry.dominant_power = pt.value;
@@ -1460,6 +1579,9 @@ const IntradayPage: React.FC = () => {
               else if (line.name === 'DEA') entry.DEA = pt.value;
               else if (line.name === 'MACD_Bar') entry.MACD_Bar = pt.value;
               else if (line.name === 'RSI') entry.RSI = pt.value;
+              else if (line.name === 'K') entry.K = pt.value;
+              else if (line.name === 'D') entry.D = pt.value;
+              else if (line.name === 'J') entry.J = pt.value;
             });
           });
         });
@@ -1515,6 +1637,10 @@ const IntradayPage: React.FC = () => {
         });
       };
       buildSnapshot();
+      weightsConfigRef.current = {
+        buy: (data as any).buy_weights || {},
+        sell: (data as any).sell_weights || {},
+      };
 
       // ── 主图十字线联动 ──
       const mainHandleCrosshairMove = (param: any) => {
@@ -1569,6 +1695,7 @@ const IntradayPage: React.FC = () => {
         { id: 'rsi', ref: rsiContainerRef },
         { id: 'main_in_out', ref: mainInOutContainerRef },
         { id: 'cyw', ref: cywContainerRef },
+        { id: 'kdj', ref: kdjContainerRef },
       ];
 
       const subCharts = data.indicator_sub_charts || [];
@@ -1734,6 +1861,52 @@ const IntradayPage: React.FC = () => {
                 priceLineVisible: false,
                 lastValueVisible: false,
                 crosshairMarkerVisible: false,
+              });
+              ls.setData(pts);
+              lineSeriesList.push(ls);
+            }
+          } else if (sc.id === 'kdj') {
+            if (!line.data || line.data.length === 0) continue;
+            const pts = line.data
+              .filter((pt: any) => pt.time)
+              .map((pt: any) => {
+                const ms = parseTimestamp(pt.time, date);
+                return { time: Math.floor(ms / 1000) as any, value: pt.value };
+              })
+              .sort((a: any, b: any) => (a.time as number) - (b.time as number));
+
+            if (!engineDataCollected && line.name === 'K') {
+              engineData = padDataStart(pts, firstKlineTime);
+              engineDataCollected = true;
+            }
+
+            if (line.name === 'K' && pts.length > 0) {
+              const ls = subChart.addSeries(lightweightCharts.LineSeries, {
+                color: '#FFFF00',
+                lineWidth: 1,
+                priceLineVisible: false,
+                lastValueVisible: true,
+                crosshairMarkerVisible: true,
+              });
+              ls.setData(pts);
+              lineSeriesList.push(ls);
+            } else if (line.name === 'D' && pts.length > 0) {
+              const ls = subChart.addSeries(lightweightCharts.LineSeries, {
+                color: '#4488FF',
+                lineWidth: 1,
+                priceLineVisible: false,
+                lastValueVisible: true,
+                crosshairMarkerVisible: true,
+              });
+              ls.setData(pts);
+              lineSeriesList.push(ls);
+            } else if (line.name === 'J' && pts.length > 0) {
+              const ls = subChart.addSeries(lightweightCharts.LineSeries, {
+                color: '#AA44FF',
+                lineWidth: 1,
+                priceLineVisible: false,
+                lastValueVisible: true,
+                crosshairMarkerVisible: true,
               });
               ls.setData(pts);
               lineSeriesList.push(ls);
@@ -2881,6 +3054,7 @@ const IntradayPage: React.FC = () => {
                     rsi: rsiContainerRef,
                     main_in_out: mainInOutContainerRef,
                     cyw: cywContainerRef,
+                    kdj: kdjContainerRef,
                   };
                   const ref = containerRefMap[sc.id];
 
@@ -2954,6 +3128,41 @@ const IntradayPage: React.FC = () => {
                                 }}
                               >
                                 柱高差 {displayDiff >= 0 ? '+' : ''}{displayDiff.toFixed(2)}
+                              </span>
+                            );
+                          })()}
+                          {sc.id === 'kdj' && (() => {
+                            const displayK = isCrosshairActive && crosshairKdjKValue !== null
+                              ? crosshairKdjKValue
+                              : (() => {
+                                  const kLine = sc.lines.find((l: any) => l.name === 'K');
+                                  const kData = kLine?.data || [];
+                                  return kData.length > 0 ? kData[kData.length - 1].value : null;
+                                })();
+                            const displayD = isCrosshairActive && crosshairKdjDValue !== null
+                              ? crosshairKdjDValue
+                              : (() => {
+                                  const dLine = sc.lines.find((l: any) => l.name === 'D');
+                                  const dData = dLine?.data || [];
+                                  return dData.length > 0 ? dData[dData.length - 1].value : null;
+                                })();
+                            const displayJ = isCrosshairActive && crosshairKdjJValue !== null
+                              ? crosshairKdjJValue
+                              : (() => {
+                                  const jLine = sc.lines.find((l: any) => l.name === 'J');
+                                  const jData = jLine?.data || [];
+                                  return jData.length > 0 ? jData[jData.length - 1].value : null;
+                                })();
+                            if (displayK == null) return null;
+                            return (
+                              <span
+                                className="text-[10px] font-mono font-medium px-1.5 py-px rounded"
+                                style={{
+                                  color: '#FFFF00',
+                                  backgroundColor: 'rgba(255,255,0,0.1)',
+                                }}
+                              >
+                                K {displayK.toFixed(2)} D {displayD?.toFixed(2)} J {displayJ?.toFixed(2)}
                               </span>
                             );
                           })()}

@@ -60,6 +60,17 @@ indicators:
     overbought: 65
     oversold: 20
 
+  # KDJ
+  kdj:
+    n_period: 9          # RSV 周期
+    m1_period: 3         # K 值平滑周期
+    m2_period: 3         # D 值平滑周期
+    overbought: 80       # 超买阈值（K/D/J 均大于此值判定超买）
+    oversold: 20         # 超卖阈值（K/D/J 均小于此值判定超卖）
+    golden_cross_max: 50 # 低位金叉阈值（金叉时 K 值小于此值才视为低位有效买入信号）
+    death_cross_min: 80  # 高位死叉阈值（死叉时 K 值大于此值才视为高位有效卖出信号）
+    divergence_lookback: 10  # 顶底背离检测回看周期
+
 # 信号配置
 signals:
   buy:
@@ -76,7 +87,7 @@ signals:
       medium: 0.65
       weak: 0.40
     weights:
-      absorption_active: 5   # 主力吸筹活跃
+      absorption_active: 0   # 主力吸筹活跃
       cyw_cross_ma_up: 0     # CYW上穿MA
       main_in_signal: 0      # 主力进出金叉
       price_cross_ma5_up: 0  # 价格上穿MA5
@@ -84,8 +95,10 @@ signals:
       price_above_ma20: 0    # 价格>MA20趋势加成
       volume_surge: 0        # 量能放大
       macd_golden_cross: 0     # MACD金叉
-      macd_bearish_recovering: 5   # MACD空头动能衰竭(买)
+      macd_bearish_recovering: 10   # MACD空头动能衰竭(买)
       rsi_oversold: 5          # RSI超卖
+      kdj_oversold: 5          # KDJ超卖(K/D/J均<20)
+      kdj_golden_cross: 0      # KDJ金叉(低位)
 
   sell:
     thresholds:
@@ -101,15 +114,17 @@ signals:
       medium: 0.65
       weak: 0.40
     weights:
-      distribution_active: 5        # 主力出货活跃
+      distribution_active: 0        # 主力出货活跃
       main_out_signal: 0            # 主力进出死叉
       cyw_cross_ma_down: 0          # CYW下穿MA
       volume_stagnation: 0          # 放量滞涨
       price_cross_ma5_down: 0       # 价格下穿MA5
       avg_price_overbought_fix: 0   # 均价超买回落
       macd_death_cross: 0      # MACD死叉
-      macd_bullish_weakening: 5    # MACD多头动能衰减(卖)
+      macd_bullish_weakening: 10    # MACD多头动能衰减(卖)
       rsi_overbought: 5        # RSI超买
+      kdj_overbought: 5        # KDJ超买(K/D/J均>80)
+      kdj_death_cross: 0       # KDJ死叉(高位)
 
   # 引力场模型配置（连续化版本，暂时禁用）
   gravity:

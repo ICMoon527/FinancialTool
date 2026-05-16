@@ -103,6 +103,8 @@ class IntradayDataResponse(BaseModel):
     signal_summary: Dict[str, Any] = Field(default_factory=dict)
     rsi_overbought: float = Field(default=65, description="RSI超买阈值（来自策略配置）")
     rsi_oversold: float = Field(default=20, description="RSI超卖阈值（来自策略配置）")
+    buy_weights: Dict[str, float] = Field(default_factory=dict, description="买入信号权重配置（来自策略配置）")
+    sell_weights: Dict[str, float] = Field(default_factory=dict, description="卖出信号权重配置（来自策略配置）")
     warm_up_summary: Optional[Dict[str, Any]] = Field(
         default=None,
         description="前一个交易日的分时终值快照，用于开盘时指标预热（含价格、成交量、技术指标终值）",
