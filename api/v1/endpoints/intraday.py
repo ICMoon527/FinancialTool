@@ -774,63 +774,6 @@ def _detect_kdj_bottom_divergence(close_series, k_series, lookback: int = 10) ->
     return right_close_min < left_close_min and right_k_min > left_k_min
 
 
-def _compute_main_in_out_signal(result) -> str:
-    """计算主力进出信号：基于交叉与阈值判断正T/反T"""
-    try:
-        if 'main_in' not in result.columns or 'main_out' not in result.columns:
-            return ''
-        main_in = result['main_in']
-        main_out = result['main_out']
-        up = _cross_up(main_in, main_out)
-        down = _cross_down(main_in, main_out)
-        in_vals = main_in.dropna()
-        out_vals = main_out.dropna()
-        last_in = float(in_vals.iloc[-1]) if len(in_vals) > 0 else 50
-        last_out = float(out_vals.iloc[-1]) if len(out_vals) > 0 else 50
-        if up:
-            recent_min = float(in_vals.iloc[-min(5, len(in_vals)):].min())
-            if recent_min < 30:
-                return '反T买回 ↑'
-            return '正T买入 ↑'
-        if down:
-            recent_max = float(in_vals.iloc[-min(5, len(in_vals)):].max())
-            if recent_max > 70:
-                return '反T卖出 ↓'
-            return '正T卖出 ↓'
-        if last_in > last_out:
-            return '主力流入 ↗'
-        else:
-            return '主力流出 ↘'
-    except Exception as e:
-        logger.warning(f'计算主力进出信号失败: {e}')
-        return ''
-
-
-def _compute_cyw_signal(result) -> str:
-    """计算CYW控盘信号：基于数值正负与CYW/MA交叉判断"""
-    try:
-        if 'CYW' not in result.columns or 'CYW_MA' not in result.columns:
-            return ''
-        cyw = result['CYW']
-        cyw_ma = result['CYW_MA']
-        up = _cross_up(cyw, cyw_ma)
-        down = _cross_down(cyw, cyw_ma)
-        cyw_vals = cyw.dropna()
-        last = float(cyw_vals.iloc[-1]) if len(cyw_vals) > 0 else 0
-        if up:
-            prefix = '控盘中' if last > 0 else '弱控盘'
-            return f'{prefix} 买入 ↑'
-        elif down:
-            return '未控盘 卖出 ↓'
-        elif last > 0:
-            return '控盘中 ↗'
-        else:
-            return '未控盘 ↘'
-    except Exception as e:
-        logger.warning(f'计算CYW信号失败: {e}')
-        return ''
-
-
 def _compute_macd_signal(result) -> str:
     """计算MACD信号文本"""
     try:
@@ -974,8 +917,6 @@ def _generate_indicator_sub_charts(klines: list) -> list:
 
         sub_charts = []
 
-        main_signal = _compute_main_in_out_signal(result)
-        cyw_signal = _compute_cyw_signal(result)
         macd_signal = _compute_macd_signal(result)
         rsi_signal = _compute_rsi_signal(result, overbought=engine.rsi_overbought, oversold=engine.rsi_oversold)
         kdj_signal = _compute_kdj_signal(
@@ -1099,57 +1040,7 @@ def _generate_indicator_sub_charts(klines: list) -> list:
                 )
             )
 
-        # ── 5. 主力进出 ──
-        main_in_data = []
-        main_out_data = []
-        in_out_line_data = []
-        if all(c in result.columns for c in ['main_in', 'main_out', 'in_out_line']):
-            for i in range(len(result)):
-                tl = time_labels[i] if i < len(time_labels) else ''
-                if not pd.isna(result['main_in'].iloc[i]):
-                    main_in_data.append(IndicatorLinePoint(time=tl, value=round(float(result['main_in'].iloc[i]), 4)))
-                if not pd.isna(result['main_out'].iloc[i]):
-                    main_out_data.append(IndicatorLinePoint(time=tl, value=round(float(result['main_out'].iloc[i]), 4)))
-                if not pd.isna(result['in_out_line'].iloc[i]):
-                    in_out_line_data.append(IndicatorLinePoint(time=tl, value=round(float(result['in_out_line'].iloc[i]), 4)))
-            sub_charts.append(
-                IndicatorSubChart(
-                    id="main_in_out",
-                    label="主力进出",
-                    height=110,
-                    lines=[
-                        IndicatorLine(name="main_in", label="主力流入", color="#FF4444", data=main_in_data),
-                        IndicatorLine(name="main_out", label="主力流出", color="#4488FF", data=main_out_data),
-                        IndicatorLine(name="in_out_line", label="进出线", color="#FFAA00", data=in_out_line_data),
-                    ],
-                    signal_text=main_signal,
-                )
-            )
-
-        # ── 6. CYW 主力控盘 ──
-        cyw_data = []
-        cyw_ma_data = []
-        if all(c in result.columns for c in ['CYW', 'CYW_MA']):
-            for i in range(len(result)):
-                tl = time_labels[i] if i < len(time_labels) else ''
-                if not pd.isna(result['CYW'].iloc[i]):
-                    cyw_data.append(IndicatorLinePoint(time=tl, value=round(float(result['CYW'].iloc[i]), 4)))
-                if not pd.isna(result['CYW_MA'].iloc[i]):
-                    cyw_ma_data.append(IndicatorLinePoint(time=tl, value=round(float(result['CYW_MA'].iloc[i]), 4)))
-            sub_charts.append(
-                IndicatorSubChart(
-                    id="cyw",
-                    label="CYW 控盘",
-                    height=110,
-                    lines=[
-                        IndicatorLine(name="CYW", label="CYW", color="#44BBFF", data=cyw_data),
-                        IndicatorLine(name="CYW_MA", label="MA", color="#EEEEEE", data=cyw_ma_data),
-                    ],
-                    signal_text=cyw_signal,
-                )
-            )
-
-        # ── 7. 价格均线关系 ──
+        # ── 5. 价格均线关系 ──
         ma5_data = []
         ma20_data = []
         close_data = []
@@ -1176,7 +1067,7 @@ def _generate_indicator_sub_charts(klines: list) -> list:
                 )
             )
 
-        # ── 8. 均价偏离度 ──
+        # ── 6. 均价偏离度 ──
         deviation_data = []
         if 'deviation_pct' in result.columns:
             for i in range(len(result)):

@@ -261,17 +261,6 @@ class IntradayIndicatorEngine:
         self.dist_var7_period = dist_cfg.get("var7_period", self.abs_var7_period)
         self.dist_filter_threshold = dist_cfg.get("filter_threshold", self.abs_filter_threshold)
 
-        # 主力进出参数
-        mio_cfg = indicator_cfg.get("main_in_out", {})
-        self.mio_hhv_llv_period = mio_cfg.get("hhv_llv_period", 10)
-        self.mio_ema_period1 = mio_cfg.get("ema_period1", 2)
-        self.mio_ema_period2 = mio_cfg.get("ema_period2", 3)
-
-        # CYW参数
-        cyw_cfg = indicator_cfg.get("cyw", {})
-        self.cyw_period = cyw_cfg.get("period", 5)
-        self.cyw_ma_period = cyw_cfg.get("ma_period", 5)
-
         # 量能参数
         volume_cfg = indicator_cfg.get("volume", {})
         self.vol_ma_period = volume_cfg.get("ma_period", 5)
@@ -576,8 +565,6 @@ class IntradayIndicatorEngine:
         df = self.calc_macd(df)
         df = self.calc_rsi(df)
         df = self.calc_kdj(df)
-        df = self.calc_main_in_out(df)
-        df = self.calc_cyw(df)
         df = IntradayIndicatorEngine.calc_volume_surge(df, self.vol_ma_period, self.vol_surge_ratio)
         df = self.calc_price_ma_relation(df)
         df = self.calc_avg_price_deviation(df)
@@ -596,8 +583,6 @@ class SignalEvaluator:
 
     BUY_WEIGHTS = {
         "absorption_active": 5,
-        "cyw_cross_ma_up": 1,
-        "main_in_signal": 1,
         "price_cross_ma5_up": 1,
         "avg_price_oversold_fix": 2,
         "price_above_ma20": 1,
@@ -610,8 +595,6 @@ class SignalEvaluator:
     }
     BUY_LABELS = {
         "absorption_active": "主力吸筹活跃",
-        "cyw_cross_ma_up": "CYW上穿MA",
-        "main_in_signal": "主力进出金叉",
         "price_cross_ma5_up": "价格上穿MA5",
         "avg_price_oversold_fix": "均价超卖修复",
         "price_above_ma20": "价格>MA20趋势",
@@ -625,8 +608,6 @@ class SignalEvaluator:
 
     SELL_WEIGHTS = {
         "distribution_active": 0,
-        "main_out_signal": 0,
-        "cyw_cross_ma_down": 0,
         "volume_stagnation": 3,
         "price_cross_ma5_down": 2,
         "avg_price_overbought_fix": 2,
@@ -638,8 +619,6 @@ class SignalEvaluator:
     }
     SELL_LABELS = {
         "distribution_active": "主力出货活跃",
-        "main_out_signal": "主力进出死叉",
-        "cyw_cross_ma_down": "CYW下穿MA",
         "volume_stagnation": "放量滞涨",
         "price_cross_ma5_down": "价格下穿MA5",
         "avg_price_overbought_fix": "均价超买回落",
@@ -825,10 +804,6 @@ class SignalEvaluator:
             triggered = False
             if key == "absorption_active":
                 triggered = status.absorption_active
-            elif key == "cyw_cross_ma_up":
-                triggered = status.cyw_cross_ma_up
-            elif key == "main_in_signal":
-                triggered = status.main_in_cross_up
             elif key == "price_cross_ma5_up":
                 triggered = status.price_cross_ma5_up
             elif key == "avg_price_oversold_fix":
@@ -912,10 +887,6 @@ class SignalEvaluator:
             triggered = False
             if key == "distribution_active":
                 triggered = status.distribution_active
-            elif key == "main_out_signal":
-                triggered = status.main_in_cross_down
-            elif key == "cyw_cross_ma_down":
-                triggered = status.cyw_cross_ma_down
             elif key == "volume_stagnation":
                 triggered = status.volume_surge
             elif key == "price_cross_ma5_down":
@@ -1013,8 +984,6 @@ class IntradayT0Strategy:
         "data": {"max_window": 200, "kline_freq": "1min"},
         "indicators": {
             "absorption": {"llv_period": 10, "hhv_period": 10, "var7_period": 20, "filter_threshold": 0.5},
-            "main_in_out": {"hhv_llv_period": 10, "ema_period1": 2, "ema_period2": 3},
-            "cyw": {"period": 5, "ma_period": 5},
             "volume": {"ma_period": 5, "surge_ratio": 1.5},
             "price_ma": {"ma5_period": 5, "ma20_period": 20},
             "avg_price_deviation": {"oversold_threshold": -2.5, "overbought_threshold": 2.5},
@@ -1038,8 +1007,6 @@ class IntradayT0Strategy:
                 "confidence": {"strong": 0.85, "medium": 0.65, "weak": 0.40},
                 "weights": {
                     "absorption_active": 5,
-                    "cyw_cross_ma_up": 1,
-                    "main_in_signal": 1,
                     "price_cross_ma5_up": 1,
                     "avg_price_oversold_fix": 2,
                     "price_above_ma20": 1,
@@ -1057,8 +1024,6 @@ class IntradayT0Strategy:
                 "confidence": {"strong": 0.85, "medium": 0.65, "weak": 0.40},
                 "weights": {
                     "distribution_active": 0,
-                    "main_out_signal": 0,
-                    "cyw_cross_ma_down": 0,
                     "volume_stagnation": 3,
                     "price_cross_ma5_down": 2,
                     "avg_price_overbought_fix": 2,
@@ -1172,16 +1137,6 @@ class IntradayT0Strategy:
             absorption_value=float(row.get("absorption", 0)),
             absorption_active=float(row.get("absorption", 0)) > 0,
             distribution_active=float(row.get("absorption", 0)) < 0,
-            main_in_value=float(row.get("main_in", 50)),
-            main_out_value=float(row.get("main_out", 50)),
-            main_in_cross_up=bool(row.get("main_in_signal", False)),
-            main_in_cross_down=bool(row.get("main_out_signal", False)),
-            cyw_value=float(row.get("CYW", 0)),
-            cyw_ma=float(row.get("CYW_MA", 0)),
-            cyw_positive=bool(row.get("CYW_positive", False)),
-            cyw_rising=bool(row.get("CYW_rising", False)),
-            cyw_cross_ma_up=bool(row.get("CYW_cross_ma_up", False)),
-            cyw_cross_ma_down=bool(row.get("CYW_cross_ma_down", False)),
             volume_surge=bool(row.get("volume_surge", False)),
             volume_shrink=bool(row.get("volume_shrink", False)),
             ma5=float(row.get("ma5", 0)),

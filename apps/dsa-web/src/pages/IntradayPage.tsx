@@ -409,8 +409,6 @@ const IntradayPage: React.FC = () => {
 
   // 指标子图容器 refs
   const absorptionContainerRef = useRef<HTMLDivElement>(null);
-  const mainInOutContainerRef = useRef<HTMLDivElement>(null);
-  const cywContainerRef = useRef<HTMLDivElement>(null);
   const macdContainerRef = useRef<HTMLDivElement>(null);
   const rsiContainerRef = useRef<HTMLDivElement>(null);
   const kdjContainerRef = useRef<HTMLDivElement>(null);
@@ -765,10 +763,6 @@ const IntradayPage: React.FC = () => {
   const snapshotRef = useRef<Array<{
     time: number;
     dominant_power: number;
-    main_in: number;
-    main_out: number;
-    CYW: number;
-    CYW_MA: number;
     absorption: number;
     close: number;
     ma5: number;
@@ -877,45 +871,6 @@ const IntradayPage: React.FC = () => {
 
     const slice = snapshots.slice(0, idx + 1);
     const signals: Record<string, string> = {};
-
-    // 主力进出
-    const mi = slice.map((s) => s.main_in);
-    const mo = slice.map((s) => s.main_out);
-    const lastMi = mi[mi.length - 1];
-    const lastMo = mo[mo.length - 1];
-    if (!isNaN(lastMi) && !isNaN(lastMo)) {
-      const up = _crossUpTs(mi, mo);
-      const down = _crossDownTs(mi, mo);
-      if (up) {
-        const recentMin = Math.min(...mi.slice(-5));
-        signals.main_in_out = recentMin < 30 ? '反T买回 ↑' : '正T买入 ↑';
-      } else if (down) {
-        const recentMax = Math.max(...mi.slice(-5));
-        signals.main_in_out = recentMax > 70 ? '反T卖出 ↓' : '正T卖出 ↓';
-      } else if (lastMi > lastMo) {
-        signals.main_in_out = '主力流入 ↗';
-      } else {
-        signals.main_in_out = '主力流出 ↘';
-      }
-    }
-
-    // CYW
-    const cywArr = slice.map((s) => s.CYW);
-    const cywMaArr = slice.map((s) => s.CYW_MA);
-    const lastCyw = cywArr[cywArr.length - 1];
-    if (!isNaN(lastCyw)) {
-      const up = _crossUpTs(cywArr, cywMaArr);
-      const down = _crossDownTs(cywArr, cywMaArr);
-      if (up) {
-        signals.cyw = (lastCyw > 0 ? '控盘中' : '弱控盘') + ' 买入 ↑';
-      } else if (down) {
-        signals.cyw = '未控盘 卖出 ↓';
-      } else if (lastCyw > 0) {
-        signals.cyw = '控盘中 ↗';
-      } else {
-        signals.cyw = '未控盘 ↘';
-      }
-    }
 
     // MACD
     const difArr = slice.map((s) => s.DIF);
@@ -1048,15 +1003,6 @@ const IntradayPage: React.FC = () => {
       const kdjOverbought = !isNaN(kdjK) && !isNaN(kdjD) && !isNaN(kdjJ) && kdjK > 80 && kdjD > 80 && kdjJ > 80;
       const kdjGoldenCross = _crossUpTs(kdjKArr, kdjDArr);
       const kdjDeathCross = _crossDownTs(kdjKArr, kdjDArr);
-      const mainInArr = slice.map((s) => s.main_in);
-      const mainOutArr = slice.map((s) => s.main_out);
-      const cywVals = slice.map((s) => s.CYW);
-      const cywMaVals = slice.map((s) => s.CYW_MA);
-
-      const mainInCrossUp = _crossUpTs(mainInArr, mainOutArr);
-      const mainInCrossDown = _crossDownTs(mainInArr, mainOutArr);
-      const cywCrossUp = _crossUpTs(cywVals, cywMaVals);
-      const cywCrossDown = _crossDownTs(cywVals, cywMaVals);
 
       const buyWeights: WeightContribution[] = [];
       const sellWeights: WeightContribution[] = [];
@@ -1070,8 +1016,6 @@ const IntradayPage: React.FC = () => {
       } else {
         const factors: [string, string, number, boolean][] = [
           ['absorption_active', '主力吸筹活跃', bwMap.absorption_active ?? 5, absActive],
-          ['cyw_cross_ma_up', 'CYW上穿MA', bwMap.cyw_cross_ma_up ?? 1, cywCrossUp],
-          ['main_in_signal', '主力进出金叉', bwMap.main_in_signal ?? 1, mainInCrossUp],
           ['price_cross_ma5_up', '价格上穿MA5', bwMap.price_cross_ma5_up ?? 1, sn.price_cross_ma5_up],
           ['avg_price_oversold_fix', '均价超卖修复', bwMap.avg_price_oversold_fix ?? 2, sn.deviation_oversold && sn.deviation_narrowing],
           ['price_above_ma20', '价格>MA20趋势', bwMap.price_above_ma20 ?? 1, sn.price_above_ma20],
@@ -1097,8 +1041,6 @@ const IntradayPage: React.FC = () => {
       } else {
         const factors: [string, string, number, boolean][] = [
           ['distribution_active', '主力出货活跃', swMap.distribution_active ?? 0, distActive],
-          ['main_out_signal', '主力进出死叉', swMap.main_out_signal ?? 0, mainInCrossDown],
-          ['cyw_cross_ma_down', 'CYW下穿MA', swMap.cyw_cross_ma_down ?? 0, cywCrossDown],
           ['volume_stagnation', '放量滞涨', swMap.volume_stagnation ?? 3, false],
           ['price_cross_ma5_down', '价格下穿MA5', swMap.price_cross_ma5_down ?? 2, sn.price_cross_ma5_down],
           ['avg_price_overbought_fix', '均价超买回落', swMap.avg_price_overbought_fix ?? 2, sn.deviation_overbought && sn.deviation_peaking],
@@ -1170,7 +1112,7 @@ const IntradayPage: React.FC = () => {
       // ── 清空所有容器DOM，确保完全干净（防御性措施，解决chart.remove()可能残留canvas的问题）──
       try { container.innerHTML = ''; } catch (e) { /* ignore */ }
       try { volContainer.innerHTML = ''; } catch (e) { /* ignore */ }
-      [absorptionContainerRef, mainInOutContainerRef, cywContainerRef, macdContainerRef, rsiContainerRef, kdjContainerRef].forEach((ref) => {
+      [absorptionContainerRef, macdContainerRef, rsiContainerRef, kdjContainerRef].forEach((ref) => {
         if (ref.current) {
           try { ref.current.innerHTML = ''; } catch (e) { /* ignore */ }
         }
@@ -1547,8 +1489,7 @@ const IntradayPage: React.FC = () => {
       // ── 构建快照数据：融合K线和指标子图 ──
       const buildSnapshot = () => {
         const map = new Map<number, {
-          dominant_power: number; main_in: number; main_out: number;
-          CYW: number; CYW_MA: number; absorption: number;
+          dominant_power: number; absorption: number;
           close: number; ma5: number; ma20: number; deviation_pct: number;
           DIF: number; DEA: number; MACD_Bar: number; RSI: number;
           K: number; D: number; J: number;
@@ -1560,18 +1501,13 @@ const IntradayPage: React.FC = () => {
               const t = Math.floor(ms / 1000);
               if (t <= 0) return;
               if (!map.has(t)) map.set(t, {
-                dominant_power: NaN, main_in: NaN, main_out: NaN,
-                CYW: NaN, CYW_MA: NaN, absorption: NaN,
+                dominant_power: NaN, absorption: NaN,
                 close: NaN, ma5: NaN, ma20: NaN, deviation_pct: NaN,
                 DIF: NaN, DEA: NaN, MACD_Bar: NaN, RSI: NaN,
                 K: NaN, D: NaN, J: NaN,
               });
               const entry = map.get(t)!;
               if (line.name === 'dominant_power') entry.dominant_power = pt.value;
-              else if (line.name === 'main_in') entry.main_in = pt.value;
-              else if (line.name === 'main_out') entry.main_out = pt.value;
-              else if (line.name === 'CYW') entry.CYW = pt.value;
-              else if (line.name === 'CYW_MA') entry.CYW_MA = pt.value;
               else if (line.name === 'absorption') entry.absorption = pt.value;
               else if (line.name === 'close') entry.close = pt.value;
               else if (line.name === 'ma5') entry.ma5 = pt.value;
@@ -1707,8 +1643,6 @@ const IntradayPage: React.FC = () => {
         { id: 'absorption', ref: absorptionContainerRef },
         { id: 'macd', ref: macdContainerRef },
         { id: 'rsi', ref: rsiContainerRef },
-        { id: 'main_in_out', ref: mainInOutContainerRef },
-        { id: 'cyw', ref: cywContainerRef },
         { id: 'kdj', ref: kdjContainerRef },
       ];
 
@@ -3061,13 +2995,11 @@ const IntradayPage: React.FC = () => {
             {/* 四大指标子图 */}
             {(intradayData?.indicator_sub_charts?.length ?? 0) > 0 && (
               <div className="space-y-2 mb-4">
-                {intradayData?.indicator_sub_charts?.filter((sc) => sc.id !== 'price_ma' && sc.id !== 'avg_price_deviation').map((sc) => {
+                {intradayData?.indicator_sub_charts?.map((sc) => {
                   const containerRefMap: Record<string, React.RefObject<HTMLDivElement | null>> = {
                     absorption: absorptionContainerRef,
                     macd: macdContainerRef,
                     rsi: rsiContainerRef,
-                    main_in_out: mainInOutContainerRef,
-                    cyw: cywContainerRef,
                     kdj: kdjContainerRef,
                   };
                   const ref = containerRefMap[sc.id];

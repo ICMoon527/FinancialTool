@@ -22,17 +22,6 @@ indicators:
     var7_period: 90
     filter_threshold: 0.05
 
-  # 主力进出
-  main_in_out:
-    hhv_llv_period: 10   # 日线30 → 分时10
-    ema_period1: 2        # 日线3 → 分时2
-    ema_period2: 3        # 日线5 → 分时3
-
-  # CYW 主力控盘
-  cyw:
-    period: 5             # 日线10 → 分时5
-    ma_period: 5
-
   # 量能
   volume:
     ma_period: 5
@@ -76,7 +65,7 @@ signals:
   buy:
     thresholds:
       strong: 100   # 强买入
-      medium: 20    # 中买入
+      medium: 30    # 中买入
       weak: 10      # 弱买入
     positions:
       strong: "全仓"
@@ -88,8 +77,6 @@ signals:
       weak: 0.40
     weights:
       absorption_active: 0   # 主力吸筹活跃
-      cyw_cross_ma_up: 0     # CYW上穿MA
-      main_in_signal: 0      # 主力进出金叉
       price_cross_ma5_up: 0  # 价格上穿MA5
       avg_price_oversold_fix: 0  # 均价超卖修复
       price_above_ma20: 0    # 价格>MA20趋势加成
@@ -103,7 +90,7 @@ signals:
   sell:
     thresholds:
       strong: 100   # 强卖出
-      medium: 20    # 中卖出
+      medium: 30    # 中卖出
       weak: 10      # 弱卖出
     positions:
       strong: "全仓卖出"
@@ -115,8 +102,6 @@ signals:
       weak: 0.40
     weights:
       distribution_active: 0        # 主力出货活跃
-      main_out_signal: 0            # 主力进出死叉
-      cyw_cross_ma_down: 0          # CYW下穿MA
       volume_stagnation: 0          # 放量滞涨
       price_cross_ma5_down: 0       # 价格下穿MA5
       avg_price_overbought_fix: 0   # 均价超买回落
