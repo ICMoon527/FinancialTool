@@ -188,6 +188,7 @@ export async function getIntradayData(
   stockCode: string,
   date?: string,
   strategy?: string,
+  warmupEnabled?: boolean,
 ): Promise<IntradayDataResponse> {
   const params = new URLSearchParams();
   if (date) {
@@ -195,6 +196,9 @@ export async function getIntradayData(
   }
   if (strategy) {
     params.set('strategy', strategy);
+  }
+  if (warmupEnabled !== undefined) {
+    params.set('warmup_enabled', String(warmupEnabled));
   }
   const query = params.toString();
   const url = `${API_BASE}/data/${stockCode}${query ? `?${query}` : ''}`;

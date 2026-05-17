@@ -1108,6 +1108,40 @@ def _generate_indicator_sub_charts(klines: list, warmup_klines: list = None) -> 
 
         
 
+        # ── 均价偏离度（基于当日 VWAP，不含预热数据） ──
+        deviation_pct_data = []
+        if "Close" in today_result.columns and "Volume" in today_result.columns:
+            close = today_result["Close"]
+            volume = today_result["Volume"].fillna(0)
+            cum_amount = (close * volume).cumsum()
+            cum_vol = volume.cumsum().replace(0, float("nan"))
+            today_avg_price = cum_amount / cum_vol
+            today_avg_price = today_avg_price.fillna(close)
+            today_deviation = (close - today_avg_price) / today_avg_price * 100
+
+            for i in range(len(today_result)):
+                tl = time_labels[i] if i < len(time_labels) else ""
+                if not pd.isna(today_deviation.iloc[i]):
+                    deviation_pct_data.append(
+                        IndicatorLinePoint(time=tl, value=round(float(today_deviation.iloc[i]), 2))
+                    )
+            sub_charts.append(
+                IndicatorSubChart(
+                    id="avg_price_deviation",
+                    label="均价偏离",
+                    height=110,
+                    lines=[
+                        IndicatorLine(
+                            name="deviation_pct",
+                            label="均价偏离度",
+                            color="#d1d4dc",
+                            data=deviation_pct_data,
+                        ),
+                    ],
+                    signal_text="",
+                )
+            )
+
         logger.debug(f"生成 {len(sub_charts)} 个指标子图")
 
         # ── 5. MFI 资金流量 ──
@@ -2764,6 +2798,11 @@ def save_search_history(
                 "search_time TEXT DEFAULT ''"
                 ")"
             ))
+
+            session.execute(
+                text("DELETE FROM intraday_search_history WHERE stock_code = :stock_code"),
+                {"stock_code": request.stock_code},
+            )
 
             session.execute(text(
                 "INSERT INTO intraday_search_history (stock_code, stock_name, search_date, search_time) "

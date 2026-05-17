@@ -206,6 +206,8 @@ const IntradayPage: React.FC = () => {
   const [crosshairKdjKValue, setCrosshairKdjKValue] = useState<number | null>(null);
   const [crosshairKdjDValue, setCrosshairKdjDValue] = useState<number | null>(null);
   const [crosshairKdjJValue, setCrosshairKdjJValue] = useState<number | null>(null);
+  const [crosshairDeviationPct, setCrosshairDeviationPct] = useState<number | null>(null);
+  const [warmupEnabled, setWarmupEnabled] = useState(true);
   const [hoveredWeightDetails, setHoveredWeightDetails] = useState<{
     buy: WeightContribution[];
     sell: WeightContribution[];
@@ -537,7 +539,7 @@ const IntradayPage: React.FC = () => {
         // 盘中优先从缓存/DB读取（轮询已保证数据最新）
         if (isTradingTime()) {
           try {
-            const data = await getIntradayData(first.stock_code, dateParam, 'cache_only');
+            const data = await getIntradayData(first.stock_code, dateParam, 'cache_only', warmupEnabled);
             return data;
           } catch (e: any) {
             // cache_only 无数据时降级走完整API链路
@@ -545,7 +547,7 @@ const IntradayPage: React.FC = () => {
           }
         }
         // 盘后直接走 full 链路
-        return getIntradayData(first.stock_code, dateParam, 'full');
+        return getIntradayData(first.stock_code, dateParam, 'full', warmupEnabled);
       };
       loadData()
         .then(data => {
@@ -1005,6 +1007,9 @@ const IntradayPage: React.FC = () => {
       setCrosshairMacdDiff(null);
     }
 
+    const curSn = snapshots[idx];
+    setCrosshairDeviationPct(curSn && !isNaN(curSn.deviation_pct) ? curSn.deviation_pct : null);
+
     setIsCrosshairActive(true);
 
     // 查找该时间点附近的信号
@@ -1460,6 +1465,7 @@ const IntradayPage: React.FC = () => {
           setCrosshairKdjKValue(null);
           setCrosshairKdjDValue(null);
           setCrosshairKdjJValue(null);
+          setCrosshairDeviationPct(null);
         },
       });
       syncEngineRef.current.register(
@@ -2099,7 +2105,7 @@ const IntradayPage: React.FC = () => {
   }, [intradayData, renderData, priceRangeEnabled]);
 
   // ── 搜索 ──
-  const handleSearch = useCallback(async () => {
+  const handleSearch = useCallback(async (overrideWarmup?: boolean) => {
     const v = validateStockCode(stockCode);
     setInputError(v.valid ? undefined : v.message);
     if (!v.valid) return;
@@ -2110,7 +2116,7 @@ const IntradayPage: React.FC = () => {
       // 盘中轮询已保证缓存/DB最新，手动搜索用 cache_only 避免额外API压力
       // 盘后直接走 full 链路，跳过 cache_only 的无效尝试
       const dataStrategy = isTradingTime() ? 'cache_only' : 'full';
-      const data = await getIntradayData(stockCode, dateParam, dataStrategy);
+      const data = await getIntradayData(stockCode, dateParam, dataStrategy, overrideWarmup ?? warmupEnabled);
       setIntradayData(data);
       setInputError(undefined);
 
@@ -2128,7 +2134,7 @@ const IntradayPage: React.FC = () => {
     } finally {
       setIsLoading(false);
     }
-  }, [stockCode, loadHistory, isTradingTime, todayDateStr]);
+  }, [stockCode, loadHistory, isTradingTime, todayDateStr, warmupEnabled]);
 
   // 回车搜索
   const handleKeyDown = useCallback(
@@ -2164,7 +2170,7 @@ const IntradayPage: React.FC = () => {
         // 盘中轮询已保证缓存/DB最新，手动点击用 cache_only 避免额外API压力
         // 盘后直接走 full 链路，跳过 cache_only 的无效尝试
         const dataStrategy = isTradingTime() ? 'cache_only' : 'full';
-        const data = await getIntradayData(item.stock_code, dateParam, dataStrategy);
+        const data = await getIntradayData(item.stock_code, dateParam, dataStrategy, warmupEnabled);
         setIntradayData(data);
         setInputError(undefined);
         // 更新搜索历史时间戳，使该纪录置顶
@@ -2543,7 +2549,7 @@ const IntradayPage: React.FC = () => {
 
           <button
             type="button"
-            onClick={handleSearch}
+            onClick={() => handleSearch()}
             disabled={!stockCode || isLoading}
             className="btn-primary flex items-center gap-1.5 whitespace-nowrap flex-shrink-0"
           >
@@ -2560,23 +2566,29 @@ const IntradayPage: React.FC = () => {
             )}
           </button>
 
-          {/* 预热状态指示器 */}
+          {/* 预热状态切换按钮 */}
           {intradayData?.warmup_info && (
-            <div
-              className={`flex items-center gap-1 px-2 py-1 text-xs font-medium rounded border flex-shrink-0 transition-colors ${
+            <button
+              type="button"
+              onClick={() => {
+                const newVal = !warmupEnabled;
+                setWarmupEnabled(newVal);
+                handleSearch(newVal);
+              }}
+              className={`text-sm border rounded-lg px-3 py-2 transition-colors flex items-center gap-1.5 ${
                 intradayData.warmup_info.enabled && intradayData.warmup_info.last_klines_count > 0
-                  ? 'text-green border-green/30 bg-green/10'
-                  : 'text-amber border-amber/30 bg-amber/10'
+                  ? 'bg-green/15 border-green/40 text-green hover:bg-green/20'
+                  : 'bg-[#1a1a2e] border-white/10 text-muted hover:border-white/20'
               }`}
               title={
                 intradayData.warmup_info.enabled && intradayData.warmup_info.last_klines_count > 0
-                  ? `预热已启用，前日 ${intradayData.warmup_info.last_klines_count} 根K线 (${intradayData.warmup_info.prev_date})`
+                  ? `预热已启用，前日 ${intradayData.warmup_info.last_klines_count} 根K线 (${intradayData.warmup_info.prev_date}) — 点击关闭`
                   : intradayData.warmup_info.enabled
-                    ? '预热已启用但无前日数据，指标从零状态计算'
-                    : '预热未启用'
+                    ? '预热已启用但无前日数据，指标从零状态计算 — 点击关闭'
+                    : '预热未启用 — 点击开启'
               }
             >
-              <span className={`w-1.5 h-1.5 rounded-full ${
+              <span className={`w-2 h-2 rounded-full ${
                 intradayData.warmup_info.enabled && intradayData.warmup_info.last_klines_count > 0
                   ? 'bg-green'
                   : 'bg-amber'
@@ -2584,7 +2596,7 @@ const IntradayPage: React.FC = () => {
               {intradayData.warmup_info.enabled && intradayData.warmup_info.last_klines_count > 0
                 ? '预热中'
                 : '无预热'}
-            </div>
+            </button>
           )}
 
           <button
@@ -3087,7 +3099,41 @@ const IntradayPage: React.FC = () => {
 
             {/* 主K线图 */}
             <Card variant="default" padding="none" className="mb-2">
-              <div ref={chartContainerRef} style={{ width: '100%', height: CHART_HEIGHT }} />
+              <div style={{ position: 'relative' }}>
+                <div ref={chartContainerRef} style={{ width: '100%', height: CHART_HEIGHT }} />
+                {(() => {
+                  const devPct = isCrosshairActive
+                    ? crosshairDeviationPct
+                    : (intradayData?.indicator_sub_charts
+                        ?.find((sc: any) => sc.id === 'avg_price_deviation')
+                        ?.lines?.find((l: any) => l.name === 'deviation_pct')
+                        ?.data?.slice(-1)[0]?.value ?? null);
+                  if (devPct == null) return null;
+                  const isOversold = devPct <= -2.5;
+                  const isOverbought = devPct >= 2.5;
+                  const textColor = isOverbought ? '#FF4444' : isOversold ? '#44FF44' : '#d1d4dc';
+                  return (
+                    <div
+                      style={{
+                        position: 'absolute',
+                        top: 8,
+                        left: 12,
+                        zIndex: 10,
+                        fontSize: 12,
+                        fontFamily: 'monospace',
+                        fontWeight: 600,
+                        color: textColor,
+                        backgroundColor: 'rgba(26,26,46,0.85)',
+                        padding: '2px 8px',
+                        borderRadius: 4,
+                        pointerEvents: 'none',
+                      }}
+                    >
+                      均价偏离 {devPct >= 0 ? '+' : ''}{devPct.toFixed(2)}%
+                    </div>
+                  );
+                })()}
+              </div>
             </Card>
 
             {/* 成交量子图 */}
@@ -3098,7 +3144,7 @@ const IntradayPage: React.FC = () => {
             {/* 四大指标子图 */}
             {(intradayData?.indicator_sub_charts?.length ?? 0) > 0 && (
               <div className="space-y-2 mb-4">
-                {intradayData?.indicator_sub_charts?.map((sc) => {
+                {intradayData?.indicator_sub_charts?.filter((sc) => sc.id !== 'price_ma' && sc.id !== 'avg_price_deviation').map((sc) => {
                   const containerRefMap: Record<string, React.RefObject<HTMLDivElement | null>> = {
                     absorption: absorptionContainerRef,
                     macd: macdContainerRef,
