@@ -46,7 +46,7 @@ indicators:
   # RSI
   rsi:
     period: 14
-    overbought: 70
+    overbought: 80
     oversold: 20
 
   # KDJ
@@ -59,6 +59,12 @@ indicators:
     golden_cross_max: 50 # 低位金叉阈值（金叉时 K 值小于此值才视为低位有效买入信号）
     death_cross_min: 80  # 高位死叉阈值（死叉时 K 值大于此值才视为高位有效卖出信号）
     divergence_lookback: 10  # 顶底背离检测回看周期
+
+  # MFI 资金流量指标（成交量加权的RSI）
+  mfi:
+    period: 10               # 计算周期，日内1分钟K线建议6-10
+    overbought: 80          # 超买阈值
+    oversold: 20            # 超卖阈值
 
 # 信号配置
 signals:
@@ -86,6 +92,9 @@ signals:
       rsi_oversold: 0          # RSI超卖
       kdj_oversold: 0          # KDJ超卖(K/D/J均<20)
       kdj_golden_cross: 0      # KDJ金叉(低位)
+      mfi_oversold: 0           # MFI超卖
+      mfi_cross_50_up: 0        # MFI上穿50线
+      mfi_bottom_divergence: 0  # MFI底背离
 
   sell:
     thresholds:
@@ -110,6 +119,9 @@ signals:
       rsi_overbought: 0        # RSI超买
       kdj_overbought: 0        # KDJ超买(K/D/J均>80)
       kdj_death_cross: 0       # KDJ死叉(高位)
+      mfi_overbought: 0         # MFI超买
+      mfi_cross_50_down: 0      # MFI下穿50线
+      mfi_top_divergence: 0     # MFI顶背离
 
   # 引力场模型配置（连续化版本，暂时禁用）
   gravity:

@@ -75,6 +75,7 @@ export interface IndicatorSubChart {
   height: number;
   lines: IndicatorLine[];
   signal_text: string;
+  metadata?: Record<string, any> | null;
 }
 
 export interface IntradayDataResponse {
@@ -96,8 +97,16 @@ export interface IntradayDataResponse {
   };
   rsi_overbought?: number;
   rsi_oversold?: number;
+  mfi_overbought?: number;
+  mfi_oversold?: number;
   buy_weights?: Record<string, number>;
   sell_weights?: Record<string, number>;
+  warm_up_summary?: Record<string, any> | null;
+  warmup_info?: {
+    enabled: boolean;
+    last_klines_count: number;
+    prev_date: string;
+  } | null;
 }
 
 export interface SearchHistoryItem {

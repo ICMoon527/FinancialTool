@@ -136,6 +136,14 @@ def _get_rsi_thresholds():
     return rsi_cfg.get("overbought", 65), rsi_cfg.get("oversold", 20)
 
 
+def _get_mfi_thresholds():
+    """获取MFI超买超卖阈值，来自策略配置文件"""
+    config = _load_indicator_config()
+    indicators = config.get("indicators", {})
+    mfi_cfg = indicators.get("mfi", {})
+    return mfi_cfg.get("overbought", 80), mfi_cfg.get("oversold", 20)
+
+
 def _get_signal_weights():
     """获取买卖信号权重配置，来自策略配置文件"""
     config = _load_indicator_config()
@@ -548,12 +556,13 @@ def _get_intraday_klines(stock_code: str, date_str: Optional[str] = None) -> lis
         )
 
 
-def _run_t0_strategy(klines: list, reference_lines: list = None) -> tuple:
+def _run_t0_strategy(klines: list, reference_lines: list = None, warmup_klines: list = None) -> tuple:
     """对分时K线数据运行做T策略，生成信号列表
 
     Args:
         klines: 分时K线字典列表
         reference_lines: 日线级参考线列表
+        warmup_klines: 前一交易日最后N根K线，用于指标预热
 
     Returns:
         (signals_list, signal_summary_dict)
@@ -567,6 +576,10 @@ def _run_t0_strategy(klines: list, reference_lines: list = None) -> tuple:
         )
         config_path = os.path.normpath(config_path)
         strategy = IntradayT0Strategy(stock_code="temp", stock_name="", config_path=config_path)
+
+        # 预热：将前一日最后N根K线加载到buffer中
+        if warmup_klines:
+            strategy.buffer.warmup(warmup_klines)
 
         ref_lines_raw = reference_lines or []
         ref_lines = [
@@ -878,11 +891,33 @@ def _compute_kdj_signal(
         return ''
 
 
-def _generate_indicator_sub_charts(klines: list) -> list:
+def _compute_mfi_signal(result, overbought: float = 80, oversold: float = 20) -> str:
+    """计算MFI最新信号文本"""
+    if result is None or result.empty:
+        return ""
+    last = result.iloc[-1]
+    signals = []
+    if last.get("mfi_overbought"):
+        signals.append("超买")
+    if last.get("mfi_oversold"):
+        signals.append("超卖")
+    if last.get("mfi_cross_50_up"):
+        signals.append("上穿50线")
+    if last.get("mfi_cross_50_down"):
+        signals.append("下穿50线")
+    if last.get("mfi_bottom_divergence"):
+        signals.append("底背离")
+    if last.get("mfi_top_divergence"):
+        signals.append("顶背离")
+    return "、".join(signals)
+
+
+def _generate_indicator_sub_charts(klines: list, warmup_klines: list = None) -> list:
     """根据分时K线计算四大指标，生成子图数据
 
     Args:
         klines: 分时K线字典列表
+        warmup_klines: 前一交易日最后N根K线，用于指标预热（可选）
 
     Returns:
         List[IndicatorSubChart] 四个指标的子图数据
@@ -894,12 +929,23 @@ def _generate_indicator_sub_charts(klines: list) -> list:
         if 'Amount' not in df.columns:
             df['Amount'] = df['Close'] * df['Volume'] if 'Close' in df.columns and 'Volume' in df.columns else 0.0
 
+        warmup_rows = 0
+        if warmup_klines:
+            warmup_df = pd.DataFrame(warmup_klines)
+            if 'Amount' not in warmup_df.columns:
+                warmup_df['Amount'] = warmup_df['Close'] * warmup_df['Volume'] if 'Close' in warmup_df.columns and 'Volume' in warmup_df.columns else 0.0
+            warmup_rows = len(warmup_df)
+            df = pd.concat([warmup_df, df], ignore_index=True)
+
         engine = IntradayIndicatorEngine(config=_load_indicator_config())
         result = engine.calculate_all(df)
 
+        # 预热行数后的数据才是当天数据，生成时间标签时跳过预热行
+        today_result = result.iloc[warmup_rows:]
+
         # 提取时间标签 "HH:MM"，尽量对齐K线的timestamp格式
         time_labels = []
-        for _, row in result.iterrows():
+        for _, row in today_result.iterrows():
             ts = row.get('timestamp', '')
             if isinstance(ts, str):
                 ts = ts.strip()
@@ -929,9 +975,9 @@ def _generate_indicator_sub_charts(klines: list) -> list:
         )
 
         # ── 1. 主力吸筹 ──
-        if 'absorption' in result.columns:
+        if 'absorption' in today_result.columns:
             absorption_data = []
-            for i, v in enumerate(result['absorption']):
+            for i, v in enumerate(today_result['absorption']):
                 if not pd.isna(v):
                     absorption_data.append(IndicatorLinePoint(time=time_labels[i] if i < len(time_labels) else '', value=round(float(v), 4)))
             sub_charts.append(
@@ -961,15 +1007,34 @@ def _generate_indicator_sub_charts(klines: list) -> list:
         macd_dif_data = []
         macd_dea_data = []
         macd_bar_data = []
-        if all(c in result.columns for c in ['DIF', 'DEA', 'MACD_Bar']):
-            for i in range(len(result)):
+        macd_metadata = None
+        if all(c in today_result.columns for c in ['DIF', 'DEA', 'MACD_Bar']):
+            # 从完整结果（含预热数据）提取MACD元数据，确保与后端策略算法一致
+            if all(c in result.columns for c in ['MACD_Bar_Sum', 'MACD_Bar_Diff']):
+                last_row = result.iloc[-1]
+                bar_sum = float(last_row.get('MACD_Bar_Sum', 0)) if pd.notna(last_row.get('MACD_Bar_Sum')) else 0
+                bar_diff = float(last_row.get('MACD_Bar_Diff', 0)) if pd.notna(last_row.get('MACD_Bar_Diff')) else 0
+                bar_sums = []
+                bar_diffs = []
+                for i in range(len(today_result)):
+                    bs = today_result['MACD_Bar_Sum'].iloc[i]
+                    bd = today_result['MACD_Bar_Diff'].iloc[i]
+                    bar_sums.append(round(float(bs), 2) if pd.notna(bs) else 0)
+                    bar_diffs.append(round(float(bd), 2) if pd.notna(bd) else 0)
+                macd_metadata = {
+                    "bar_sum": round(bar_sum, 2),
+                    "bar_diff": round(bar_diff, 2),
+                    "bar_sums": bar_sums,
+                    "bar_diffs": bar_diffs,
+                }
+            for i in range(len(today_result)):
                 tl = time_labels[i] if i < len(time_labels) else ''
-                if not pd.isna(result['DIF'].iloc[i]):
-                    macd_dif_data.append(IndicatorLinePoint(time=tl, value=round(float(result['DIF'].iloc[i]), 4)))
-                if not pd.isna(result['DEA'].iloc[i]):
-                    macd_dea_data.append(IndicatorLinePoint(time=tl, value=round(float(result['DEA'].iloc[i]), 4)))
-                if not pd.isna(result['MACD_Bar'].iloc[i]):
-                    macd_bar_data.append(IndicatorLinePoint(time=tl, value=round(float(result['MACD_Bar'].iloc[i]), 4)))
+                if not pd.isna(today_result['DIF'].iloc[i]):
+                    macd_dif_data.append(IndicatorLinePoint(time=tl, value=round(float(today_result['DIF'].iloc[i]), 4)))
+                if not pd.isna(today_result['DEA'].iloc[i]):
+                    macd_dea_data.append(IndicatorLinePoint(time=tl, value=round(float(today_result['DEA'].iloc[i]), 4)))
+                if not pd.isna(today_result['MACD_Bar'].iloc[i]):
+                    macd_bar_data.append(IndicatorLinePoint(time=tl, value=round(float(today_result['MACD_Bar'].iloc[i]), 4)))
             sub_charts.append(
                 IndicatorSubChart(
                     id="macd",
@@ -981,6 +1046,7 @@ def _generate_indicator_sub_charts(klines: list) -> list:
                         IndicatorLine(name="MACD_Bar", label="MACD柱", color="#FF4444", data=macd_bar_data),
                     ],
                     signal_text=macd_signal,
+                    metadata=macd_metadata,
                 )
             )
 
@@ -988,15 +1054,15 @@ def _generate_indicator_sub_charts(klines: list) -> list:
         kdj_k_data = []
         kdj_d_data = []
         kdj_j_data = []
-        if all(c in result.columns for c in ['K', 'D', 'J']):
-            for i in range(len(result)):
+        if all(c in today_result.columns for c in ['K', 'D', 'J']):
+            for i in range(len(today_result)):
                 tl = time_labels[i] if i < len(time_labels) else ''
-                if not pd.isna(result['K'].iloc[i]):
-                    kdj_k_data.append(IndicatorLinePoint(time=tl, value=round(float(result['K'].iloc[i]), 2)))
-                if not pd.isna(result['D'].iloc[i]):
-                    kdj_d_data.append(IndicatorLinePoint(time=tl, value=round(float(result['D'].iloc[i]), 2)))
-                if not pd.isna(result['J'].iloc[i]):
-                    kdj_j_data.append(IndicatorLinePoint(time=tl, value=round(float(result['J'].iloc[i]), 2)))
+                if not pd.isna(today_result['K'].iloc[i]):
+                    kdj_k_data.append(IndicatorLinePoint(time=tl, value=round(float(today_result['K'].iloc[i]), 2)))
+                if not pd.isna(today_result['D'].iloc[i]):
+                    kdj_d_data.append(IndicatorLinePoint(time=tl, value=round(float(today_result['D'].iloc[i]), 2)))
+                if not pd.isna(today_result['J'].iloc[i]):
+                    kdj_j_data.append(IndicatorLinePoint(time=tl, value=round(float(today_result['J'].iloc[i]), 2)))
             sub_charts.append(
                 IndicatorSubChart(
                     id="kdj",
@@ -1013,16 +1079,16 @@ def _generate_indicator_sub_charts(klines: list) -> list:
 
         # ── 4. RSI ──
         rsi_data = []
-        if 'RSI' in result.columns:
-            for i in range(len(result)):
+        if 'RSI' in today_result.columns:
+            for i in range(len(today_result)):
                 tl = time_labels[i] if i < len(time_labels) else ''
-                if not pd.isna(result['RSI'].iloc[i]):
-                    rsi_data.append(IndicatorLinePoint(time=tl, value=round(float(result['RSI'].iloc[i]), 2)))
+                if not pd.isna(today_result['RSI'].iloc[i]):
+                    rsi_data.append(IndicatorLinePoint(time=tl, value=round(float(today_result['RSI'].iloc[i]), 2)))
             rsi_ob_data = []
             rsi_os_data = []
             rsi_ob_val = engine.rsi_overbought
             rsi_os_val = engine.rsi_oversold
-            for i in range(len(result)):
+            for i in range(len(today_result)):
                 tl = time_labels[i] if i < len(time_labels) else ''
                 rsi_ob_data.append(IndicatorLinePoint(time=tl, value=rsi_ob_val))
                 rsi_os_data.append(IndicatorLinePoint(time=tl, value=rsi_os_val))
@@ -1040,53 +1106,71 @@ def _generate_indicator_sub_charts(klines: list) -> list:
                 )
             )
 
-        # ── 5. 价格均线关系 ──
-        ma5_data = []
-        ma20_data = []
-        close_data = []
-        if all(c in result.columns for c in ['ma5', 'ma20']):
-            for i in range(len(result)):
-                tl = time_labels[i] if i < len(time_labels) else ''
-                if not pd.isna(result['ma5'].iloc[i]):
-                    ma5_data.append(IndicatorLinePoint(time=tl, value=round(float(result['ma5'].iloc[i]), 2)))
-                if not pd.isna(result['ma20'].iloc[i]):
-                    ma20_data.append(IndicatorLinePoint(time=tl, value=round(float(result['ma20'].iloc[i]), 2)))
-                if 'Close' in result.columns and not pd.isna(result['Close'].iloc[i]):
-                    close_data.append(IndicatorLinePoint(time=tl, value=round(float(result['Close'].iloc[i]), 2)))
-            sub_charts.append(
-                IndicatorSubChart(
-                    id="price_ma",
-                    label="价格均线",
-                    height=110,
-                    lines=[
-                        IndicatorLine(name="close", label="价格", color="#FFFFFF", data=close_data),
-                        IndicatorLine(name="ma5", label="MA5", color="#FF4444", data=ma5_data),
-                        IndicatorLine(name="ma20", label="MA20", color="#44FF44", data=ma20_data),
-                    ],
-                    signal_text="",
-                )
-            )
-
-        # ── 6. 均价偏离度 ──
-        deviation_data = []
-        if 'deviation_pct' in result.columns:
-            for i in range(len(result)):
-                tl = time_labels[i] if i < len(time_labels) else ''
-                if not pd.isna(result['deviation_pct'].iloc[i]):
-                    deviation_data.append(IndicatorLinePoint(time=tl, value=round(float(result['deviation_pct'].iloc[i]), 2)))
-            sub_charts.append(
-                IndicatorSubChart(
-                    id="avg_price_deviation",
-                    label="均价偏离",
-                    height=110,
-                    lines=[
-                        IndicatorLine(name="deviation_pct", label="偏离%", color="#FFAA00", data=deviation_data),
-                    ],
-                    signal_text="",
-                )
-            )
+        
 
         logger.debug(f"生成 {len(sub_charts)} 个指标子图")
+
+        # ── 5. MFI 资金流量 ──
+        mfi_data = []
+        if "mfi_value" in today_result.columns:
+            for i in range(len(today_result)):
+                tl = time_labels[i] if i < len(time_labels) else ""
+                if not pd.isna(today_result["mfi_value"].iloc[i]):
+                    mfi_data.append(
+                        IndicatorLinePoint(
+                            time=tl,
+                            value=round(float(today_result["mfi_value"].iloc[i]), 2),
+                        )
+                    )
+            ob_pts = []
+            os_pts = []
+            if mfi_data:
+                first_t = mfi_data[0].time
+                last_t = mfi_data[-1].time
+                ob_val = engine.mfi_overbought
+                os_val = engine.mfi_oversold
+                ob_pts = [
+                    IndicatorLinePoint(time=first_t, value=ob_val),
+                    IndicatorLinePoint(time=last_t, value=ob_val),
+                ]
+                os_pts = [
+                    IndicatorLinePoint(time=first_t, value=os_val),
+                    IndicatorLinePoint(time=last_t, value=os_val),
+                ]
+            mfi_signal = _compute_mfi_signal(
+                result,
+                overbought=engine.mfi_overbought,
+                oversold=engine.mfi_oversold,
+            )
+            sub_charts.append(
+                IndicatorSubChart(
+                    id="mfi",
+                    label="MFI",
+                    height=120,
+                    lines=[
+                        IndicatorLine(
+                            name="mfi_value",
+                            label="MFI",
+                            color="#FF8C00",
+                            data=mfi_data,
+                        ),
+                        IndicatorLine(
+                            name="mfi_ob",
+                            label=f"超买{engine.mfi_overbought}",
+                            color="#FF4444",
+                            data=ob_pts,
+                        ),
+                        IndicatorLine(
+                            name="mfi_os",
+                            label=f"超卖{engine.mfi_oversold}",
+                            color="#44FF44",
+                            data=os_pts,
+                        ),
+                    ],
+                    signal_text=mfi_signal,
+                )
+            )
+
         return sub_charts
 
     except ImportError as e:
@@ -1509,6 +1593,7 @@ def get_intraday_data(
         "auto",
         description="数据获取策略: auto=自动判断(盘中优先缓存,盘后可联网), cache_only=仅缓存/DB, full=包括API联网",
     ),
+    warmup_enabled: bool = Query(True, description="是否启用指标预热（前一日K线数据）"),
     db_manager: DatabaseManager = Depends(get_database_manager),
 ) -> IntradayDataResponse:
     """获取分时K线数据和信号"""
@@ -1620,11 +1705,28 @@ def get_intraday_data(
         # 计算日线级参考线（引力场模型需要）
         reference_lines = _compute_reference_lines(klines, code, db_manager, date_str)
 
+        # 加载前日快照用于指标预热
+        warmup_klines: list = []
+        warm_up = None
+        if warmup_enabled:
+            warm_up = db_manager.load_previous_daily_summary(code, q_date)
+            warmup_klines = warm_up.get("last_klines", []) if warm_up else []
+            if warmup_klines:
+                logger.info(f"[预热] {code} 加载前日 {len(warmup_klines)} 根K线进行指标预热，来源日期={warm_up.get('date', '')}")
+            else:
+                logger.warning(f"[预热] {code} 无前日快照数据，指标将从零状态开始计算")
+
+        warmup_info = {
+            "enabled": warmup_enabled,
+            "last_klines_count": len(warmup_klines),
+            "prev_date": str(warm_up.get("date", "")) if warm_up else "",
+        }
+
         # 运行做T策略（含引力场）
-        signals, summary = _run_t0_strategy(klines, reference_lines)
+        signals, summary = _run_t0_strategy(klines, reference_lines, warmup_klines)
 
         # 生成指标子图数据（含新增价格均线和均价偏离）
-        indicator_sub_charts = _generate_indicator_sub_charts(klines)
+        indicator_sub_charts = _generate_indicator_sub_charts(klines, warmup_klines)
 
         # 构建K线响应
         kline_points = [IntradayKlinePoint(**k) for k in klines]
@@ -1637,9 +1739,8 @@ def get_intraday_data(
             logger.warning(f"获取股票名称失败 {code}: {e}")
             stock_name = ""
 
-        # 加载前日快照用于指标预热
-        warm_up = db_manager.load_previous_daily_summary(code, q_date)
         rsi_ob, rsi_os = _get_rsi_thresholds()
+        mfi_ob, mfi_os = _get_mfi_thresholds()
         buy_weights, sell_weights = _get_signal_weights()
 
         response = IntradayDataResponse(
@@ -1652,8 +1753,11 @@ def get_intraday_data(
             indicator_sub_charts=indicator_sub_charts,
             signal_summary=summary,
             warm_up_summary=warm_up,
+            warmup_info=warmup_info,
             rsi_overbought=rsi_ob,
             rsi_oversold=rsi_os,
+            mfi_overbought=mfi_ob,
+            mfi_oversold=mfi_os,
             buy_weights=buy_weights,
             sell_weights=sell_weights,
         )
@@ -1681,6 +1785,9 @@ def _compute_daily_summary_from_klines(klines: list) -> dict:
     if not klines:
         return {}
 
+    # 用于次日指标预热的K线数量
+    WARMUP_BARS = 80
+
     last_k = klines[-1]
     result = {
         "last_price": last_k.get("Close") or 0.0,
@@ -1692,6 +1799,7 @@ def _compute_daily_summary_from_klines(klines: list) -> dict:
         "total_amount": sum(k.get("Amount") or 0.0 for k in klines),
         "kline_count": len(klines),
         "last_time": last_k.get("timestamp", "")[11:16] if len(last_k.get("timestamp", "")) >= 16 else "",
+        "last_klines": klines[-WARMUP_BARS:],  # 最后N根K线，用于次日指标预热
     }
     return result
 
@@ -1802,7 +1910,17 @@ def _compute_signal_alert(code: str, db_manager=None) -> Optional[dict]:
             return None
         _inject_avg_price(klines)
 
-        signals, _summary = _run_t0_strategy(klines, None)
+        warmup_klines = []
+        if db_manager:
+            actual_date_str = _extract_date_from_klines(klines)
+            try:
+                q_date = date_type.fromisoformat(actual_date_str)
+            except (ValueError, TypeError):
+                q_date = date_type.today()
+            warm_up = db_manager.load_previous_daily_summary(code, q_date)
+            warmup_klines = warm_up.get("last_klines", []) if warm_up else []
+
+        signals, _summary = _run_t0_strategy(klines, None, warmup_klines)
         if not signals:
             return None
         latest = signals[-1]
@@ -2042,8 +2160,15 @@ def get_batch_status(
                 try:
                     _inject_avg_price(klines)
                     reference_lines = _compute_reference_lines(klines, code, db_manager, None)
-                    signals, summary = _run_t0_strategy(klines, reference_lines)
-                    indicator_sub_charts = _generate_indicator_sub_charts(klines)
+                    # 加载前日快照用于指标预热
+                    batch_warm_up = db_manager.load_previous_daily_summary(code, actual_date)
+                    batch_warmup_klines = batch_warm_up.get("last_klines", []) if batch_warm_up else []
+                    if batch_warmup_klines:
+                        logger.info(f"[预热] batch-status {code} 加载前日 {len(batch_warmup_klines)} 根K线")
+                    else:
+                        logger.warning(f"[预热] batch-status {code} 无前日快照数据")
+                    signals, summary = _run_t0_strategy(klines, reference_lines, batch_warmup_klines)
+                    indicator_sub_charts = _generate_indicator_sub_charts(klines, batch_warmup_klines)
                     kline_points = [IntradayKlinePoint(**k) for k in klines]
                     sn = raw_snapshots.get(current_code, {})
                     stock_name = sn.get("stock_name", "")
@@ -2055,6 +2180,7 @@ def get_batch_status(
                             pass
 
                     rsi_ob, rsi_os = _get_rsi_thresholds()
+                    mfi_ob, mfi_os = _get_mfi_thresholds()
                     buy_weights, sell_weights = _get_signal_weights()
                     current_full_data = IntradayDataResponse(
                         stock_code=code,
@@ -2067,6 +2193,8 @@ def get_batch_status(
                         signal_summary=summary,
                         rsi_overbought=rsi_ob,
                         rsi_oversold=rsi_os,
+                        mfi_overbought=mfi_ob,
+                        mfi_oversold=mfi_os,
                         buy_weights=buy_weights,
                         sell_weights=sell_weights,
                     )

@@ -106,6 +106,15 @@ class IndicatorSnapshot:
     kdj_golden_cross: bool = False
     kdj_death_cross: bool = False
 
+    # MFI
+    mfi_value: float = 50.0
+    mfi_oversold: bool = False
+    mfi_overbought: bool = False
+    mfi_cross_50_up: bool = False
+    mfi_cross_50_down: bool = False
+    mfi_bottom_divergence: bool = False
+    mfi_top_divergence: bool = False
+
 
 @dataclass
 class T0Signal:
@@ -179,6 +188,22 @@ class IntradayDataBuffer:
     @property
     def length(self) -> int:
         return len(self._data)
+
+    def warmup(self, history_klines: list) -> None:
+        """将历史K线数据预加载到buffer中，用于指标预热
+        Args:
+            history_klines: 历史K线字典列表（如前一交易日最后N根K线）
+        """
+        if not history_klines:
+            return
+        df = pd.DataFrame(history_klines)
+        # 确保只保留REQUIRED_COLUMNS中的列
+        available_cols = [c for c in self.REQUIRED_COLUMNS if c in df.columns]
+        if not available_cols:
+            return
+        df = df[available_cols].copy().reset_index(drop=True)
+        self._data = df
+        # 预热时不添加 timestamps，feed_kline 调用时再追加当天数据
 
     def validate_kline(self, kline: Dict[str, Any]) -> Tuple[bool, str]:
         """校验单根K线数据有效性"""
@@ -298,6 +323,12 @@ class IntradayIndicatorEngine:
         self.kdj_golden_cross_max = kdj_cfg.get("golden_cross_max", 50)
         self.kdj_death_cross_min = kdj_cfg.get("death_cross_min", 80)
         self.kdj_divergence_lookback = kdj_cfg.get("divergence_lookback", 10)
+
+        # MFI参数
+        mfi_cfg = indicator_cfg.get("mfi", {})
+        self.mfi_period = mfi_cfg.get("period", 6)
+        self.mfi_overbought = mfi_cfg.get("overbought", 80)
+        self.mfi_oversold = mfi_cfg.get("oversold", 20)
 
     # ---------- 工具函数 ----------
 
@@ -555,6 +586,22 @@ class IntradayIndicatorEngine:
         result["kdj_death_cross"] = result["death_cross"]
         return result
 
+    def calc_mfi(self, data: pd.DataFrame) -> pd.DataFrame:
+        """计算MFI指标（复用 indicators.indicators.mfi.MFI 类）"""
+        from indicators.indicators.mfi import MFI
+        mfi = MFI(period=self.mfi_period)
+        mfi_result = mfi.calculate(data)
+        # 将MFI结果合并进原始data，避免丢失其他列
+        result = data.copy()
+        result["mfi_value"] = mfi_result["MFI"]
+        result["mfi_overbought"] = mfi_result["overbought"]
+        result["mfi_oversold"] = mfi_result["oversold"]
+        result["mfi_cross_50_up"] = mfi_result["cross_50_up"]
+        result["mfi_cross_50_down"] = mfi_result["cross_50_down"]
+        result["mfi_top_divergence"] = mfi_result["top_divergence"]
+        result["mfi_bottom_divergence"] = mfi_result["bottom_divergence"]
+        return result
+
     # ---------- 综合计算 ----------
 
     def calculate_all(self, data: pd.DataFrame) -> pd.DataFrame:
@@ -565,6 +612,7 @@ class IntradayIndicatorEngine:
         df = self.calc_macd(df)
         df = self.calc_rsi(df)
         df = self.calc_kdj(df)
+        df = self.calc_mfi(df)
         df = IntradayIndicatorEngine.calc_volume_surge(df, self.vol_ma_period, self.vol_surge_ratio)
         df = self.calc_price_ma_relation(df)
         df = self.calc_avg_price_deviation(df)
@@ -592,6 +640,9 @@ class SignalEvaluator:
         "rsi_oversold": 5,
         "kdj_oversold": 5,              # KDJ超卖
         "kdj_golden_cross": 3,          # KDJ金叉(低位)
+        "mfi_oversold": 3,              # MFI超卖
+        "mfi_cross_50_up": 2,           # MFI上穿50线
+        "mfi_bottom_divergence": 5,     # MFI底背离
     }
     BUY_LABELS = {
         "absorption_active": "主力吸筹活跃",
@@ -604,6 +655,9 @@ class SignalEvaluator:
         "rsi_oversold": "RSI超卖",
         "kdj_oversold": "KDJ超卖",
         "kdj_golden_cross": "KDJ金叉",
+        "mfi_oversold": "MFI超卖",
+        "mfi_cross_50_up": "MFI上穿50",
+        "mfi_bottom_divergence": "MFI底背离",
     }
 
     SELL_WEIGHTS = {
@@ -616,6 +670,9 @@ class SignalEvaluator:
         "rsi_overbought": 5,
         "kdj_overbought": 5,            # KDJ超买
         "kdj_death_cross": 3,           # KDJ死叉(高位)
+        "mfi_overbought": 3,            # MFI超买
+        "mfi_cross_50_down": 2,         # MFI下穿50线
+        "mfi_top_divergence": 3,        # MFI顶背离
     }
     SELL_LABELS = {
         "distribution_active": "主力出货活跃",
@@ -627,6 +684,9 @@ class SignalEvaluator:
         "rsi_overbought": "RSI超买",
         "kdj_overbought": "KDJ超买",
         "kdj_death_cross": "KDJ死叉",
+        "mfi_overbought": "MFI超买",
+        "mfi_cross_50_down": "MFI下穿50",
+        "mfi_top_divergence": "MFI顶背离",
     }
 
     BUY_THRESHOLDS = {"strong": 6, "medium": 5, "weak": 4}
@@ -822,6 +882,12 @@ class SignalEvaluator:
                 triggered = status.kdj_oversold
             elif key == "kdj_golden_cross":
                 triggered = status.kdj_golden_cross
+            elif key == "mfi_oversold":
+                triggered = status.mfi_oversold
+            elif key == "mfi_cross_50_up":
+                triggered = status.mfi_cross_50_up
+            elif key == "mfi_bottom_divergence":
+                triggered = status.mfi_bottom_divergence
 
             score += weight if triggered else 0
             weight_details.append({
@@ -903,6 +969,12 @@ class SignalEvaluator:
                 triggered = status.kdj_overbought
             elif key == "kdj_death_cross":
                 triggered = status.kdj_death_cross
+            elif key == "mfi_overbought":
+                triggered = status.mfi_overbought
+            elif key == "mfi_cross_50_down":
+                triggered = status.mfi_cross_50_down
+            elif key == "mfi_top_divergence":
+                triggered = status.mfi_top_divergence
 
             score += weight if triggered else 0
             weight_details.append({
@@ -1190,6 +1262,13 @@ class IntradayT0Strategy:
             ),
             kdj_golden_cross=bool(row.get("kdj_golden_cross", False)),
             kdj_death_cross=bool(row.get("kdj_death_cross", False)),
+            mfi_value=float(row.get("mfi_value", 50)),
+            mfi_oversold=bool(row.get("mfi_oversold", False)),
+            mfi_overbought=bool(row.get("mfi_overbought", False)),
+            mfi_cross_50_up=bool(row.get("mfi_cross_50_up", False)),
+            mfi_cross_50_down=bool(row.get("mfi_cross_50_down", False)),
+            mfi_bottom_divergence=bool(row.get("mfi_bottom_divergence", False)),
+            mfi_top_divergence=bool(row.get("mfi_top_divergence", False)),
         )
 
     def feed_kline(self, kline: Dict[str, Any],

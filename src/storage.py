@@ -707,6 +707,8 @@ class IntradayDailySummary(Base):
     total_amount = Column(Float, default=0.0)  # 累计成交额
     # 技术指标终值（JSON字符串，灵活存储）
     indicator_snapshot_json = Column(Text, default="{}")
+    # 最后N根K线（JSON序列化），用于次日指标预热
+    last_klines_json = Column(Text, default="[]")
     # 时间戳
     last_time = Column(String(5), default="")  # 最后一根K线的时间
     kline_count = Column(Integer, default=0)  # 当天K线数量
@@ -823,6 +825,14 @@ class DatabaseManager:
 
         # 创建所有表
         Base.metadata.create_all(self._engine)
+
+        # 迁移：为已有 intraday_daily_summary 表添加 last_klines_json 列
+        try:
+            with self._engine.connect() as conn:
+                conn.execute(text("ALTER TABLE intraday_daily_summary ADD COLUMN last_klines_json TEXT DEFAULT '[]'"))
+                conn.commit()
+        except Exception:
+            pass  # 列已存在则忽略
 
         # 初始化 LRU 缓存（用于性能优化）
         from collections import OrderedDict
@@ -3226,6 +3236,7 @@ class DatabaseManager:
         avg_price = last_k.get("AvgPrice") or 0.0
 
         indicator_json = json.dumps(indicators or {}, ensure_ascii=False)
+        last_klines_json = json.dumps(indicators.get("last_klines", []) if indicators else [], ensure_ascii=False)
 
         with self.get_session() as session:
             try:
@@ -3239,6 +3250,7 @@ class DatabaseManager:
                     existing.total_volume = total_volume
                     existing.total_amount = total_amount
                     existing.indicator_snapshot_json = indicator_json
+                    existing.last_klines_json = last_klines_json
                     existing.last_time = last_time
                     existing.kline_count = len(klines)
                     existing.created_at = datetime.now()
@@ -3251,6 +3263,7 @@ class DatabaseManager:
                         total_volume=total_volume,
                         total_amount=total_amount,
                         indicator_snapshot_json=indicator_json,
+                        last_klines_json=last_klines_json,
                         last_time=last_time,
                         kline_count=len(klines),
                         created_at=datetime.now(),
@@ -3282,7 +3295,12 @@ class DatabaseManager:
                 .first()
             )
             if record:
-                return record.to_dict()
+                result = record.to_dict()
+                try:
+                    result["last_klines"] = json.loads(record.last_klines_json or "[]")
+                except (json.JSONDecodeError, TypeError):
+                    result["last_klines"] = []
+                return result
             return None
 
     def save_chip_distribution_cache(
@@ -3360,7 +3378,12 @@ class DatabaseManager:
             )
             if record:
                 logger.debug(f"加载前日快照（预热用）: {code} {record.date}")
-                return record.to_dict()
+                result = record.to_dict()
+                try:
+                    result["last_klines"] = json.loads(record.last_klines_json or "[]")
+                except (json.JSONDecodeError, TypeError):
+                    result["last_klines"] = []
+                return result
             return None
 
 

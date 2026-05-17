@@ -49,8 +49,8 @@ function signalLevel(confidence: number): { label: string; color: string } {
 
 /** 信号文本颜色：买入(红)/卖出(绿)/中性 */
 function signalColor(text: string): { fg: string; bg: string } {
-  const buy = /买入|买回|流入|金叉|控盘中|反弹/;
-  const sell = /卖出|流出|死叉|弱控盘|未控盘|出货|破位/;
+  const buy = /买入|买回|流入|金叉|控盘中|反弹|超卖|上穿|底背离/;
+  const sell = /卖出|流出|死叉|弱控盘|未控盘|出货|破位|超买|下穿|顶背离/;
   if (buy.test(text)) return { fg: '#FF6644', bg: 'rgba(255,100,68,0.12)' };
   if (sell.test(text)) return { fg: '#44DD44', bg: 'rgba(68,221,68,0.12)' };
   return { fg: '#00D4FF', bg: 'rgba(0,212,255,0.10)' };
@@ -379,6 +379,7 @@ const IntradayPage: React.FC = () => {
   // 存储从API返回的所有信号
   const allSignalsRef = useRef<IntradaySignal[]>([]);
   const filteredSignalsRef = useRef<IntradaySignal[]>([]);
+  const macdMetadataRef = useRef<Record<string, any> | null>(null);
 
   // 信号筛选状态
   const [activeFilters, setActiveFilters] = useState<Set<string>>(new Set());
@@ -412,6 +413,7 @@ const IntradayPage: React.FC = () => {
   const macdContainerRef = useRef<HTMLDivElement>(null);
   const rsiContainerRef = useRef<HTMLDivElement>(null);
   const kdjContainerRef = useRef<HTMLDivElement>(null);
+  const mfiContainerRef = useRef<HTMLDivElement>(null);
 
   // 指标子图实例管理
   const indicatorChartsRef = useRef<Map<string, lightweightCharts.IChartApi>>(new Map());
@@ -793,6 +795,7 @@ const IntradayPage: React.FC = () => {
     J: number;
     rsi_oversold: boolean;
     rsi_overbought: boolean;
+    mfi_value: number;
   }>>([]);
 
   const weightsConfigRef = useRef<{ buy: Record<string, number>; sell: Record<string, number> }>({
@@ -946,6 +949,37 @@ const IntradayPage: React.FC = () => {
       }
     }
 
+    // MFI
+    const mfiArr = slice.map((s) => s.mfi_value);
+    const lastMfi = mfiArr[mfiArr.length - 1];
+    const mfiOb = 80;
+    const mfiOs = 20;
+    if (!isNaN(lastMfi)) {
+      const fiftyArr = mfiArr.map(() => 50);
+      const crossUp = _crossUpTs(mfiArr, fiftyArr);
+      const crossDown = _crossDownTs(mfiArr, fiftyArr);
+      const topDiv = _detectTopDivergence(closeArr, mfiArr);
+      const bottomDiv = _detectBottomDivergence(closeArr, mfiArr);
+      const parts: string[] = [];
+      if (lastMfi >= mfiOb) {
+        parts.push('超买');
+      } else if (lastMfi <= mfiOs) {
+        parts.push('超卖');
+      }
+      if (crossUp) parts.push('上穿50线');
+      if (crossDown) parts.push('下穿50线');
+      if (topDiv) parts.push('顶背离');
+      if (bottomDiv) parts.push('底背离');
+      if (parts.length === 0) {
+        if (lastMfi > 50) {
+          parts.push('偏强');
+        } else {
+          parts.push('偏弱');
+        }
+      }
+      signals.mfi = parts.filter(Boolean).join('、');
+    }
+
     // 主力吸筹不输出信号
     signals.absorption = '';
 
@@ -958,16 +992,18 @@ const IntradayPage: React.FC = () => {
     setCrosshairKdjDValue(isNaN(lastD) ? null : lastD);
     setCrosshairKdjJValue(isNaN(lastJ) ? null : lastJ);
 
-    // 累计到当前时间点的MACD柱高度和
-    const macdSum = slice.reduce((sum, s) => sum + (s.MACD_Bar || 0), 0);
-    setCrosshairMacdSum(macdSum);
-
-    // 当前MACD柱高度差（最新柱值 − 前一柱值）
-    const macdBarArr = slice.map((s: any) => s.MACD_Bar || 0);
-    const macdDiff = macdBarArr.length >= 2
-      ? macdBarArr[macdBarArr.length - 1] - macdBarArr[macdBarArr.length - 2]
-      : 0;
-    setCrosshairMacdDiff(macdDiff);
+    // 累计到当前时间点的MACD柱高度和 / 柱高度差：使用后端metadata（与策略算法一致）
+    const meta = macdMetadataRef.current;
+    if (meta?.bar_sums && idx < meta.bar_sums.length) {
+      setCrosshairMacdSum(meta.bar_sums[idx]);
+    } else {
+      setCrosshairMacdSum(null);
+    }
+    if (meta?.bar_diffs && idx < meta.bar_diffs.length) {
+      setCrosshairMacdDiff(meta.bar_diffs[idx]);
+    } else {
+      setCrosshairMacdDiff(null);
+    }
 
     setIsCrosshairActive(true);
 
@@ -1493,6 +1529,7 @@ const IntradayPage: React.FC = () => {
           close: number; ma5: number; ma20: number; deviation_pct: number;
           DIF: number; DEA: number; MACD_Bar: number; RSI: number;
           K: number; D: number; J: number;
+          mfi_value: number;
         }>();
         (data.indicator_sub_charts || []).forEach((sc) => {
           (sc.lines || []).forEach((line) => {
@@ -1505,6 +1542,7 @@ const IntradayPage: React.FC = () => {
                 close: NaN, ma5: NaN, ma20: NaN, deviation_pct: NaN,
                 DIF: NaN, DEA: NaN, MACD_Bar: NaN, RSI: NaN,
                 K: NaN, D: NaN, J: NaN,
+                mfi_value: NaN,
               });
               const entry = map.get(t)!;
               if (line.name === 'dominant_power') entry.dominant_power = pt.value;
@@ -1520,6 +1558,7 @@ const IntradayPage: React.FC = () => {
               else if (line.name === 'K') entry.K = pt.value;
               else if (line.name === 'D') entry.D = pt.value;
               else if (line.name === 'J') entry.J = pt.value;
+              else if (line.name === 'mfi_value') entry.mfi_value = pt.value;
             });
           });
         });
@@ -1583,10 +1622,12 @@ const IntradayPage: React.FC = () => {
             macd_bearish_recovering: curDif < curDea && macdBarSum <= 0 && macdBarDiff <= 0 && !(prev ? (prevDif <= prevDea && curDif > curDea) : false) && !(prev ? (prevDif >= prevDea && curDif < curDea) : false) && !prevDeathCross && !prevPrevDeathCross,
             rsi_oversold: curRsi <= RSI_OVERSOLD,
             rsi_overbought: curRsi >= RSI_OVERBOUGHT,
+            mfi_value: isNaN(cur.mfi_value) ? 50 : cur.mfi_value,
           };
         });
       };
       buildSnapshot();
+      macdMetadataRef.current = data?.indicator_sub_charts?.find((sc: any) => sc.id === 'macd')?.metadata ?? null;
       weightsConfigRef.current = {
         buy: (data as any).buy_weights || {},
         sell: (data as any).sell_weights || {},
@@ -1644,6 +1685,7 @@ const IntradayPage: React.FC = () => {
         { id: 'macd', ref: macdContainerRef },
         { id: 'rsi', ref: rsiContainerRef },
         { id: 'kdj', ref: kdjContainerRef },
+        { id: 'mfi', ref: mfiContainerRef },
       ];
 
       const subCharts = data.indicator_sub_charts || [];
@@ -1855,6 +1897,55 @@ const IntradayPage: React.FC = () => {
                 priceLineVisible: false,
                 lastValueVisible: true,
                 crosshairMarkerVisible: true,
+              });
+              ls.setData(pts);
+              lineSeriesList.push(ls);
+            }
+          } else if (sc.id === 'mfi') {
+            if (!line.data || line.data.length === 0) continue;
+            const pts = line.data
+              .filter((pt: any) => pt.time)
+              .map((pt: any) => {
+                const ms = parseTimestamp(pt.time, date);
+                return { time: Math.floor(ms / 1000) as any, value: pt.value };
+              })
+              .sort((a: any, b: any) => (a.time as number) - (b.time as number));
+
+            if (!engineDataCollected && line.name === 'mfi_value') {
+              engineData = padDataStart(pts, firstKlineTime);
+              engineDataCollected = true;
+            }
+
+            if (line.name === 'mfi_value' && pts.length > 0) {
+              const ls = subChart.addSeries(lightweightCharts.LineSeries, {
+                color: '#FF8C00',
+                lineWidth: 1,
+                priceLineVisible: false,
+                lastValueVisible: true,
+                crosshairMarkerVisible: true,
+              });
+              ls.setData(pts);
+              lineSeriesList.push(ls);
+              engineLastValueSeries = ls;
+            } else if (line.name === 'mfi_ob' && pts.length > 0) {
+              const ls = subChart.addSeries(lightweightCharts.LineSeries, {
+                color: '#FF444488',
+                lineWidth: 1,
+                lineStyle: 2,
+                priceLineVisible: false,
+                lastValueVisible: false,
+                crosshairMarkerVisible: false,
+              });
+              ls.setData(pts);
+              lineSeriesList.push(ls);
+            } else if (line.name === 'mfi_os' && pts.length > 0) {
+              const ls = subChart.addSeries(lightweightCharts.LineSeries, {
+                color: '#44FF4488',
+                lineWidth: 1,
+                lineStyle: 2,
+                priceLineVisible: false,
+                lastValueVisible: false,
+                crosshairMarkerVisible: false,
               });
               ls.setData(pts);
               lineSeriesList.push(ls);
@@ -2209,28 +2300,13 @@ const IntradayPage: React.FC = () => {
     return { totalReturn, unsettledBuy };
   }, [filteredSignals]);
 
-  // MACD柱高度和（红柱为正，绿柱为负）
-  const macdBarSum = useMemo(() => {
-    const macdSubChart = intradayData?.indicator_sub_charts?.find(sc => sc.id === 'macd');
-    if (!macdSubChart) return 0;
-    const macdBarLine = macdSubChart.lines.find(
-      line => line.name === 'MACD柱' || line.name === 'MACD_Bar' || line.name === 'macd_bar',
-    );
-    if (!macdBarLine || !macdBarLine.data) return 0;
-    return macdBarLine.data.reduce((sum: number, pt: any) => sum + (pt.value || 0), 0);
+  // MACD柱高度和 / 柱高度差：从后端metadata获取（与后端策略算法一致）
+  const macdMetadata = useMemo(() => {
+    return intradayData?.indicator_sub_charts?.find(sc => sc.id === 'macd')?.metadata ?? null;
   }, [intradayData]);
 
-  // MACD柱高度差（最新柱值 − 前一柱值）
-  const macdBarDiff = useMemo(() => {
-    const macdSubChart = intradayData?.indicator_sub_charts?.find((sc: any) => sc.id === 'macd');
-    if (!macdSubChart) return 0;
-    const macdBarLine = macdSubChart.lines.find(
-      (line: any) => line.name === 'MACD柱' || line.name === 'MACD_Bar' || line.name === 'macd_bar',
-    );
-    if (!macdBarLine || !macdBarLine.data || macdBarLine.data.length < 2) return 0;
-    const data = macdBarLine.data;
-    return (data[data.length - 1].value || 0) - (data[data.length - 2].value || 0);
-  }, [intradayData]);
+  const macdBarSum: number = macdMetadata?.bar_sum ?? 0;
+  const macdBarDiff: number = macdMetadata?.bar_diff ?? 0;
 
   // ── 信号标记（受筛选条件调控，随 filteredSignals 变化而更新）──
   useEffect(() => {
@@ -2483,6 +2559,33 @@ const IntradayPage: React.FC = () => {
               '搜索'
             )}
           </button>
+
+          {/* 预热状态指示器 */}
+          {intradayData?.warmup_info && (
+            <div
+              className={`flex items-center gap-1 px-2 py-1 text-xs font-medium rounded border flex-shrink-0 transition-colors ${
+                intradayData.warmup_info.enabled && intradayData.warmup_info.last_klines_count > 0
+                  ? 'text-green border-green/30 bg-green/10'
+                  : 'text-amber border-amber/30 bg-amber/10'
+              }`}
+              title={
+                intradayData.warmup_info.enabled && intradayData.warmup_info.last_klines_count > 0
+                  ? `预热已启用，前日 ${intradayData.warmup_info.last_klines_count} 根K线 (${intradayData.warmup_info.prev_date})`
+                  : intradayData.warmup_info.enabled
+                    ? '预热已启用但无前日数据，指标从零状态计算'
+                    : '预热未启用'
+              }
+            >
+              <span className={`w-1.5 h-1.5 rounded-full ${
+                intradayData.warmup_info.enabled && intradayData.warmup_info.last_klines_count > 0
+                  ? 'bg-green'
+                  : 'bg-amber'
+              }`} />
+              {intradayData.warmup_info.enabled && intradayData.warmup_info.last_klines_count > 0
+                ? '预热中'
+                : '无预热'}
+            </div>
+          )}
 
           <button
             type="button"
@@ -3001,6 +3104,7 @@ const IntradayPage: React.FC = () => {
                     macd: macdContainerRef,
                     rsi: rsiContainerRef,
                     kdj: kdjContainerRef,
+                    mfi: mfiContainerRef,
                   };
                   const ref = containerRefMap[sc.id];
 
