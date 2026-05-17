@@ -798,6 +798,8 @@ const IntradayPage: React.FC = () => {
     rsi_oversold: boolean;
     rsi_overbought: boolean;
     mfi_value: number;
+    mfi_oversold: boolean;
+    mfi_overbought: boolean;
   }>>([]);
 
   const weightsConfigRef = useRef<{ buy: Record<string, number>; sell: Record<string, number> }>({
@@ -1066,6 +1068,7 @@ const IntradayPage: React.FC = () => {
           ['rsi_oversold', 'RSI超卖', bwMap.rsi_oversold ?? 5, rsiOversold],
           ['kdj_oversold', 'KDJ超卖', bwMap.kdj_oversold ?? 5, kdjOversold],
           ['kdj_golden_cross', 'KDJ金叉', bwMap.kdj_golden_cross ?? 3, kdjGoldenCross],
+          ['mfi_oversold', 'MFI超卖', bwMap.mfi_oversold ?? 3, sn.mfi_oversold],
         ];
         let buyScore = 0;
         for (const [key, label, w, trig] of factors) {
@@ -1090,6 +1093,7 @@ const IntradayPage: React.FC = () => {
           ['rsi_overbought', 'RSI超买', swMap.rsi_overbought ?? 5, rsiOverbought],
           ['kdj_overbought', 'KDJ超买', swMap.kdj_overbought ?? 5, kdjOverbought],
           ['kdj_death_cross', 'KDJ死叉', swMap.kdj_death_cross ?? 3, kdjDeathCross],
+          ['mfi_overbought', 'MFI超买', swMap.mfi_overbought ?? 3, sn.mfi_overbought],
         ];
         let sellScore = 0;
         for (const [key, label, w, trig] of factors) {
@@ -1572,6 +1576,8 @@ const IntradayPage: React.FC = () => {
         const OVERBOUGHT = 2.5;
         const RSI_OVERSOLD = 20;
         const RSI_OVERBOUGHT = 65;
+        const MFI_OVERSOLD = 20;
+        const MFI_OVERBOUGHT = 80;
         const raw = Array.from(map.entries())
           .sort((a, b) => a[0] - b[0])
           .map(([time, v]) => ({ time, ...v }));
@@ -1597,6 +1603,7 @@ const IntradayPage: React.FC = () => {
           const prevPrevGoldenCross = prevPrev ? (prevPrevPrevDif <= prevPrevPrevDea && prevPrevDif > prevPrevDea) : false;
           const prevPrevDeathCross = prevPrev ? (prevPrevPrevDif >= prevPrevPrevDea && prevPrevDif < prevPrevDea) : false;
           const curRsi = isNaN(cur.RSI) ? 50 : cur.RSI;
+          const curMfi = isNaN(cur.mfi_value) ? 50 : cur.mfi_value;
           const macdBarSum = (() => {
             let sum = 0;
             for (let j = 0; j <= i; j++) {
@@ -1629,6 +1636,8 @@ const IntradayPage: React.FC = () => {
             rsi_oversold: curRsi <= RSI_OVERSOLD,
             rsi_overbought: curRsi >= RSI_OVERBOUGHT,
             mfi_value: isNaN(cur.mfi_value) ? 50 : cur.mfi_value,
+            mfi_oversold: curMfi <= MFI_OVERSOLD,
+            mfi_overbought: curMfi >= MFI_OVERBOUGHT,
           };
         });
       };
