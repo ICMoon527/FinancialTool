@@ -565,7 +565,8 @@ def _run_t0_strategy(klines: list, reference_lines: list = None, warmup_klines: 
         warmup_klines: 前一交易日最后N根K线，用于指标预热
 
     Returns:
-        (signals_list, signal_summary_dict)
+        (signals_list, signal_summary_dict, precomputed_result, precomputed_engine)
+        其中 precomputed_result 和 precomputed_engine 用于复用，避免 _generate_indicator_sub_charts 重复计算
     """
     try:
         from watchdog.strategies.intraday_t0_strategy import IntradayT0Strategy
@@ -697,7 +698,7 @@ def _run_t0_strategy(klines: list, reference_lines: list = None, warmup_klines: 
             'simulated_return_pct': round(total_return, 2),
         }
 
-        return result_signals, summary
+        return result_signals, summary, precomputed_result, strategy.engine
 
     except ImportError as e:
         logger.warning(f"导入做T策略失败: {e}，返回空信号")
@@ -705,14 +706,14 @@ def _run_t0_strategy(klines: list, reference_lines: list = None, warmup_klines: 
             'buy_signals': 0, 'sell_signals': 0, 'total_signals': 0,
             'strong_signals': 0, 'medium_signals': 0, 'weak_signals': 0,
             'simulated_return_pct': 0.0,
-        }
+        }, None, None
     except Exception as e:
         logger.error(f"运行做T策略失败: {e}", exc_info=True)
         return [], {
             'buy_signals': 0, 'sell_signals': 0, 'total_signals': 0,
             'strong_signals': 0, 'medium_signals': 0, 'weak_signals': 0,
             'simulated_return_pct': 0.0, 'error': str(e),
-        }
+        }, None, None
 
 
 def _cross_up(a_series, b_series, lookback: int = 3) -> bool:
@@ -1782,10 +1783,10 @@ def get_intraday_data(
         }
 
         # 运行做T策略（含引力场）
-        signals, summary = _run_t0_strategy(klines, reference_lines, warmup_klines)
+        signals, summary, precomputed_result, precomputed_engine = _run_t0_strategy(klines, reference_lines, warmup_klines)
 
         # 生成指标子图数据（含新增价格均线和均价偏离）
-        indicator_sub_charts = _generate_indicator_sub_charts(klines, warmup_klines)
+        indicator_sub_charts = _generate_indicator_sub_charts(klines, warmup_klines, precomputed_result, precomputed_engine)
 
         # 构建K线响应
         kline_points = [IntradayKlinePoint(**k) for k in klines]
@@ -1979,7 +1980,7 @@ def _compute_signal_alert(code: str, db_manager=None) -> Optional[dict]:
             warm_up = db_manager.load_previous_daily_summary(code, q_date)
             warmup_klines = warm_up.get("last_klines", []) if warm_up else []
 
-        signals, _summary = _run_t0_strategy(klines, None, warmup_klines)
+        signals, _summary, _precomputed, _engine = _run_t0_strategy(klines, None, warmup_klines)
         if not signals:
             return None
         latest = signals[-1]
@@ -2046,7 +2047,7 @@ def _run_simulated_trading(code: str, db_manager: DatabaseManager) -> Optional[S
 
         _inject_avg_price(klines)
         reference_lines = _compute_reference_lines(klines, code, db_manager, None)
-        signals, _summary = _run_t0_strategy(klines, reference_lines)
+        signals, _summary, _precomputed, _engine = _run_t0_strategy(klines, reference_lines)
 
         from watchdog.strategies.simulator import T0Simulator
         from watchdog.strategies.intraday_t0_strategy import IntradayT0Strategy
@@ -2226,8 +2227,8 @@ def get_batch_status(
                         logger.info(f"[预热] batch-status {code} 加载前日 {len(batch_warmup_klines)} 根K线")
                     else:
                         logger.warning(f"[预热] batch-status {code} 无前日快照数据")
-                    signals, summary = _run_t0_strategy(klines, reference_lines, batch_warmup_klines)
-                    indicator_sub_charts = _generate_indicator_sub_charts(klines, batch_warmup_klines)
+                    signals, summary, precomputed_result, precomputed_engine = _run_t0_strategy(klines, reference_lines, batch_warmup_klines)
+                    indicator_sub_charts = _generate_indicator_sub_charts(klines, batch_warmup_klines, precomputed_result, precomputed_engine)
                     kline_points = [IntradayKlinePoint(**k) for k in klines]
                     sn = raw_snapshots.get(current_code, {})
                     stock_name = sn.get("stock_name", "")

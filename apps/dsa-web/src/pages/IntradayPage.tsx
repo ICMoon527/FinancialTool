@@ -114,11 +114,18 @@ function padDataStart(pts: any[], firstKlineTime: number): any[] {
   return pts;
 }
 
+const _tsCache = new Map<string, number>();
+
 /**
  * 解析 akshare 返回的时间字符串为 UTC 毫秒
  */
 function parseTimestamp(tsStr: string, dateStr: string): number {
   if (!tsStr) return 0;
+
+  const cacheKey = `${tsStr}||${dateStr}`;
+  const cached = _tsCache.get(cacheKey);
+  if (cached !== undefined) return cached;
+
   const s = tsStr.trim();
 
   // 带日期的完整格式 "2024-01-01 09:30:00"
@@ -132,6 +139,7 @@ function parseTimestamp(tsStr: string, dateStr: string): number {
       Number(fullMatch[5]),
       Number(fullMatch[6]) || 0,
     );
+    _tsCache.set(cacheKey, d.getTime());
     return d.getTime();
   }
 
@@ -146,6 +154,7 @@ function parseTimestamp(tsStr: string, dateStr: string): number {
       Number(isoMatch[5]),
       Number(isoMatch[6]),
     );
+    _tsCache.set(cacheKey, d.getTime());
     return d.getTime();
   }
 
@@ -160,12 +169,14 @@ function parseTimestamp(tsStr: string, dateStr: string): number {
     const [y, mon, day] = dateStr.split('-').map(Number);
     if (y && mon && day) {
       const d = new Date(y, mon - 1, day, hour, min, sec);
+      _tsCache.set(cacheKey, d.getTime());
       return d.getTime();
     }
 
     // fallback: 用当天的日期
     const today = new Date();
     const d = new Date(today.getFullYear(), today.getMonth(), today.getDate(), hour, min, sec);
+    _tsCache.set(cacheKey, d.getTime());
     return d.getTime();
   }
 
@@ -173,11 +184,16 @@ function parseTimestamp(tsStr: string, dateStr: string): number {
   const num = Number(s);
   if (!Number.isNaN(num)) {
     // 秒级时间戳
-    if (num > 1e9) return num * 1000;
+    if (num > 1e9) {
+      _tsCache.set(cacheKey, num * 1000);
+      return num * 1000;
+    }
     // 毫秒级
+    _tsCache.set(cacheKey, num);
     return num;
   }
 
+  _tsCache.set(cacheKey, 0);
   return 0;
 }
 
@@ -1581,7 +1597,9 @@ const IntradayPage: React.FC = () => {
         const raw = Array.from(map.entries())
           .sort((a, b) => a[0] - b[0])
           .map(([time, v]) => ({ time, ...v }));
-        snapshotRef.current = raw.map((cur, i) => {
+        snapshotRef.current = (() => {
+          let runningMacdBarSum = 0;
+          return raw.map((cur, i) => {
           const prev = i > 0 ? raw[i - 1] : null;
           const absorption_val = isNaN(cur.absorption) ? 0 : cur.absorption;
           const dev = isNaN(cur.deviation_pct) ? 0 : cur.deviation_pct;
@@ -1605,12 +1623,9 @@ const IntradayPage: React.FC = () => {
           const curRsi = isNaN(cur.RSI) ? 50 : cur.RSI;
           const curMfi = isNaN(cur.mfi_value) ? 50 : cur.mfi_value;
           const macdBarSum = (() => {
-            let sum = 0;
-            for (let j = 0; j <= i; j++) {
-              const v = raw[j].MACD_Bar;
-              if (!isNaN(v)) sum += v;
-            }
-            return sum;
+            const v = cur.MACD_Bar;
+            if (!isNaN(v)) runningMacdBarSum += v;
+            return runningMacdBarSum;
           })();
           const macdBarDiff = prev
             ? (isNaN(cur.MACD_Bar) ? 0 : cur.MACD_Bar) - (isNaN(prev.MACD_Bar) ? 0 : prev.MACD_Bar)
@@ -1640,7 +1655,8 @@ const IntradayPage: React.FC = () => {
             mfi_overbought: curMfi >= MFI_OVERBOUGHT,
           };
         });
-      };
+      })();
+    };
       buildSnapshot();
       macdMetadataRef.current = data?.indicator_sub_charts?.find((sc: any) => sc.id === 'macd')?.metadata ?? null;
       weightsConfigRef.current = {
