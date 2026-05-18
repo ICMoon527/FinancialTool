@@ -1272,13 +1272,15 @@ class IntradayT0Strategy:
         )
 
     def feed_kline(self, kline: Dict[str, Any],
-                   reference_lines: Optional[List[Dict[str, Any]]] = None) -> Optional[T0Signal]:
+                   reference_lines: Optional[List[Dict[str, Any]]] = None,
+                   precomputed_df: Optional[pd.DataFrame] = None) -> Optional[T0Signal]:
         """
         推送一根K线数据，返回可能触发的信号
 
         Args:
             kline: 单根K线字典，需包含 Open, High, Low, Close, Volume
             reference_lines: 日线级参考线列表（用于引力场模型）
+            precomputed_df: 预计算的全量指标DataFrame（避免重复calculate_all）
 
         Returns:
             触发的 T0Signal 或 None
@@ -1287,7 +1289,10 @@ class IntradayT0Strategy:
         if not success:
             return None
 
-        df = self.engine.calculate_all(self.buffer.data)
+        if precomputed_df is not None:
+            df = precomputed_df
+        else:
+            df = self.engine.calculate_all(self.buffer.data)
         if df.empty:
             return None
 

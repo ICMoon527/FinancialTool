@@ -581,6 +581,22 @@ def _run_t0_strategy(klines: list, reference_lines: list = None, warmup_klines: 
         if warmup_klines:
             strategy.buffer.warmup(warmup_klines)
 
+        # 一次性预计算全量指标（避免循环中重复计算）
+        import pandas as pd
+        df_klines = pd.DataFrame(klines)
+        if 'Amount' not in df_klines.columns:
+            df_klines['Amount'] = df_klines['Close'] * df_klines['Volume'] if 'Close' in df_klines.columns and 'Volume' in df_klines.columns else 0.0
+        warmup_rows = 0
+        if warmup_klines:
+            warmup_df = pd.DataFrame(warmup_klines)
+            if 'Amount' not in warmup_df.columns:
+                warmup_df['Amount'] = warmup_df['Close'] * warmup_df['Volume']
+            warmup_rows = len(warmup_df)
+            full_df = pd.concat([warmup_df, df_klines], ignore_index=True)
+        else:
+            full_df = df_klines
+        precomputed_result = strategy.engine.calculate_all(full_df)
+
         ref_lines_raw = reference_lines or []
         ref_lines = [
             {"id": rl.id if hasattr(rl, "id") else rl.get("id", ""),
@@ -589,8 +605,8 @@ def _run_t0_strategy(klines: list, reference_lines: list = None, warmup_klines: 
         ]
 
         signals = []
-        for kline in klines:
-            sig = strategy.feed_kline(kline, ref_lines)
+        for i, kline in enumerate(klines):
+            sig = strategy.feed_kline(kline, ref_lines, precomputed_df=precomputed_result.iloc[:warmup_rows + i + 1])
             if sig is not None:
                 signals.append(sig)
 
@@ -912,12 +928,16 @@ def _compute_mfi_signal(result, overbought: float = 80, oversold: float = 20) ->
     return "、".join(signals)
 
 
-def _generate_indicator_sub_charts(klines: list, warmup_klines: list = None) -> list:
+def _generate_indicator_sub_charts(klines: list, warmup_klines: list = None,
+                                   precomputed_result: 'pd.DataFrame' = None,
+                                   precomputed_engine: 'IntradayIndicatorEngine' = None) -> list:
     """根据分时K线计算四大指标，生成子图数据
 
     Args:
         klines: 分时K线字典列表
         warmup_klines: 前一交易日最后N根K线，用于指标预热（可选）
+        precomputed_result: 预计算的指标DataFrame（可选，用于避免重复计算）
+        precomputed_engine: 预创建的IntradayIndicatorEngine（可选，与precomputed_result配套使用）
 
     Returns:
         List[IndicatorSubChart] 四个指标的子图数据
@@ -925,20 +945,25 @@ def _generate_indicator_sub_charts(klines: list, warmup_klines: list = None) -> 
     try:
         import pandas as pd
 
-        df = pd.DataFrame(klines)
-        if 'Amount' not in df.columns:
-            df['Amount'] = df['Close'] * df['Volume'] if 'Close' in df.columns and 'Volume' in df.columns else 0.0
+        if precomputed_result is not None and precomputed_engine is not None:
+            result = precomputed_result
+            engine = precomputed_engine
+            warmup_rows = len(warmup_klines) if warmup_klines else 0
+        else:
+            df = pd.DataFrame(klines)
+            if 'Amount' not in df.columns:
+                df['Amount'] = df['Close'] * df['Volume'] if 'Close' in df.columns and 'Volume' in df.columns else 0.0
 
-        warmup_rows = 0
-        if warmup_klines:
-            warmup_df = pd.DataFrame(warmup_klines)
-            if 'Amount' not in warmup_df.columns:
-                warmup_df['Amount'] = warmup_df['Close'] * warmup_df['Volume'] if 'Close' in warmup_df.columns and 'Volume' in warmup_df.columns else 0.0
-            warmup_rows = len(warmup_df)
-            df = pd.concat([warmup_df, df], ignore_index=True)
+            warmup_rows = 0
+            if warmup_klines:
+                warmup_df = pd.DataFrame(warmup_klines)
+                if 'Amount' not in warmup_df.columns:
+                    warmup_df['Amount'] = warmup_df['Close'] * warmup_df['Volume'] if 'Close' in warmup_df.columns and 'Volume' in warmup_df.columns else 0.0
+                warmup_rows = len(warmup_df)
+                df = pd.concat([warmup_df, df], ignore_index=True)
 
-        engine = IntradayIndicatorEngine(config=_load_indicator_config())
-        result = engine.calculate_all(df)
+            engine = IntradayIndicatorEngine(config=_load_indicator_config())
+            result = engine.calculate_all(df)
 
         # 预热行数后的数据才是当天数据，生成时间标签时跳过预热行
         today_result = result.iloc[warmup_rows:]
