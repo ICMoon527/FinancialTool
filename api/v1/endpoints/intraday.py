@@ -79,19 +79,21 @@ _klines_cache_lock = threading.Lock()
 _KLINES_CACHE_TTL = 35
 
 
-def _get_cached_full_response(code: str) -> Optional[IntradayDataResponse]:
+def _get_cached_full_response(code: str, warmup_enabled: bool) -> Optional[IntradayDataResponse]:
     """获取缓存的完整分时数据响应"""
+    key = (code, warmup_enabled)
     with _full_response_cache_lock:
-        entry = _full_response_cache.get(code)
+        entry = _full_response_cache.get(key)
         if entry and time.time() - entry['timestamp'] < _FULL_RESPONSE_CACHE_TTL:
             return entry['response']
     return None
 
 
-def _set_cached_full_response(code: str, response: IntradayDataResponse):
+def _set_cached_full_response(code: str, warmup_enabled: bool, response: IntradayDataResponse):
     """缓存完整分时数据响应"""
+    key = (code, warmup_enabled)
     with _full_response_cache_lock:
-        _full_response_cache[code] = {
+        _full_response_cache[key] = {
             'timestamp': time.time(),
             'response': response,
         }
@@ -1696,7 +1698,7 @@ def get_intraday_data(
 
         # 当日数据优先走完整响应缓存（轮询已计算好，直接返回）
         if is_today:
-            cached = _get_cached_full_response(code)
+            cached = _get_cached_full_response(code, warmup_enabled)
             if cached is not None:
                 # 校验缓存数据日期是否匹配目标日期，防止缓存了错误日期的数据
                 if _is_data_fresh([k.model_dump() for k in cached.kline_data], date_str):
@@ -1824,7 +1826,7 @@ def get_intraday_data(
 
         # 当日数据写入缓存，避免 batch-status 轮询时重复计算
         if is_today:
-            _set_cached_full_response(code, response)
+            _set_cached_full_response(code, warmup_enabled, response)
 
         return response
 
@@ -2258,7 +2260,7 @@ def get_batch_status(
                         buy_weights=buy_weights,
                         sell_weights=sell_weights,
                     )
-                    _set_cached_full_response(code, current_full_data)
+                    _set_cached_full_response(code, True, current_full_data)
                 except Exception as e:
                     logger.warning(f"计算当前股票 {current_code} 信号失败: {e}")
             else:
@@ -2346,6 +2348,8 @@ def _run_batch_download(task_id: str, target_date: str, max_workers: int, force:
         failed = 0
         skipped = 0
         codes = [code for code, _ in stock_pairs]
+        # 过滤掉 '92' 开头的标的（B股等特殊类别）
+        codes = [c for c in codes if not c.startswith('92')]
 
         # 按市场分组：沪市优先（代码 6 开头）
         sh_codes = [c for c in codes if c.startswith("6")]

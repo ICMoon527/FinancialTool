@@ -141,15 +141,19 @@ class MFI(BaseIndicator):
         for i in range(lookback, len(df)):
             window = df.iloc[i-lookback:i+1]
 
+            mfi_vals = window['MFI'].dropna()
+            if len(mfi_vals) < 2:
+                continue
+
             if divergence_type == 'top':
                 price_high_idx = window['Close'].idxmax()
-                mfi_high_idx = window['MFI'].idxmax()
+                mfi_high_idx = mfi_vals.idxmax()
 
                 if price_high_idx > mfi_high_idx and window.loc[price_high_idx, 'Close'] > window.loc[mfi_high_idx, 'Close'] and window.loc[price_high_idx, 'MFI'] < window.loc[mfi_high_idx, 'MFI']:
                     divergence.iloc[i] = True
             else:
                 price_low_idx = window['Close'].idxmin()
-                mfi_low_idx = window['MFI'].idxmin()
+                mfi_low_idx = mfi_vals.idxmin()
 
                 if price_low_idx > mfi_low_idx and window.loc[price_low_idx, 'Close'] < window.loc[mfi_low_idx, 'Close'] and window.loc[price_low_idx, 'MFI'] > window.loc[mfi_low_idx, 'MFI']:
                     divergence.iloc[i] = True

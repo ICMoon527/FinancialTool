@@ -583,7 +583,7 @@ const IntradayPage: React.FC = () => {
         })
         .finally(() => setIsLoading(false));
     }
-  }, [searchHistory.length, intradayData, todayDateStr, isTradingTime]);
+  }, [searchHistory.length, intradayData, todayDateStr, isTradingTime, warmupEnabled]);
 
   // 盘中轮询
   useEffect(() => {
@@ -1376,6 +1376,9 @@ const IntradayPage: React.FC = () => {
       let chipOverlaps = false;
       let chipUpperPrice: number | null = null;
       let chipLowerPrice: number | null = null;
+      let clampedUpperPrice: number | null = null;
+      let autoAnchorHigh: number | null = null;
+      let autoAnchorLow: number | null = null;
       if (data.reference_lines && data.reference_lines.length > 0 && klines.length > 0) {
         const chipUpper = data.reference_lines.find((rl) => rl.id === 'chip_upper');
         const chipLower = data.reference_lines.find((rl) => rl.id === 'chip_lower');
@@ -1389,8 +1392,17 @@ const IntradayPage: React.FC = () => {
             const rangeLow = prevCloseRef.price * 0.9;
             const rangeHigh = prevCloseRef.price * 1.1;
             chipOverlaps = chipUpper.price >= rangeLow && chipLower.price <= rangeHigh;
+            if (chipOverlaps) {
+              clampedUpperPrice = Math.min(chipUpperPrice, rangeHigh);
+            }
           } else {
             chipOverlaps = chipUpper.price >= klineMin && chipLower.price <= klineMax;
+            if (chipOverlaps) {
+              const visibleMax = klineMax + (klineMax - klineMin) * 0.125;
+              clampedUpperPrice = Math.min(chipUpperPrice, visibleMax);
+              autoAnchorLow = klineMin;
+              autoAnchorHigh = klineMax;
+            }
           }
         }
       }
@@ -1521,12 +1533,29 @@ const IntradayPage: React.FC = () => {
             chart.priceScale('right').applyOptions({ autoScale: false });
           }
         }
+      } else if (autoAnchorLow != null && autoAnchorHigh != null) {
+        const firstTime = klines[0].time;
+        const lastTime = klines[klines.length - 1].time;
+        if (firstTime != null && lastTime != null) {
+          const ghostSeries = chart.addSeries(lightweightCharts.LineSeries, {
+            lineVisible: false,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+          } as any);
+          ghostSeries.setData([
+            { time: firstTime as any, value: autoAnchorLow },
+            { time: lastTime as any, value: autoAnchorHigh },
+          ]);
+          priceRangeSeriesRef.current = ghostSeries;
+          chart.priceScale('right').applyOptions({ autoScale: false });
+        }
       } else {
         chart.priceScale('right').applyOptions({ autoScale: true });
       }
 
-      // ── 筹码密集区色带（仅在价格范围内可见时才渲染，避免拉伸Y轴）──
-      if (chipOverlaps && chipLowerPrice != null && chipUpperPrice != null) {
+      // ── 筹码密集区色带（仅在价格范围内可见时才渲染，上沿裁剪避免拉伸Y轴）──
+      if (chipOverlaps && chipLowerPrice != null && clampedUpperPrice != null) {
         const purple = 'rgba(187, 68, 255, 0.06)';
         const chipSeries = chart.addSeries(lightweightCharts.BaselineSeries, {
           baseValue: { type: 'price', price: chipLowerPrice },
@@ -1543,7 +1572,7 @@ const IntradayPage: React.FC = () => {
         } as any);
         chipSeries.setData(klines.map((k) => ({
           time: k.time as any,
-          value: chipUpperPrice,
+          value: clampedUpperPrice,
         })));
         chipAreaRef.current = chipSeries;
       }
@@ -2140,7 +2169,7 @@ const IntradayPage: React.FC = () => {
       const dateParam = todayDateStr.replace(/-/g, '');
       // 盘中轮询已保证缓存/DB最新，手动搜索用 cache_only 避免额外API压力
       // 盘后直接走 full 链路，跳过 cache_only 的无效尝试
-      const dataStrategy = isTradingTime() ? 'cache_only' : 'full';
+      const dataStrategy = isTradingTime() ? 'auto' : 'full';
       const data = await getIntradayData(stockCode, dateParam, dataStrategy, overrideWarmup ?? warmupEnabled);
       setIntradayData(data);
       setInputError(undefined);
@@ -2194,7 +2223,7 @@ const IntradayPage: React.FC = () => {
         const dateParam = todayDateStr.replace(/-/g, '');
         // 盘中轮询已保证缓存/DB最新，手动点击用 cache_only 避免额外API压力
         // 盘后直接走 full 链路，跳过 cache_only 的无效尝试
-        const dataStrategy = isTradingTime() ? 'cache_only' : 'full';
+        const dataStrategy = isTradingTime() ? 'auto' : 'full';
         const data = await getIntradayData(item.stock_code, dateParam, dataStrategy, warmupEnabled);
         setIntradayData(data);
         setInputError(undefined);
@@ -2213,7 +2242,7 @@ const IntradayPage: React.FC = () => {
         setIsLoading(false);
       }
     },
-    [todayDateStr, loadHistory, isTradingTime],
+    [todayDateStr, loadHistory, isTradingTime, warmupEnabled],
   );
 
   // 删除历史
@@ -2592,37 +2621,51 @@ const IntradayPage: React.FC = () => {
           </button>
 
           {/* 预热状态切换按钮 */}
-          {intradayData?.warmup_info && (
             <button
               type="button"
-              onClick={() => {
+              onClick={async () => {
                 const newVal = !warmupEnabled;
                 setWarmupEnabled(newVal);
-                handleSearch(newVal);
+                if (intradayData && stockCode) {
+                  setIsLoading(true);
+                  try {
+                    const dateParam = todayDateStr.replace(/-/g, '');
+                    const data = await getIntradayData(stockCode, dateParam, 'full', newVal);
+                    setIntradayData(data);
+                  } catch (err: any) {
+                    console.error('切换预热状态失败:', err);
+                  } finally {
+                    setIsLoading(false);
+                  }
+                }
               }}
+              disabled={!intradayData}
               className={`text-sm border rounded-lg px-3 py-2 transition-colors flex items-center gap-1.5 ${
-                intradayData.warmup_info.enabled && intradayData.warmup_info.last_klines_count > 0
+                warmupEnabled && intradayData?.warmup_info?.last_klines_count != null && intradayData.warmup_info.last_klines_count > 0
                   ? 'bg-green/15 border-green/40 text-green hover:bg-green/20'
                   : 'bg-[#1a1a2e] border-white/10 text-muted hover:border-white/20'
               }`}
               title={
-                intradayData.warmup_info.enabled && intradayData.warmup_info.last_klines_count > 0
+                warmupEnabled && intradayData?.warmup_info?.last_klines_count != null && intradayData.warmup_info.last_klines_count > 0
                   ? `预热已启用，前日 ${intradayData.warmup_info.last_klines_count} 根K线 (${intradayData.warmup_info.prev_date}) — 点击关闭`
-                  : intradayData.warmup_info.enabled
+                  : warmupEnabled
                     ? '预热已启用但无前日数据，指标从零状态计算 — 点击关闭'
-                    : '预热未启用 — 点击开启'
+                    : intradayData
+                      ? '预热未启用 — 点击开启'
+                      : '请先搜索股票'
               }
             >
-              <span className={`w-2 h-2 rounded-full ${
-                intradayData.warmup_info.enabled && intradayData.warmup_info.last_klines_count > 0
-                  ? 'bg-green'
-                  : 'bg-amber'
-              }`} />
-              {intradayData.warmup_info.enabled && intradayData.warmup_info.last_klines_count > 0
-                ? '预热中'
-                : '无预热'}
+              {warmupEnabled && intradayData?.warmup_info?.last_klines_count != null && intradayData.warmup_info.last_klines_count > 0 && (
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="#ef4444" stroke="#ef4444" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="flex-shrink-0">
+                  <path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z" />
+                </svg>
+              )}
+              {warmupEnabled && intradayData?.warmup_info?.last_klines_count != null && intradayData.warmup_info.last_klines_count > 0
+                ? '预热'
+                : intradayData
+                  ? '无预热'
+                  : '预热'}
             </button>
-          )}
 
           <button
             type="button"
