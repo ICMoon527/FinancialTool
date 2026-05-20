@@ -15,6 +15,7 @@ import {
   getBatchDownloadStatus,
   cancelBatchDownload,
   togglePauseBatchDownload,
+  getIntradayConfig,
   type IntradayDataResponse,
   type IntradayKlinePoint,
   type SearchHistoryItem,
@@ -208,6 +209,7 @@ const IntradayPage: React.FC = () => {
   const [selectedHistoryId, setSelectedHistoryId] = useState<number | null>(null);
   const [historySnapshots, setHistorySnapshots] = useState<Record<string, StockSnapshot>>({});
   const [signalBells, setSignalBells] = useState<Record<string, { type: 'buy' | 'sell'; time: string; price: number }>>({});
+  const [configLoaded, setConfigLoaded] = useState(false);  // 轮询配置是否已从后端加载
   const signalBellsRef = useRef(signalBells);
   signalBellsRef.current = signalBells;
   const seenSignalTimesRef = useRef<Record<string, string>>({});
@@ -379,7 +381,7 @@ const IntradayPage: React.FC = () => {
         } catch (err) {
           console.warn('[BatchDownload] 轮询失败:', err);
         }
-      }, 1000);
+      }, batchPollingIntervalRef.current);
     } else {
       if (batchPollingRef.current) {
         clearInterval(batchPollingRef.current);
@@ -459,6 +461,8 @@ const IntradayPage: React.FC = () => {
 
   // ── 搜索历史股票实时行情轮询（仅盘中） ──
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollingIntervalRef = useRef(30000);      // 从后端配置动态获取
+  const batchPollingIntervalRef = useRef(1000);  // 批量下载进度轮询间隔
   const searchHistoryRef = useRef<SearchHistoryItem[]>([]);
   searchHistoryRef.current = searchHistory;
 
@@ -470,8 +474,6 @@ const IntradayPage: React.FC = () => {
     // 9:30-11:30 和 13:00-15:00，排除午休
     return (totalMinutes >= 570 && totalMinutes <= 690) || (totalMinutes >= 780 && totalMinutes <= 900);
   }, []);
-
-  const pollCounterRef = useRef(0);
 
   const fetchAndUpdate = useCallback(async (includeSignals: boolean) => {
     const codes = searchHistoryRef.current.map(h => h.stock_code);
@@ -521,22 +523,19 @@ const IntradayPage: React.FC = () => {
       clearInterval(pollingRef.current);
       pollingRef.current = null;
     }
-    pollCounterRef.current = 0;
   }, []);
 
   const startPolling = useCallback(() => {
     stopPolling();
     if (!isTradingTime()) return; // 非交易时间不启动轮询
+    console.log('[Polling] 启动行情轮询, 间隔:', pollingIntervalRef.current + 'ms');
     pollingRef.current = setInterval(() => {
       if (!isTradingTime()) {
         stopPolling(); // 收盘后自动停止
         return;
       }
-      pollCounterRef.current++;
-      // 隔次轮询才带信号检测：单次=仅价格快照，双次=价格快照+信号检测（有效60s间隔）
-      const includeSignals = pollCounterRef.current % 2 === 0;
-      fetchAndUpdateRef.current(includeSignals);
-    }, 30000);
+      fetchAndUpdateRef.current(true);
+    }, pollingIntervalRef.current);
   }, [stopPolling, isTradingTime]);
 
   // 首次加载时自动展示搜索历史第一条标的
@@ -585,8 +584,28 @@ const IntradayPage: React.FC = () => {
     }
   }, [searchHistory.length, intradayData, todayDateStr, isTradingTime, warmupEnabled]);
 
-  // 盘中轮询
+  // 从后端获取轮询配置（页面加载时调用一次）
   useEffect(() => {
+    getIntradayConfig().then(cfg => {
+      pollingIntervalRef.current = cfg.polling_interval_ms;
+      batchPollingIntervalRef.current = cfg.batch_download_polling_interval_ms;
+      console.log('[PollingConfig] 从后端获取轮询配置:', {
+        polling: cfg.polling_interval_ms + 'ms',
+        batchDownload: cfg.batch_download_polling_interval_ms + 'ms',
+        screenAsync: cfg.screen_async_polling_interval_ms + 'ms',
+      });
+    }).catch((err) => {
+      // 降级使用默认值，已在 ref 初始化时设置
+      console.warn('[PollingConfig] 获取后端配置失败，使用默认值:', err);
+    }).finally(() => {
+      setConfigLoaded(true);
+    });
+  }, []);
+
+  // 盘中轮询（等待配置加载完毕后才启动）
+  useEffect(() => {
+    if (!configLoaded) return;
+
     startPolling();
 
     const handleVisibility = () => {
@@ -602,7 +621,7 @@ const IntradayPage: React.FC = () => {
       stopPolling();
       document.removeEventListener('visibilitychange', handleVisibility);
     };
-  }, [startPolling, stopPolling]);
+  }, [startPolling, stopPolling, configLoaded]);
 
   // ── 初始化图表 ──
   useEffect(() => {

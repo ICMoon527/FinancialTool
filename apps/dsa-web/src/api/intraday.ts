@@ -180,9 +180,25 @@ export interface SimulationReportResponse {
   trades: SimulatedTradeItem[];
 }
 
+export interface IntradayConfig {
+  polling_interval_ms: number;
+  batch_download_polling_interval_ms: number;
+  screen_async_polling_interval_ms: number;
+}
+
 // ============================================================
 // API 函数
 // ============================================================
+
+export async function getIntradayConfig(): Promise<IntradayConfig> {
+  const resp = await fetch(`${API_BASE}/config`);
+  if (!resp.ok) return {
+    polling_interval_ms: 30000,
+    batch_download_polling_interval_ms: 1000,
+    screen_async_polling_interval_ms: 1000,
+  };
+  return resp.json();
+}
 
 export async function getIntradayData(
   stockCode: string,

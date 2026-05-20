@@ -50,6 +50,7 @@ from api.v1.schemas.common import ErrorResponse
 from src.storage import DatabaseManager
 from data_provider import DataFetcherManager
 from watchdog.strategies.intraday_t0_strategy import IntradayIndicatorEngine
+from src.config import get_config
 
 logger = logging.getLogger(__name__)
 
@@ -71,12 +72,20 @@ def _format_stock_display(code: str) -> str:
 # ── 分时数据内存缓存（包含完整 K线+信号+参考线+指标子图，避免轮询与手动点击之间的重复计算）──
 _full_response_cache: dict = {}
 _full_response_cache_lock = threading.Lock()
-_FULL_RESPONSE_CACHE_TTL = 35  # 略大于30秒轮询间隔
 
 # ── 分时K线缓存（信号检测时写入，供 get_intraday_data 跳过外部API）──
 _klines_cache: dict = {}
 _klines_cache_lock = threading.Lock()
-_KLINES_CACHE_TTL = 35
+
+
+def _get_polling_interval() -> int:
+    """获取分时轮询间隔（秒），从统一配置读取"""
+    return get_config().intraday_polling_interval
+
+
+def _get_cache_ttl() -> int:
+    """获取缓存 TTL（秒），= 轮询间隔 + 5s 缓冲"""
+    return _get_polling_interval() + 5
 
 
 def _get_cached_full_response(code: str, warmup_enabled: bool) -> Optional[IntradayDataResponse]:
@@ -84,7 +93,7 @@ def _get_cached_full_response(code: str, warmup_enabled: bool) -> Optional[Intra
     key = (code, warmup_enabled)
     with _full_response_cache_lock:
         entry = _full_response_cache.get(key)
-        if entry and time.time() - entry['timestamp'] < _FULL_RESPONSE_CACHE_TTL:
+        if entry and time.time() - entry['timestamp'] < _get_cache_ttl():
             return entry['response']
     return None
 
@@ -103,7 +112,7 @@ def _get_cached_klines(code: str) -> Optional[list]:
     """获取缓存的K线数据（来自信号检测）"""
     with _klines_cache_lock:
         entry = _klines_cache.get(code)
-        if entry and time.time() - entry['timestamp'] < _KLINES_CACHE_TTL:
+        if entry and time.time() - entry['timestamp'] < _get_cache_ttl():
             return entry['klines']
     return None
 
@@ -158,6 +167,17 @@ def _get_signal_weights():
 router = APIRouter()
 
 
+@router.get("/config")
+def get_intraday_config() -> dict:
+    """返回分时页面前端所需配置（轮询间隔等），前端启动时调用一次"""
+    config = get_config()
+    return {
+        "polling_interval_ms": config.intraday_polling_interval * 1000,
+        "batch_download_polling_interval_ms": config.batch_download_polling_interval * 1000,
+        "screen_async_polling_interval_ms": config.screen_async_polling_interval * 1000,
+    }
+
+
 def _normalize_stock_code(code: str) -> str:
     """标准化股票代码，去除前缀 zh_ / sh / sz 等"""
     code = code.strip().upper()
@@ -199,10 +219,10 @@ def _is_data_fresh(klines: list, target_date: str) -> bool:
         if last_ts:
             try:
                 last_dt = datetime.fromisoformat(last_ts)
-                if (now - last_dt).total_seconds() > 30:
+                if (now - last_dt).total_seconds() > _get_polling_interval():
                     logger.debug(
                         f"最后一根K线时间 {last_ts} 距今 {(now - last_dt).total_seconds():.0f} 秒，"
-                        f"超过30秒阈值，标记为陈旧"
+                        f"超过{_get_polling_interval()}秒阈值，标记为陈旧"
                     )
                     return False
             except (ValueError, TypeError):

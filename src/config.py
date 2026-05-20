@@ -268,6 +268,11 @@ class Config:
     webui_enabled: bool = False
     webui_host: str = "127.0.0.1"
     webui_port: int = 8000
+
+    # === 分时轮询配置（前后端统一） ===
+    intraday_polling_interval: int = 10      # 分时实时行情轮询间隔（秒）
+    batch_download_polling_interval: int = 1  # 批量下载进度轮询间隔（秒）
+    screen_async_polling_interval: int = 1    # 异步选股进度轮询间隔（秒）
     
     # === 机器人配置 ===
     bot_enabled: bool = True              # 是否启用机器人功能
@@ -579,6 +584,10 @@ class Config:
             webui_enabled=os.getenv('WEBUI_ENABLED', 'false').lower() == 'true',
             webui_host=os.getenv('WEBUI_HOST', '127.0.0.1'),
             webui_port=int(os.getenv('WEBUI_PORT', '8000')),
+            # 分时轮询配置
+            intraday_polling_interval=int(os.getenv('INTRADAY_POLLING_INTERVAL', '30')),
+            batch_download_polling_interval=int(os.getenv('BATCH_DOWNLOAD_POLLING_INTERVAL', '1')),
+            screen_async_polling_interval=int(os.getenv('SCREEN_ASYNC_POLLING_INTERVAL', '1')),
             # 机器人配置
             bot_enabled=os.getenv('BOT_ENABLED', 'true').lower() == 'true',
             bot_command_prefix=os.getenv('BOT_COMMAND_PREFIX', '/'),

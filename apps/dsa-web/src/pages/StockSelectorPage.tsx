@@ -1,6 +1,7 @@
 import type React from 'react';
 import { useState, useEffect, useCallback, useRef, useMemo, useLayoutEffect } from 'react';
 import { stockSelectorApi } from '../api/stockSelector';
+import { getIntradayConfig } from '../api/intraday';
 import { Card, Badge, KlineChart } from '../components/common';
 import type {
   StrategyInfo,
@@ -246,6 +247,7 @@ const StockSelectorPage: React.FC = () => {
   const screenTaskRef = useRef<ScreenProgressStatus | null>(null);
   screenTaskRef.current = screenTask;
   const screenPollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const screenPollingIntervalRef = useRef(1000);  // 从后端配置动态获取
 
   // Canvas 进度条
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -435,6 +437,15 @@ const StockSelectorPage: React.FC = () => {
     };
   }, []);
 
+  // 从后端获取轮询配置（页面加载时调用一次）
+  useEffect(() => {
+    getIntradayConfig().then(cfg => {
+      screenPollingIntervalRef.current = cfg.screen_async_polling_interval_ms;
+    }).catch(() => {
+      // 降级使用默认值，已在 ref 初始化时设置
+    });
+  }, []);
+
   // 异步选股进度轮询
   useEffect(() => {
     if (screenTask?.status === 'running') {
@@ -457,7 +468,7 @@ const StockSelectorPage: React.FC = () => {
         } catch {
           // ignore polling errors
         }
-      }, 1000);
+      }, screenPollingIntervalRef.current);
     } else {
       if (screenPollingRef.current) {
         clearInterval(screenPollingRef.current);
