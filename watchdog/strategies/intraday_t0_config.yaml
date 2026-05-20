@@ -87,7 +87,7 @@ signals:
       avg_price_oversold_fix: 0  # 均价超卖修复
       price_above_ma20: 0    # 价格>MA20趋势加成
       volume_surge: 0        # 量能放大
-      macd_golden_cross: 0     # MACD金叉
+      macd_golden_cross: 0     # MACD金叉(权重0: 策略不用金叉直接触发买入, 改用macd_bearish_recovering捕捉金叉前的空头衰竭)
       macd_bearish_recovering: 10   # MACD空头动能衰竭(买)
       rsi_oversold: 0          # RSI超卖
       kdj_oversold: 0          # KDJ超卖(K/D/J均<20)
@@ -114,7 +114,7 @@ signals:
       volume_stagnation: 0          # 放量滞涨
       price_cross_ma5_down: 0       # 价格下穿MA5
       avg_price_overbought_fix: 0   # 均价超买回落
-      macd_death_cross: 0      # MACD死叉
+      macd_death_cross: 0      # MACD死叉(权重0: 策略不用死叉直接触发卖出, 改用macd_bullish_weakening捕捉死叉前的多头衰减)
       macd_bullish_weakening: 10    # MACD多头动能衰减(卖)
       rsi_overbought: 0        # RSI超买
       kdj_overbought: 0        # KDJ超买(K/D/J均>80)

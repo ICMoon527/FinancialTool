@@ -12,7 +12,7 @@ import logging
 from datetime import date, datetime, timedelta
 from typing import List, Optional, Tuple
 
-from sqlalchemy import Boolean, Column, Date, DateTime, Integer, String, and_, select
+from sqlalchemy import Boolean, Column, Date, DateTime, Integer, String, and_, func, select
 from sqlalchemy.orm import declarative_base
 
 from src.storage import DatabaseManager
@@ -308,30 +308,74 @@ class DataUpdateTracker:
 
     def repair_invalid_dates(self, stock_codes: Optional[List[str]] = None) -> int:
         """
-        修复 tracker 中虚高的 last_updated_date。
+        修复 tracker 中虚高的 last_updated_date，以及冷启动时从 StockDaily 自动创建 tracker 记录。
 
-        对比 StockUpdateRecord.last_updated_date 与 StockDaily 中的实际 MAX(date)，
-        若 tracker 记录日期大于实际数据日期，修正为实际值。
+        1. 冷启动：如果 stock_update_records 表为空但 StockDaily 有数据，
+           从 StockDaily 批量创建 tracker 记录
+        2. 修复：对比 StockUpdateRecord.last_updated_date 与 StockDaily 中的实际 MAX(date)，
+           若 tracker 记录日期大于实际数据日期，修正为实际值
 
         Args:
             stock_codes: 待修复的股票代码列表，为 None 时修复全部
 
         Returns:
-            修复的记录数
+            修复/创建的记录数
         """
         from src.storage import StockDaily
 
         repaired_count = 0
         try:
             with self.db_manager.get_session() as session:
-                # 查询待修复的记录
+                # --- 冷启动：检查 tracker 表是否为空 ---
+                count_stmt = select(func.count()).select_from(StockUpdateRecord)
+                tracker_count = session.execute(count_stmt).scalar()
+
+                if tracker_count == 0:
+                    # tracker 表为空，从 StockDaily 批量创建记录
+                    logger.info("[冷启动] stock_update_records 为空，从 StockDaily 创建 tracker 记录...")
+
+                    # 查询所有有数据的股票及其最新日期
+                    if stock_codes:
+                        cold_start_stmt = (
+                            select(StockDaily.code, func.max(StockDaily.date).label("max_date"))
+                            .where(StockDaily.code.in_(stock_codes))
+                            .group_by(StockDaily.code)
+                        )
+                    else:
+                        cold_start_stmt = (
+                            select(StockDaily.code, func.max(StockDaily.date).label("max_date"))
+                            .group_by(StockDaily.code)
+                        )
+                    cold_start_results = session.execute(cold_start_stmt).all()
+
+                    new_records = []
+                    for code, max_date_val in cold_start_results:
+                        if max_date_val is not None:
+                            record = StockUpdateRecord(
+                                code=code,
+                                last_updated_date=max_date_val,
+                                first_data_date=None,  # 首次数据日期暂不追溯
+                                update_count=1,
+                            )
+                            new_records.append(record)
+
+                    if new_records:
+                        session.add_all(new_records)
+                        session.commit()
+                        repaired_count = len(new_records)
+                        logger.info(f"[冷启动] 从 StockDaily 创建了 {repaired_count} 条 tracker 记录")
+                    else:
+                        logger.info("[冷启动] StockDaily 中无数据，跳过 tracker 创建")
+
+                    return repaired_count
+
+                # --- 常规修复：修正虚高的 last_updated_date ---
                 stmt = select(StockUpdateRecord).where(StockUpdateRecord.last_updated_date.isnot(None))
                 if stock_codes:
                     stmt = stmt.where(StockUpdateRecord.code.in_(stock_codes))
                 records = session.execute(stmt).scalars().all()
 
                 for record in records:
-                    # 查询该股票在 StockDaily 中的实际最大日期
                     max_date_stmt = (
                         select(StockDaily.date)
                         .where(StockDaily.code == record.code)
@@ -341,7 +385,6 @@ class DataUpdateTracker:
                     max_date_result = session.execute(max_date_stmt).scalar_one_or_none()
 
                     if max_date_result is None:
-                        # 没有任何数据，跳过
                         continue
 
                     actual_max_date = max_date_result if isinstance(max_date_result, date) else max_date_result

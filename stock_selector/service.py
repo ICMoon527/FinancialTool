@@ -579,7 +579,6 @@ class StockSelectorService:
             daily_data=daily_data,
             precomputed_metrics=precomputed_metrics,
         )
-
         if not matches:
             return None
 
@@ -747,6 +746,7 @@ class StockSelectorService:
                     candidate.extra_data["momentum2_height_change_pct"] = momentum2.get("height_change_pct")
                     candidate.extra_data["momentum2_prev_color"] = momentum2.get("prev_color")
             candidate.add_strategy_match(match)
+
 
         # 判断是否所有选择的策略都匹配
         # 首先筛选出我们选择的策略匹配结果

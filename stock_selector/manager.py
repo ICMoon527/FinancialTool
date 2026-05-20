@@ -268,6 +268,9 @@ class StrategyManager:
 
         for strategy in strategies_to_use:
             try:
+                if strategy.get_data_provider() is None and self._data_provider is not None:
+                    strategy.set_data_provider_for_thread(self._data_provider)
+
                 if use_cached_data and self._db_manager:
                     from datetime import date
                     today = date.today()

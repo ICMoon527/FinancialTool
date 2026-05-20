@@ -823,6 +823,9 @@ const IntradayPage: React.FC = () => {
     sell: {},
   });
 
+  /** lookback=3 设计意图:
+   *  穿越事件发生时, 右侧面板连续3根K线保持显示金叉/死叉, 让用户有足够时间注意到状态变化。
+   *  这仅是展示层面的效果, 不影响买卖信号权重计算(权重字段macd_golden_cross为单根事件)。 */
   const _crossUpTs = (aArr: number[], bArr: number[], lookback: number = 3): boolean => {
     if (aArr.length < 2 || bArr.length < 2) return false;
     const start = Math.max(0, aArr.length - lookback);
@@ -833,6 +836,7 @@ const IntradayPage: React.FC = () => {
     return false;
   };
 
+  /** lookback=3 同上, 与_crossUpTs对称 */
   const _crossDownTs = (aArr: number[], bArr: number[], lookback: number = 3): boolean => {
     if (aArr.length < 2 || bArr.length < 2) return false;
     const start = Math.max(0, aArr.length - lookback);
@@ -1675,7 +1679,9 @@ const IntradayPage: React.FC = () => {
             macd_death_cross: prev ? (prevDif >= prevDea && curDif < curDea) : false,
             macd_bar_sum: macdBarSum,
             macd_bar_diff: macdBarDiff,
+            // 多头动能衰减→卖出: prev/prev2只排除金叉(见后端策略注释同款逻辑)
             macd_bullish_weakening: curDif > curDea && macdBarSum >= -0.015 && macdBarDiff >= -0.005 && !(prev ? (prevDif <= prevDea && curDif > curDea) : false) && !(prev ? (prevDif >= prevDea && curDif < curDea) : false) && !prevGoldenCross && !prevPrevGoldenCross,
+            // 空头动能衰竭→买入: prev/prev2只排除死叉(见后端策略注释同款逻辑)
             macd_bearish_recovering: curDif < curDea && macdBarSum <= 0 && macdBarDiff <= 0 && !(prev ? (prevDif <= prevDea && curDif > curDea) : false) && !(prev ? (prevDif >= prevDea && curDif < curDea) : false) && !prevDeathCross && !prevPrevDeathCross,
             rsi_oversold: curRsi <= RSI_OVERSOLD,
             rsi_overbought: curRsi >= RSI_OVERBOUGHT,

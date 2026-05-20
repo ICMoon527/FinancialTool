@@ -44,7 +44,7 @@ class StockDataValidator:
             data_fetcher_manager: Data fetcher manager instance
         """
         self.db_manager = db_manager or DatabaseManager.get_instance()
-        self.data_fetcher_manager = data_fetcher_manager or DataFetcherManager()
+        self.data_fetcher_manager = data_fetcher_manager or DataFetcherManager(include_akshare=False, enable_realtime=False)
         self.stock_repo = self._init_stock_repo()
 
     def _init_stock_repo(self):

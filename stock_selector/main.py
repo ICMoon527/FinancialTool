@@ -30,7 +30,7 @@ def _update_market_data():
         from data_provider import DataFetcherManager
         from stock_selector.market_data_cache import MarketDataCache
         
-        data_fetcher = DataFetcherManager()
+        data_fetcher = DataFetcherManager(include_akshare=False, enable_realtime=False)
         
         # 更新上证指数 (sh000001)
         sh_data = data_fetcher.get_index_daily_data("sh000001")
@@ -534,7 +534,8 @@ Examples:
         # Initialize data fetcher manager
         from data_provider import DataFetcherManager
 
-        data_fetcher_manager = DataFetcherManager()
+        # 选股模块不需要 AKShare 和实时行情，使用 Tushare-only 数据源（选股所需的历史数据已从 DB 预加载）
+        data_fetcher_manager = DataFetcherManager(include_akshare=False, enable_realtime=False)
 
         service = StockSelectorService()
         service.set_data_provider(data_fetcher_manager)

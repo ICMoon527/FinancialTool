@@ -104,6 +104,11 @@ class TradingCalendar:
 
     def is_trading_day(self, target_date):
         trading_days = self._get_trading_days()
+        # 处理 pd.Timestamp / datetime.datetime -> date 转换，确保与集合中的 date 对象类型一致
+        if isinstance(target_date, datetime):
+            target_date = target_date.date()
+        elif hasattr(target_date, 'date') and callable(target_date.date):
+            target_date = target_date.date()
         return target_date in trading_days
 
     def get_trading_days(self, start_date, end_date):

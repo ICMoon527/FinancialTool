@@ -201,9 +201,12 @@ class MarketDataCache:
                     logger.warning(f"[智能大盘数据] 联网获取数据失败：{e}")
             # 回退到缓存
             logger.info(f"[智能大盘数据] 联网更新失败，回退到缓存")
-            cached_data = cls._load_without_validation(symbol)
-            if cached_data is not None and not cached_data.empty:
-                return cached_data
+            try:
+                cached_data = cls._load_without_validation(symbol)
+                if cached_data is not None and not cached_data.empty:
+                    return cached_data
+            except Exception as cache_e:
+                logger.warning(f"[智能大盘数据] 缓存加载也失败: {cache_e}")
             return None
         
         # 不在交易时间窗口内：检查缓存文件

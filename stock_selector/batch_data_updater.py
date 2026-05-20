@@ -67,7 +67,7 @@ class BatchDataUpdater:
             update_tracker: 数据更新追踪器
         """
         self.db_manager = db_manager or DatabaseManager.get_instance()
-        self.data_fetcher_manager = data_fetcher_manager or DataFetcherManager()
+        self.data_fetcher_manager = data_fetcher_manager or DataFetcherManager(include_akshare=False, enable_realtime=False)
         self.update_tracker = update_tracker or get_update_tracker()
         
         # 速率限制追踪

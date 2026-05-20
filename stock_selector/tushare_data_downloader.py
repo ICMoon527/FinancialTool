@@ -930,26 +930,6 @@ class TushareDataDownloader:
                     batch_stocks = group_stocks[start_idx:end_idx]
 
                     pbar.set_description(f"[{group_name}] {len(batch_stocks)} 只")
-                    need_to_wait = self.tushare_fetcher.will_need_to_wait()
-
-                    if need_to_wait:
-                        logger.warning(f"Tushare 需要等待配额，跳过此批")
-                        stats['stocks_failed'] += len(batch_stocks)
-                        group_failed += len(batch_stocks)
-                        stats['failed_stocks'].extend([
-                            {'code': code, 'error': 'Tushare 需要等待配额'}
-                            for code in batch_stocks
-                        ])
-                        pbar.update(1)
-                    batch_count += 1
-                    if progress_callback:
-                        progress_callback(
-                            stats['stocks_success'] + stats['stocks_failed'],
-                            len(stock_codes),
-                            batch_stocks[-1] if batch_stocks else "",
-                            ""
-                        )
-                    continue
 
                     try:
                         batch_df = self.tushare_fetcher.get_daily_data_batch(

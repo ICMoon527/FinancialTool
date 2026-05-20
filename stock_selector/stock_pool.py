@@ -76,7 +76,7 @@ class StockPoolManager:
         
         if self.data_fetcher_manager is None:
             from data_provider import DataFetcherManager
-            self.data_fetcher_manager = DataFetcherManager()
+            self.data_fetcher_manager = DataFetcherManager(include_akshare=False, enable_realtime=False)
         
         # Create table if not exists
         self._create_table()

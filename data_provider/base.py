@@ -365,14 +365,18 @@ class DataFetcherManager:
     - 所有数据源都失败时抛出异常
     """
     
-    def __init__(self, fetchers: Optional[List[BaseFetcher]] = None):
+    def __init__(self, fetchers: Optional[List[BaseFetcher]] = None, include_akshare: bool = True, enable_realtime: bool = True):
         """
         初始化管理器
         
         Args:
             fetchers: 数据源列表（可选，默认按优先级自动创建）
+            include_akshare: 是否包含 AKShare 数据源（默认 True）
+            enable_realtime: 是否启用实时行情获取（默认 True，设为 False 时 get_realtime_quote 直接返回 None）
         """
         self._fetchers: List[BaseFetcher] = []
+        self._include_akshare = include_akshare
+        self._realtime_enabled = enable_realtime
         
         if fetchers:
             # 按优先级排序
@@ -408,7 +412,6 @@ class DataFetcherManager:
 
         # 创建所有数据源实例（优先级在各 Fetcher 的 __init__ 中确定）
         efinance = EfinanceFetcher()
-        akshare = AkshareFetcher()
         tushare = TushareFetcher()  # 会根据 Token 配置自动调整优先级
         # pytdx = PytdxFetcher()      # 已禁用，不用
         baostock = BaostockFetcher()
@@ -417,12 +420,16 @@ class DataFetcherManager:
         # 初始化数据源列表
         self._fetchers = [
             efinance,
-            akshare,
             tushare,
             # pytdx,  # 已禁用，不用
             baostock,
             yfinance,
         ]
+
+        # 条件性包含 AKShare 数据源
+        if self._include_akshare:
+            akshare = AkshareFetcher()
+            self._fetchers.append(akshare)
 
         # 按优先级排序（Tushare 如果配置了 Token 且初始化成功，优先级为 0）
         self._fetchers.sort(key=lambda f: f.priority)
@@ -622,6 +629,10 @@ class DataFetcherManager:
         Returns:
             UnifiedRealtimeQuote 对象，所有数据源都失败则返回 None
         """
+        # 实例级开关：选股模块等场景无需实时行情，直接跳过避免无意义的数据源调用
+        if not self._realtime_enabled:
+            return None
+
         # Normalize code (strip SH/SZ prefix etc.)
         stock_code = normalize_stock_code(stock_code)
 
@@ -1057,6 +1068,7 @@ class DataFetcherManager:
 
         # 直接只使用 AkshareFetcher 获取大盘数据
         valid_data = None
+        last_error = None
         for fetcher in self._fetchers:
             if fetcher.__class__.__name__ == "AkshareFetcher" and hasattr(fetcher, 'get_index_daily_data'):
                 try:
@@ -1071,6 +1083,7 @@ class DataFetcherManager:
                     else:
                         logger.warning(f"[AkshareFetcher] 未获取到 {symbol} 指数历史数据")
                 except Exception as e:
+                    last_error = str(e)
                     logger.warning(f"[AkshareFetcher] 获取 {symbol} 指数历史数据失败: {e}")
                 break
         

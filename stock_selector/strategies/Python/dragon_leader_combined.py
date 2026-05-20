@@ -52,7 +52,7 @@ class DragonLeaderCombinedStrategy(StockSelectorStrategy):
         )
         super().__init__(metadata)
 
-    def select(self, stock_code: str, stock_name: Optional[str] = None) -> StrategyMatch:
+    def select(self, stock_code: str, stock_name: Optional[str] = None, daily_data: Optional[pd.DataFrame] = None, precomputed_metrics: Optional[Dict[str, Any]] = None) -> StrategyMatch:
         """
         Execute the Dragon Leader Combined strategy for a single stock.
         

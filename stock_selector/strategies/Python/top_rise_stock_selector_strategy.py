@@ -180,26 +180,26 @@ class TopRiseStockSelectorStrategy(StockSelectorStrategy):
                 'price_ranking_score': float(price_ranking_score.iloc[-1]) if pd.notna(price_ranking_score.iloc[-1]) else None,
                 'volume_ratio_5': float(volume_ratio_5.iloc[-1]) if pd.notna(volume_ratio_5.iloc[-1]) else None,
                 'volume_new_high': bool(volume_new_high.iloc[-1]) if pd.notna(volume_new_high.iloc[-1]) else False,
-                'volume_score': float(volume_score.iloc[-1]) if pd.notna(volume_score.iloc[-1]) else None,
+                'volume_score': float(volume_score[-1]) if pd.notna(volume_score[-1]) else None,
                 'capital_inflow': bool(capital_inflow.iloc[-1]) if pd.notna(capital_inflow.iloc[-1]) else False,
                 'capital_inflow_3d': bool(capital_inflow_3d.iloc[-1]) if pd.notna(capital_inflow_3d.iloc[-1]) else False,
-                'capital_score': float(capital_score.iloc[-1]) if pd.notna(capital_score.iloc[-1]) else None,
+                'capital_score': float(capital_score[-1]) if pd.notna(capital_score[-1]) else None,
                 'breakout_20': bool(breakout_20.iloc[-1]) if pd.notna(breakout_20.iloc[-1]) else False,
                 'breakout_60': bool(breakout_60.iloc[-1]) if pd.notna(breakout_60.iloc[-1]) else False,
                 'above_ema20': bool(above_ema20.iloc[-1]) if pd.notna(above_ema20.iloc[-1]) else False,
                 'above_ema60': bool(above_ema60.iloc[-1]) if pd.notna(above_ema60.iloc[-1]) else False,
                 'ema_golden_cross': bool(ema_golden_cross.iloc[-1]) if pd.notna(ema_golden_cross.iloc[-1]) else False,
-                'technical_score': float(technical_score.iloc[-1]) if pd.notna(technical_score.iloc[-1]) else None,
+                'technical_score': float(technical_score[-1]) if pd.notna(technical_score[-1]) else None,
                 'limit_up': bool(limit_up.iloc[-1]) if pd.notna(limit_up.iloc[-1]) else False,
                 'consecutive_limit_up': bool(consecutive_limit_up.iloc[-1]) if pd.notna(consecutive_limit_up.iloc[-1]) else False,
-                'dragon_score': float(dragon_score.iloc[-1]) if pd.notna(dragon_score.iloc[-1]) else None,
-                'top_rise_score': float(top_rise_score.iloc[-1]) if pd.notna(top_rise_score.iloc[-1]) else None,
+                'dragon_score': float(dragon_score[-1]) if pd.notna(dragon_score[-1]) else None,
+                'top_rise_score': float(top_rise_score[-1]) if pd.notna(top_rise_score[-1]) else None,
             }
         except Exception as e:
             logger.debug(f"Top rise indicator calculation failed: {e}")
             return None
 
-    def select(self, stock_code: str, stock_name: Optional[str] = None) -> StrategyMatch:
+    def select(self, stock_code: str, stock_name: Optional[str] = None, daily_data: Optional[pd.DataFrame] = None, precomputed_metrics: Optional[Dict[str, Any]] = None) -> StrategyMatch:
         """
         Execute the top rise stock selector strategy for a single stock.
 
@@ -219,13 +219,15 @@ class TopRiseStockSelectorStrategy(StockSelectorStrategy):
         try:
             if self._data_provider:
                 realtime_quote = self._data_provider.get_realtime_quote(stock_code)
-                daily_data_result = self._data_provider.get_daily_data(stock_code, days=60)
-                
-                if isinstance(daily_data_result, tuple) and len(daily_data_result) == 2:
-                    daily_data, data_source = daily_data_result
+                if daily_data is None or not isinstance(daily_data, pd.DataFrame) or daily_data.empty:
+                    daily_data_result = self._data_provider.get_daily_data(stock_code, days=60)
+                    if isinstance(daily_data_result, tuple) and len(daily_data_result) == 2:
+                        daily_data, data_source = daily_data_result
+                    else:
+                        daily_data = daily_data_result
+                        data_source = "unknown"
                 else:
-                    daily_data = daily_data_result
-                    data_source = "unknown"
+                    data_source = "precomputed"
 
                 match_details["realtime_quote"] = {}
                 match_details["top_rise_indicators"] = {}

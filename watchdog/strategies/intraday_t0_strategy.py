@@ -1228,7 +1228,10 @@ class IntradayT0Strategy:
             macd_bar=float(row.get("MACD_Bar", 0)),
             macd_golden_cross=bool(row.get("macd_golden_cross", False)),
             macd_death_cross=bool(row.get("macd_death_cross", False)),
-            macd_bullish_weakening=(
+            macd_bullish_weakening=(  # 多头动能衰减→卖出: 金叉后DIF仍在DEA上方但柱体收窄, 预示多头力竭
+                # 【策略排除规则】prev/prev2只排除金叉不排除死叉, 因为本信号发生在金叉后的多头区,
+                # 死叉已在上一轮被多头区隔开, 不会同时出现; prev_golden/prev2_golden则阻断金叉当根
+                # 及之后2根的误触(右侧面板金叉文字持续3根), 确保金叉后至少等2根才重新允许卖出信号
                 float(row.get("DIF", 0)) > float(row.get("DEA", 0))
                 and float(row.get("MACD_Bar_Sum", 0)) >= -0.015
                 and (float(row.get("MACD_Bar_Diff", 0)) if not pd.isna(row.get("MACD_Bar_Diff")) else 0) >= -0.005
@@ -1236,7 +1239,10 @@ class IntradayT0Strategy:
                 and not prev_golden
                 and not prev2_golden
             ),
-            macd_bearish_recovering=(
+            macd_bearish_recovering=(  # 空头动能衰竭→买入: 死叉后DIF仍在DEA下方但柱体收窄, 预示空头力竭
+                # 【策略排除规则】prev/prev2只排除死叉不排除金叉, 因为本信号发生在死叉后的空头区,
+                # 金叉已在上一轮被空头区隔开, 不会同时出现; prev_death/prev2_death则阻断死叉当根
+                # 及之后2根的误触(右侧面板死叉文字持续3根), 确保死叉后至少等2根才重新允许买入信号
                 float(row.get("DIF", 0)) < float(row.get("DEA", 0))
                 and float(row.get("MACD_Bar_Sum", 0)) <= 0
                 and (float(row.get("MACD_Bar_Diff", 0)) if not pd.isna(row.get("MACD_Bar_Diff")) else 0) <= 0

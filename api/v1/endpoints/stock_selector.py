@@ -43,7 +43,7 @@ def _update_market_data():
         from data_provider import DataFetcherManager
         from stock_selector.market_data_cache import MarketDataCache
         
-        data_fetcher = DataFetcherManager()
+        data_fetcher = DataFetcherManager(include_akshare=True, enable_realtime=False)
         
         # 更新上证指数 (sh000001) - 使用智能时间窗方法（会自动保存缓存）
         sh_data = MarketDataCache.get_complete_index_data("sh000001", data_provider=data_fetcher)
@@ -73,9 +73,9 @@ def get_stock_selector_service() -> StockSelectorService:
     global _stock_selector_service
     if _stock_selector_service is None:
         _stock_selector_service = StockSelectorService()
-        # 设置数据提供者，与命令行调用保持一致
+        # 选股模块不需要 AKShare 和实时行情，使用 Tushare-only 数据源（选股所需的历史数据已从 DB 预加载）
         from data_provider import DataFetcherManager
-        data_fetcher_manager = DataFetcherManager()
+        data_fetcher_manager = DataFetcherManager(include_akshare=False, enable_realtime=False)
         _stock_selector_service.set_data_provider(data_fetcher_manager)
         logger.info("Stock Selector Service initialized (using config with data provider)")
     return _stock_selector_service
@@ -428,10 +428,9 @@ def _update_sector_data(service: StockSelectorService) -> None:
             logger.warning("Sector manager 不可用，跳过板块数据更新")
             return
         
-        # 获取数据提供者
-        data_manager = None
-        if hasattr(service.strategy_manager, '_data_provider'):
-            data_manager = service.strategy_manager._data_provider
+        # 获取数据提供者（使用独立的 DataFetcherManager，包含 AKShare 用于板块数据）
+        from data_provider import DataFetcherManager
+        data_manager = DataFetcherManager(include_akshare=True, enable_realtime=False)
         
         if not data_manager:
             logger.warning("Data manager 不可用，跳过板块数据更新")

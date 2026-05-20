@@ -180,7 +180,7 @@ class StrongDetonationSelectorStrategy(StockSelectorStrategy):
             logger.debug(f"强势起爆指标计算失败: {e}")
             return None
 
-    def select(self, stock_code: str, stock_name: Optional[str] = None) -> StrategyMatch:
+    def select(self, stock_code: str, stock_name: Optional[str] = None, daily_data: Optional[pd.DataFrame] = None, precomputed_metrics: Optional[Dict[str, Any]] = None) -> StrategyMatch:
         """
         执行强势起爆选股策略。
 
@@ -200,13 +200,15 @@ class StrongDetonationSelectorStrategy(StockSelectorStrategy):
         try:
             if self._data_provider:
                 realtime_quote = self._data_provider.get_realtime_quote(stock_code)
-                daily_data_result = self._data_provider.get_daily_data(stock_code, days=150)
-
-                if isinstance(daily_data_result, tuple) and len(daily_data_result) == 2:
-                    daily_data, data_source = daily_data_result
+                if daily_data is None or not isinstance(daily_data, pd.DataFrame) or daily_data.empty:
+                    daily_data_result = self._data_provider.get_daily_data(stock_code, days=150)
+                    if isinstance(daily_data_result, tuple) and len(daily_data_result) == 2:
+                        daily_data, data_source = daily_data_result
+                    else:
+                        daily_data = daily_data_result
+                        data_source = "unknown"
                 else:
-                    daily_data = daily_data_result
-                    data_source = "unknown"
+                    data_source = "precomputed"
 
                 match_details["realtime_quote"] = {}
                 match_details["strong_detonation_indicators"] = {}
