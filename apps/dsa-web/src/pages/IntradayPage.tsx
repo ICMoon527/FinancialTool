@@ -198,6 +198,15 @@ function parseTimestamp(tsStr: string, dateStr: string): number {
   return 0;
 }
 
+/**
+ * 计算五档盘口买卖总手数
+ * @param volumes 五档量数组（手）
+ * @returns 总量（手）
+ */
+function calcDepthTotal(volumes: number[]): number {
+  return volumes.reduce((sum, v) => sum + v, 0);
+}
+
 const IntradayPage: React.FC = () => {
   // ── 状态 ──
   const [stockCode, setStockCode] = useState('');
@@ -3027,7 +3036,7 @@ const IntradayPage: React.FC = () => {
 
               {hoveredWeightDetails && (
                 <>
-                  <Card variant="default" padding="sm" className="w-44 flex-shrink-0" style={{ height: 165 }}>
+                  <Card variant="default" padding="sm" className="w-36 flex-shrink-0" style={{ height: 165 }}>
                     <div className="overflow-y-auto h-full">
                       <h3 className="text-xs font-medium text-muted mb-2">买入权重贡献</h3>
                       <div className="space-y-0.5">
@@ -3106,7 +3115,7 @@ const IntradayPage: React.FC = () => {
                 const snap = historySnapshots[stockCode];
                 const hasDepth = snap.bid_prices?.length >= 5 && snap.ask_prices?.length >= 5;
                 return (
-                  <Card variant="default" padding="sm" className="w-36 flex-shrink-0" style={{ height: 165 }}>
+                  <Card variant="default" padding="sm" className="w-36 flex-shrink-0 flex-1 min-w-0" style={{ height: 165 }}>
                     <div className="overflow-y-auto h-full">
                       {!hasDepth ? (
                         <div className="text-xs text-muted/40">暂无盘口数据</div>
@@ -3140,6 +3149,15 @@ const IntradayPage: React.FC = () => {
                                 </td>
                               </tr>
                             ))}
+                            <tr>
+                              <td colSpan={3} className="pt-1">
+                                <div className="flex items-center justify-between text-[9px] font-semibold text-muted/70">
+                                  <span>买总：<span className="text-red-400/90">{calcDepthTotal(snap.bid_volumes)}手</span></span>
+                                  <span className="text-muted/50">|</span>
+                                  <span>卖总：<span className="text-green-400/90">{calcDepthTotal(snap.ask_volumes)}手</span></span>
+                                </div>
+                              </td>
+                            </tr>
                           </tbody>
                         </table>
                       )}
@@ -3149,7 +3167,7 @@ const IntradayPage: React.FC = () => {
               })()}
 
               {intradayData && filteredSignals.length > 0 && (
-                <div className="flex-1 overflow-y-auto" style={{ height: 165 }}>
+                <div className="flex-[3] overflow-y-auto" style={{ height: 165 }}>
                   <div className="text-xs text-muted/60 mb-1 flex items-center gap-3">
                     <span>共 {filteredSignals.length} 条信号</span>
                     <span className="font-mono font-medium" style={{ color: filteredSimulReturn.totalReturn >= 0 ? '#FF4444' : '#44FF44' }}>
