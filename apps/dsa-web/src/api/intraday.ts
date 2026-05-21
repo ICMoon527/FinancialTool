@@ -130,7 +130,19 @@ export interface StockSnapshot {
   open_price: number;
   high: number;
   low: number;
+  pre_close: number;
+  volume: number;
   timestamp: string;
+  // 五档盘口（卖1→卖5，买1→买5，量单位为手）
+  ask_prices: number[];    // [卖一价, 卖二价, 卖三价, 卖四价, 卖五价]
+  ask_volumes: number[];   // [卖一量, 卖二量, 卖三量, 卖四量, 卖五量] (手)
+  bid_prices: number[];    // [买一价, 买二价, 买三价, 买四价, 买五价]
+  bid_volumes: number[];   // [买一量, 买二量, 买三量, 买四量, 买五量] (手)
+  // 估值指标（可选）
+  volume_ratio?: number | null;
+  turnover_rate?: number | null;
+  pe_ratio?: number | null;
+  pb_ratio?: number | null;
 }
 
 export interface SignalAlert {

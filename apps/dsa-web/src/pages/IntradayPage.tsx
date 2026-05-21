@@ -2522,7 +2522,7 @@ const IntradayPage: React.FC = () => {
                                   {isUp ? '+' : ''}{snap.change_pct.toFixed(2)}%
                                 </span>
                                 <span className="text-xs text-muted/50">·</span>
-                                <span className="text-xs text-muted">{snap.timestamp}</span>
+                                <span className="text-xs text-muted">{snap.timestamp.length >= 14 ? snap.timestamp.slice(8, 10) + ':' + snap.timestamp.slice(10, 12) + ':' + snap.timestamp.slice(12, 14) : snap.timestamp}</span>
                               </>
                             );
                           }
@@ -2973,7 +2973,7 @@ const IntradayPage: React.FC = () => {
           <div className="w-full">
             <div className="flex items-start gap-2 mb-2" style={{ height: 165 }}>
               {signalStats.length > 0 && (
-                <Card variant="default" padding="sm" className="w-56 flex-shrink-0">
+                <Card variant="default" padding="sm" className="w-44 flex-shrink-0">
                   <h3 className="text-xs font-medium text-muted mb-2">
                     信号统计
                     {activeFilters.size > 0 && (
@@ -3027,7 +3027,7 @@ const IntradayPage: React.FC = () => {
 
               {hoveredWeightDetails && (
                 <>
-                  <Card variant="default" padding="sm" className="w-56 flex-shrink-0" style={{ height: 165 }}>
+                  <Card variant="default" padding="sm" className="w-44 flex-shrink-0" style={{ height: 165 }}>
                     <div className="overflow-y-auto h-full">
                       <h3 className="text-xs font-medium text-muted mb-2">买入权重贡献</h3>
                       <div className="space-y-0.5">
@@ -3063,7 +3063,7 @@ const IntradayPage: React.FC = () => {
                     </div>
                   </Card>
 
-                  <Card variant="default" padding="sm" className="w-56 flex-shrink-0" style={{ height: 165 }}>
+                  <Card variant="default" padding="sm" className="w-44 flex-shrink-0" style={{ height: 165 }}>
                     <div className="overflow-y-auto h-full">
                       <h3 className="text-xs font-medium text-muted mb-2">卖出权重贡献</h3>
                       <div className="space-y-0.5">
@@ -3100,6 +3100,53 @@ const IntradayPage: React.FC = () => {
                   </Card>
                 </>
               )}
+
+              {/* 五档买卖盘口面板 - 腾讯 qt.gtimg.cn 数据 */}
+              {stockCode && historySnapshots[stockCode] && (() => {
+                const snap = historySnapshots[stockCode];
+                const hasDepth = snap.bid_prices?.length >= 5 && snap.ask_prices?.length >= 5;
+                return (
+                  <Card variant="default" padding="sm" className="w-36 flex-shrink-0" style={{ height: 165 }}>
+                    <div className="overflow-y-auto h-full">
+                      {!hasDepth ? (
+                        <div className="text-xs text-muted/40">暂无盘口数据</div>
+                      ) : (
+                        <table className="w-full text-[10px] leading-tight">
+                          <tbody>
+                            {/* 卖五→卖一，绿色 */}
+                            {[4, 3, 2, 1, 0].map((i) => (
+                              <tr key={`ask-${i}`} className="border-b border-white/[0.03]">
+                                <td className="text-muted/50 py-0 w-6">卖{i + 1}</td>
+                                <td className={`text-right font-mono py-0 ${snap.ask_prices[i] > 0 ? 'text-green-400/80' : 'text-muted/30'}`}>
+                                  {snap.ask_prices[i] > 0 ? snap.ask_prices[i].toFixed(2) : '-'}
+                                </td>
+                                <td className="text-right text-muted/70 font-mono py-0 w-11">
+                                  {snap.ask_volumes[i] > 0 ? `${snap.ask_volumes[i]}手` : '-'}
+                                </td>
+                              </tr>
+                            ))}
+                            <tr>
+                              <td colSpan={3}><div className="border-t border-white/15 my-0.5" /></td>
+                            </tr>
+                            {/* 买一→买五，红色 */}
+                            {[0, 1, 2, 3, 4].map((i) => (
+                              <tr key={`bid-${i}`} className="border-b border-white/[0.03]">
+                                <td className="text-muted/50 py-0 w-6">买{i + 1}</td>
+                                <td className={`text-right font-mono py-0 ${snap.bid_prices[i] > 0 ? 'text-red-400/80' : 'text-muted/30'}`}>
+                                  {snap.bid_prices[i] > 0 ? snap.bid_prices[i].toFixed(2) : '-'}
+                                </td>
+                                <td className="text-right text-muted/70 font-mono py-0 w-11">
+                                  {snap.bid_volumes[i] > 0 ? `${snap.bid_volumes[i]}手` : '-'}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      )}
+                    </div>
+                  </Card>
+                );
+              })()}
 
               {intradayData && filteredSignals.length > 0 && (
                 <div className="flex-1 overflow-y-auto" style={{ height: 165 }}>

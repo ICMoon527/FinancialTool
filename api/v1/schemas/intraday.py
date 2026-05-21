@@ -157,7 +157,7 @@ class DeleteHistoryResponse(BaseModel):
 
 
 class StockSnapshot(BaseModel):
-    """单只股票实时快照"""
+    """单只股票实时快照（腾讯 qt.gtimg.cn 数据源，含五档盘口）"""
 
     stock_code: str
     stock_name: str = ""
@@ -166,7 +166,21 @@ class StockSnapshot(BaseModel):
     open_price: float = 0.0
     high: float = 0.0
     low: float = 0.0
+    pre_close: float = 0.0  # 昨收价
+    volume: int = 0  # 成交量(股)
     timestamp: str = ""  # "HH:MM:SS"
+
+    # 五档盘口（卖1→卖5价/量，买1→买5价/量，量单位为手）
+    ask_prices: List[float] = Field(default_factory=list)  # [卖一价, 卖二价, 卖三价, 卖四价, 卖五价]
+    ask_volumes: List[int] = Field(default_factory=list)  # [卖一量, 卖二量, 卖三量, 卖四量, 卖五量] (手)
+    bid_prices: List[float] = Field(default_factory=list)  # [买一价, 买二价, 买三价, 买四价, 买五价]
+    bid_volumes: List[int] = Field(default_factory=list)  # [买一量, 买二量, 买三量, 买四量, 买五量] (手)
+
+    # 估值指标（可选，腾讯接口附带）
+    volume_ratio: Optional[float] = None  # 量比
+    turnover_rate: Optional[float] = None  # 换手率(%)
+    pe_ratio: Optional[float] = None  # 市盈率
+    pb_ratio: Optional[float] = None  # 市净率
 
 
 class BatchStatusRequest(BaseModel):

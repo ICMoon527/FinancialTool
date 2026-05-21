@@ -2117,6 +2117,158 @@ def _run_simulated_trading(code: str, db_manager: DatabaseManager) -> Optional[S
         return None
 
 
+def _parse_tencent_realtime_batch(stock_codes: list) -> dict:
+    """通过腾讯 qt.gtimg.cn 接口批量获取股票实时行情（含五档盘口）
+
+    腾讯接口字段说明（~分隔）:
+    [1]=名称 [3]=最新价 [4]=昨收 [5]=今开 [6]=成交量(手)
+    [9]~[18]=买五价/量→买一价/量  [19]~[28]=卖一价/量→卖五价/量
+    [30]=时间戳 [32]=涨跌幅(%) [34]=最高 [35]=最低/成交量/成交额
+    [38]=换手率 [39]=市盈率 [43]=振幅 [44]=流通市值 [45]=总市值
+    [46]=市净率 [47]=涨停价 [48]=跌停价 [49]=量比
+
+    Returns:
+        {stock_code: {stock_code, stock_name, latest_price, change_pct,
+                      open_price, high, low, pre_close, volume, timestamp,
+                      bid_prices, ask_prices, bid_volumes, ask_volumes}}
+    """
+    import requests as req
+
+    symbols = []
+    for code in stock_codes:
+        code = code.strip()
+        if code.startswith(("6", "5", "9")):
+            symbols.append(f"sh{code}")
+        else:
+            symbols.append(f"sz{code}")
+
+    if not symbols:
+        return {}
+
+    url = f"http://qt.gtimg.cn/q={','.join(symbols)}"
+    headers = {
+        "Referer": "http://finance.qq.com",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    }
+
+    try:
+        r = req.get(url, headers=headers, timeout=10)
+        r.encoding = "gbk"
+    except Exception as e:
+        logger.warning(f"腾讯批量行情接口请求失败: {e}")
+        return {}
+
+    result = {}
+    content = r.text.strip()
+    # 腾讯返回格式: v_sh600519="...";v_sz000001="..."
+    lines = content.split(";")
+
+    for line in lines:
+        line = line.strip()
+        if not line or "=" not in line:
+            continue
+
+        eq_pos = line.find("=")
+        code_part = line[:eq_pos].strip()
+        if code_part.startswith("v_"):
+            code_part = code_part[2:]
+
+        if code_part.startswith("sh"):
+            stock_code = code_part[2:]
+        elif code_part.startswith("sz"):
+            stock_code = code_part[2:]
+        else:
+            continue
+
+        # 提取数据
+        data_start = line.find('"')
+        data_end = line.rfind('"')
+        if data_start == -1 or data_end == -1:
+            continue
+
+        data_str = line[data_start + 1 : data_end]
+        fields = data_str.split("~")
+
+        if len(fields) < 30:
+            continue
+
+        try:
+            name = fields[1] if len(fields) > 1 else ""
+            price = float(fields[3]) if fields[3] else 0.0
+            pre_close = float(fields[4]) if fields[4] else 0.0
+            open_price = float(fields[5]) if fields[5] else 0.0
+            vol_hands = int(float(fields[6])) if fields[6] else 0  # 成交量(手)
+            volume = vol_hands * 100  # 转为股
+            change_pct = float(fields[32]) if len(fields) > 32 and fields[32] else 0.0
+            high = float(fields[34]) if len(fields) > 34 and fields[34] else 0.0
+            # fields[35] 格式: "最低/成交量/成交额"，取最低这一部分
+            low_str = (fields[35].split("/")[0]) if len(fields) > 35 and "/" in str(fields[35]) else (fields[35] if len(fields) > 35 else "0")
+            low = float(low_str) if low_str else 0.0
+            timestamp = fields[30] if len(fields) > 30 else ""
+
+            # 解析五档盘口：fields[9]~[18]为买方(买一→买五)，fields[19]~[28]为卖方(卖一→卖五)
+            # 腾讯原始: 买一价/量(9/10)→买二(11/12)→买三(13/14)→买四(15/16)→买五(17/18)→卖一(19/20)→...→卖五(27/28)
+            # 统一存为 买一→买五, 卖一→卖五（从近到远）
+            bid_prices = []
+            bid_volumes = []
+            for idx in range(9, 18, 2):  # 9, 11, 13, 15, 17 (买一价→买五价)
+                if idx < len(fields) and fields[idx]:
+                    bid_prices.append(float(fields[idx]))
+                else:
+                    bid_prices.append(0.0)
+            for idx in range(10, 19, 2):  # 10, 12, 14, 16, 18 (买一量→买五量)
+                if idx < len(fields) and fields[idx]:
+                    bid_volumes.append(int(float(fields[idx])))
+                else:
+                    bid_volumes.append(0)
+
+            ask_prices = []
+            ask_volumes = []
+            for idx in range(19, 28, 2):  # 19, 21, 23, 25, 27 (卖一价→卖五价)
+                if idx < len(fields) and fields[idx]:
+                    ask_prices.append(float(fields[idx]))
+                else:
+                    ask_prices.append(0.0)
+            for idx in range(20, 29, 2):  # 20, 22, 24, 26, 28 (卖一量→卖五量)
+                if idx < len(fields) and fields[idx]:
+                    ask_volumes.append(int(float(fields[idx])))
+                else:
+                    ask_volumes.append(0)
+
+            # 估值指标
+            volume_ratio = float(fields[49]) if len(fields) > 49 and fields[49] else None
+            turnover_rate = float(fields[38]) if len(fields) > 38 and fields[38] else None
+            pe_ratio = float(fields[39]) if len(fields) > 39 and fields[39] else None
+            pb_ratio = float(fields[46]) if len(fields) > 46 and fields[46] else None
+
+            result[stock_code] = {
+                "stock_code": stock_code,
+                "stock_name": name,
+                "latest_price": round(price, 2),
+                "change_pct": round(change_pct, 2),
+                "open_price": round(open_price, 2),
+                "high": round(high, 2),
+                "low": round(low, 2),
+                "pre_close": round(pre_close, 2),
+                "volume": volume,
+                "timestamp": timestamp,
+                "ask_prices": ask_prices,
+                "ask_volumes": ask_volumes,
+                "bid_prices": bid_prices,
+                "bid_volumes": bid_volumes,
+                "volume_ratio": volume_ratio,
+                "turnover_rate": turnover_rate,
+                "pe_ratio": pe_ratio,
+                "pb_ratio": pb_ratio,
+            }
+
+        except (ValueError, IndexError) as e:
+            logger.debug(f"腾讯解析 {stock_code} 失败: {e}")
+            continue
+
+    return result
+
+
 def _parse_sina_realtime_batch(stock_codes: list) -> dict:
     """通过新浪接口批量获取股票实时行情
 
@@ -2211,7 +2363,7 @@ def get_batch_status(
             return BatchStatusResponse(snapshots={}, current_updated=False)
 
         # 1. 批量获取实时行情
-        raw_snapshots = _parse_sina_realtime_batch(stock_codes)
+        raw_snapshots = _parse_tencent_realtime_batch(stock_codes)
 
         snapshots: dict = {}
         for code in stock_codes:
