@@ -35,6 +35,10 @@ from api.v1.schemas.stocks import (
     StockQuote,
     StockHistoryResponse,
     KLineData,
+    MatchSegment,
+    StockSearchResult,
+    StockSearchResponse,
+    StockSearchRefreshResponse,
 )
 from api.v1.schemas.backtest import (
     BacktestRunRequest,
@@ -84,6 +88,10 @@ __all__ = [
     "StockQuote",
     "StockHistoryResponse",
     "KLineData",
+    "MatchSegment",
+    "StockSearchResult",
+    "StockSearchResponse",
+    "StockSearchRefreshResponse",
     # backtest
     "BacktestRunRequest",
     "BacktestRunResponse",

@@ -5,7 +5,7 @@ import * as lightweightCharts from 'lightweight-charts';
 import { visualizationApi, type VisualizationResponse, type VisualizationSearchHistoryItem, type ChipDistributionResponse } from '../api/visualization';
 import type { StockSnapshot } from '../api/intraday';
 import { validateStockCode } from '../utils/validation';
-import { Card } from '../components/common';
+import { Card, StockSearchInput } from '../components/common';
 import { useStockPriceHistory } from '../hooks';
 import ChipDistributionChart from '../components/charts/ChipDistributionChart';
 
@@ -1999,8 +1999,9 @@ const VisualizationPage: React.FC = () => {
   }, [visualizationData, selectedIndicators, refreshKey]);
 
   // 搜索股票
-  const handleSearch = async () => {
-    const { valid, message, normalized } = validateStockCode(stockCode);
+  const handleSearch = async (overrideCode?: string) => {
+    const codeToValidate = overrideCode || stockCode;
+    const { valid, message, normalized } = validateStockCode(codeToValidate);
     if (!valid) {
       setInputError(message);
       return;
@@ -2177,13 +2178,6 @@ const VisualizationPage: React.FC = () => {
     }
   };
 
-  // 回车提交
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && stockCode && !isLoading) {
-      handleSearch();
-    }
-  };
-
   const sidebarContent = (
     <div className="flex flex-col overflow-hidden min-h-0 h-full">
       <div className="p-3 border-b border-white/5 flex-shrink-0">
@@ -2305,21 +2299,23 @@ const VisualizationPage: React.FC = () => {
           </button>
           
           <div className="flex-1 relative min-w-0">
-            <input
-              type="text"
-              value={stockCode}
-              onChange={(e) => {
-                setStockCode(e.target.value.toUpperCase());
-                setInputError(undefined);
-              }}
-              onKeyDown={handleKeyDown}
+            <StockSearchInput
               placeholder="输入股票代码，如 600519、00700、AAPL"
               disabled={isLoading}
-              className={`input-terminal w-full ${inputError ? 'border-danger/50' : ''}`}
+              error={inputError}
+              onChange={(q) => {
+                setStockCode(q);
+                setInputError(undefined);
+              }}
+              onSelect={(code) => {
+                setStockCode(code);
+                setInputError(undefined);
+              }}
+              onSubmit={(query) => {
+                handleSearch(query.toUpperCase());
+              }}
+              className="w-full"
             />
-            {inputError && (
-              <p className="absolute -bottom-4 left-0 text-xs text-danger">{inputError}</p>
-            )}
           </div>
           
           <div className="flex-shrink-0">
@@ -2339,7 +2335,7 @@ const VisualizationPage: React.FC = () => {
           
           <button
             type="button"
-            onClick={handleSearch}
+            onClick={() => handleSearch()}
             disabled={!stockCode || isLoading}
             className="btn-primary flex items-center gap-1.5 whitespace-nowrap flex-shrink-0"
           >

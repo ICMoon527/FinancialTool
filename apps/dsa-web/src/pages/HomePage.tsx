@@ -11,6 +11,7 @@ import { ReportSummary } from '../components/report';
 import { HistoryList } from '../components/history';
 import { TaskPanel } from '../components/tasks';
 import { useTaskStream } from '../hooks';
+import { StockSearchInput } from '../components/common';
 
 /**
  * 首页 - 单页设计
@@ -220,8 +221,9 @@ const HomePage: React.FC = () => {
   };
 
   // 分析股票（异步模式）
-  const handleAnalyze = async () => {
-    const { valid, message, normalized } = validateStockCode(stockCode);
+  const handleAnalyze = async (overrideCode?: string) => {
+    const codeToUse = overrideCode ?? stockCode;
+    const { valid, message, normalized } = validateStockCode(codeToUse);
     if (!valid) {
       setInputError(message);
       return;
@@ -266,13 +268,6 @@ const HomePage: React.FC = () => {
     }
   };
 
-  // 回车提交
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && stockCode && !isAnalyzing) {
-      handleAnalyze();
-    }
-  };
-
   const sidebarContent = (
     <div className="flex flex-col gap-3 overflow-hidden min-h-0 h-full">
       <TaskPanel tasks={activeTasks} />
@@ -310,28 +305,30 @@ const HomePage: React.FC = () => {
             </svg>
           </button>
           <div className="flex-1 relative min-w-0">
-            <input
-              type="text"
-              value={stockCode}
-              onChange={(e) => {
-                setStockCode(e.target.value.toUpperCase());
-                setInputError(undefined);
-              }}
-              onKeyDown={handleKeyDown}
+            <StockSearchInput
               placeholder="输入股票代码，如 600519、00700、AAPL"
               disabled={isAnalyzing}
-              className={`input-terminal w-full ${inputError ? 'border-danger/50' : ''}`}
+              error={inputError}
+              onChange={(q) => {
+                setStockCode(q);
+                setInputError(undefined);
+              }}
+              onSelect={(code) => {
+                setStockCode(code);
+                setInputError(undefined);
+              }}
+              onSubmit={(query) => {
+                handleAnalyze(query.toUpperCase());
+              }}
+              className="w-full"
             />
-            {inputError && (
-              <p className="absolute -bottom-4 left-0 text-xs text-danger">{inputError}</p>
-            )}
             {duplicateError && (
               <p className="absolute -bottom-4 left-0 text-xs text-warning">{duplicateError}</p>
             )}
           </div>
           <button
             type="button"
-            onClick={handleAnalyze}
+            onClick={() => handleAnalyze()}
             disabled={!stockCode || isAnalyzing}
             className="btn-primary flex items-center gap-1.5 whitespace-nowrap flex-shrink-0"
           >

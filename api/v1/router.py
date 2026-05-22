@@ -11,7 +11,7 @@ API v1 路由聚合
 
 from fastapi import APIRouter
 
-from api.v1.endpoints import health, analysis, auth, history, stocks, backtest, system_config, agent, stock_selector, visualization, intraday
+from api.v1.endpoints import health, analysis, auth, history, stocks, backtest, system_config, agent, stock_selector, stock_search, visualization, intraday
 
 # 创建 v1 版本主路由
 router = APIRouter(prefix="/api/v1")
@@ -40,6 +40,13 @@ router.include_router(
     history.router,
     prefix="/history",
     tags=["History"]
+)
+
+# 搜索路由必须在 stocks 路由之前注册，确保 /stocks/search 不会被 /stocks/{stock_code} 误匹配
+router.include_router(
+    stock_search.router,
+    prefix="/stocks",
+    tags=["Stocks Search"]
 )
 
 router.include_router(

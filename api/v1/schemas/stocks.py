@@ -100,3 +100,38 @@ class StockHistoryResponse(BaseModel):
                 "data": []
             }
         }
+
+
+class MatchSegment(BaseModel):
+    """匹配文本高亮区间"""
+
+    field: str = Field(..., description="高亮字段名（name/code）")
+    start: int = Field(..., description="高亮起始位置（含）")
+    end: int = Field(..., description="高亮结束位置（不含）")
+
+
+class StockSearchResult(BaseModel):
+    """单条股票搜索结果"""
+
+    code: str = Field(..., description="股票代码")
+    name: str = Field(..., description="股票名称")
+    market: str = Field(..., description="市场（SH/SZ）")
+    match_type: str = Field(..., description="匹配类型")
+    match_segments: List[MatchSegment] = Field(default_factory=list, description="高亮区间列表")
+    score: int = Field(..., description="匹配得分")
+
+
+class StockSearchResponse(BaseModel):
+    """股票搜索响应"""
+
+    query: str = Field(..., description="搜索关键词")
+    total: int = Field(..., description="匹配结果总数")
+    results: List[StockSearchResult] = Field(default_factory=list, description="搜索结果列表")
+    time_ms: float = Field(..., description="搜索耗时（毫秒）")
+
+
+class StockSearchRefreshResponse(BaseModel):
+    """索引刷新响应"""
+
+    status: str = Field(..., description="刷新状态（ok）")
+    entry_count: int = Field(..., description="新索引的条目数量")

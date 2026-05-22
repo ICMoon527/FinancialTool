@@ -25,7 +25,7 @@ import {
 } from '../api/intraday';
 import type { WeightContribution, IntradaySignal } from '../api/intraday';
 import { validateStockCode } from '../utils/validation';
-import { Card } from '../components/common';
+import { Card, StockSearchInput } from '../components/common';
 import { CrosshairSyncEngine } from './CrosshairSyncEngine';
 
 const CHART_HEIGHT = 460;
@@ -2193,8 +2193,9 @@ const IntradayPage: React.FC = () => {
   }, [intradayData, renderData, priceRangeEnabled]);
 
   // ── 搜索 ──
-  const handleSearch = useCallback(async (overrideWarmup?: boolean) => {
-    const v = validateStockCode(stockCode);
+  const handleSearch = useCallback(async (overrideWarmup?: boolean, overrideCode?: string) => {
+    const code = overrideCode ?? stockCode;
+    const v = validateStockCode(code);
     setInputError(v.valid ? undefined : v.message);
     if (!v.valid) return;
 
@@ -2204,13 +2205,13 @@ const IntradayPage: React.FC = () => {
       // 盘中轮询已保证缓存/DB最新，手动搜索用 cache_only 避免额外API压力
       // 盘后直接走 full 链路，跳过 cache_only 的无效尝试
       const dataStrategy = isTradingTime() ? 'auto' : 'full';
-      const data = await getIntradayData(stockCode, dateParam, dataStrategy, overrideWarmup ?? warmupEnabled);
+      const data = await getIntradayData(code, dateParam, dataStrategy, overrideWarmup ?? warmupEnabled);
       setIntradayData(data);
       setInputError(undefined);
 
       // 保存搜索历史
       try {
-        await saveSearchHistory(stockCode, data.stock_name || '', todayDateStr);
+        await saveSearchHistory(code, data.stock_name || '', todayDateStr);
         await loadHistory();
       } catch (e) {
         console.warn('保存搜索历史失败:', e);
@@ -2223,16 +2224,6 @@ const IntradayPage: React.FC = () => {
       setIsLoading(false);
     }
   }, [stockCode, loadHistory, isTradingTime, todayDateStr, warmupEnabled]);
-
-  // 回车搜索
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (e.key === 'Enter' && !isLoading && stockCode) {
-        handleSearch();
-      }
-    },
-    [handleSearch, isLoading, stockCode],
-  );
 
   // 点击历史记录
   const handleHistoryClick = useCallback(
@@ -2599,17 +2590,22 @@ const IntradayPage: React.FC = () => {
           </button>
 
           <div className="flex-1 relative min-w-0">
-            <input
-              type="text"
-              value={stockCode}
-              onChange={(e) => {
-                setStockCode(e.target.value.toUpperCase());
+            <StockSearchInput
+              placeholder="输入股票代码，如 600519、00700、AAPL"
+              disabled={isLoading}
+              error={inputError}
+              onChange={(q) => {
+                setStockCode(q);
                 setInputError(undefined);
               }}
-              onKeyDown={handleKeyDown}
-              placeholder="输入股票代码，如 600519"
-              disabled={isLoading}
-              className={`input-terminal w-full ${inputError ? 'border-danger/50' : ''}`}
+              onSelect={(code) => {
+                setStockCode(code);
+                setInputError(undefined);
+              }}
+              onSubmit={(query) => {
+                handleSearch(undefined, query.toUpperCase());
+              }}
+              className="w-full"
             />
             {inputError && (
               <p className="absolute -bottom-4 left-0 text-xs text-danger">{inputError}</p>
@@ -3115,7 +3111,7 @@ const IntradayPage: React.FC = () => {
                 const snap = historySnapshots[stockCode];
                 const hasDepth = snap.bid_prices?.length >= 5 && snap.ask_prices?.length >= 5;
                 return (
-                  <Card variant="default" padding="sm" className="w-36 flex-shrink-0 flex-1 min-w-0" style={{ height: 165 }}>
+                  <Card variant="default" padding="sm" className="w-36 flex-shrink-0 flex-[7] min-w-0" style={{ height: 165 }}>
                     <div className="overflow-y-auto h-full">
                       {!hasDepth ? (
                         <div className="text-xs text-muted/40">暂无盘口数据</div>
@@ -3167,7 +3163,7 @@ const IntradayPage: React.FC = () => {
               })()}
 
               {intradayData && filteredSignals.length > 0 && (
-                <div className="flex-[3] overflow-y-auto" style={{ height: 165 }}>
+                <div className="flex-[13] overflow-y-auto" style={{ height: 165 }}>
                   <div className="text-xs text-muted/60 mb-1 flex items-center gap-3">
                     <span>共 {filteredSignals.length} 条信号</span>
                     <span className="font-mono font-medium" style={{ color: filteredSimulReturn.totalReturn >= 0 ? '#FF4444' : '#44FF44' }}>

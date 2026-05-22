@@ -10,3 +10,4 @@ export * from './Select';
 export * from './Badge';
 export * from './Pagination';
 export { default as KlineChart } from './KlineChart';
+export { default as StockSearchInput } from './StockSearchInput';
