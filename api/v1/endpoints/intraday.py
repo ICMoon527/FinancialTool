@@ -1385,21 +1385,7 @@ def _compute_reference_lines(klines: list, code: str, db_manager=None, query_dat
         today_high = max(highs)
         today_low = min(lows)
 
-        # ── 今开 ──
-        ref_lines.append(ReferenceLine(
-            id='today_open', label='今开', price=round(today_open, 2),
-            category='key_level', color='#4488FF', style='dotted', base_weight=1.5,
-        ))
-
-        # ── 今日高/今日低 ──
-        ref_lines.append(ReferenceLine(
-            id='today_high', label='今高', price=round(today_high, 2),
-            category='key_level', color='#FF444488', style='dotted', base_weight=1.0,
-        ))
-        ref_lines.append(ReferenceLine(
-            id='today_low', label='今低', price=round(today_low, 2),
-            category='key_level', color='#44FF4488', style='dotted', base_weight=1.0,
-        ))
+        # ── 今开/今高/今低 已去除──
 
         # ════════════════════════════════════════
         # 日线级别参考线（需要数据库）

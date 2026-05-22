@@ -57,6 +57,21 @@ function signalColor(text: string): { fg: string; bg: string } {
   return { fg: '#00D4FF', bg: 'rgba(0,212,255,0.10)' };
 }
 
+/** 将 hex 颜色（支持 #RGB / #RRGGBB / #RRGGBBAA）转换为带 alpha 的 hex 格式 #RRGGBBAA */
+function hexToRgba(hex: string, alpha: number): string {
+  let h = hex.replace('#', '');
+  // 展开简写 #RGB → RRGGBB
+  if (h.length === 3) {
+    h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+  } else if (h.length === 4) {
+    h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2] + h[3] + h[3];
+  }
+  // 取前6位作为 RGB，忽略已有的 alpha 通道
+  const rgb = h.substring(0, 6);
+  const a = Math.round(alpha * 255).toString(16).padStart(2, '0');
+  return `#${rgb}${a}`;
+}
+
 /**
  * 将分时K线数据转换为 lightweight-charts 可用格式
  * dateStr: 当前查询日期 "YYYY-MM-DD"
@@ -1459,12 +1474,16 @@ const IntradayPage: React.FC = () => {
           const isChipLine = rl.id === 'chip_upper' || rl.id === 'chip_lower';
           if (isChipLine && !chipOverlaps) return; // 筹码区不在可见范围内，跳过该参考线
           const ls: 0 | 1 | 2 | 3 | 4 = rl.style === 'dashed' ? 2 : (rl.style === 'dotted' ? 1 : 0);
+          // 将颜色 hex 转换为半透明 hex 作为标签背景色
+          const labelBgColor = hexToRgba(rl.color, 0.35);
           const priceLine = refLayer.createPriceLine({
             price: rl.price,
             color: rl.color,
             lineWidth: 1,
             lineStyle: ls,
             axisLabelVisible: !isChipLine,
+            axisLabelColor: labelBgColor,
+            axisLabelTextColor: '#000000',
             title: rl.label,
           });
           refLinePriceLinesRef.current.push(priceLine);
@@ -3032,7 +3051,7 @@ const IntradayPage: React.FC = () => {
 
               {hoveredWeightDetails && (
                 <>
-                  <Card variant="default" padding="sm" className="w-36 flex-shrink-0" style={{ height: 165 }}>
+                  <Card variant="default" padding="sm" className="w-44 flex-shrink-0" style={{ height: 165 }}>
                     <div className="overflow-y-auto h-full">
                       <h3 className="text-xs font-medium text-muted mb-2">买入权重贡献</h3>
                       <div className="space-y-0.5">
@@ -3163,7 +3182,7 @@ const IntradayPage: React.FC = () => {
               })()}
 
               {intradayData && filteredSignals.length > 0 && (
-                <div className="flex-[13] overflow-y-auto" style={{ height: 165 }}>
+                <div className="flex-[11] overflow-y-auto" style={{ height: 165 }}>
                   <div className="text-xs text-muted/60 mb-1 flex items-center gap-3">
                     <span>共 {filteredSignals.length} 条信号</span>
                     <span className="font-mono font-medium" style={{ color: filteredSimulReturn.totalReturn >= 0 ? '#FF4444' : '#44FF44' }}>
