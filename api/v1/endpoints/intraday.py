@@ -953,7 +953,8 @@ def _compute_mfi_signal(result, overbought: float = 80, oversold: float = 20) ->
 
 def _generate_indicator_sub_charts(klines: list, warmup_klines: list = None,
                                    precomputed_result: 'pd.DataFrame' = None,
-                                   precomputed_engine: 'IntradayIndicatorEngine' = None) -> list:
+                                   precomputed_engine: 'IntradayIndicatorEngine' = None,
+                                   ma5_price: float = None) -> list:
     """根据分时K线计算四大指标，生成子图数据
 
     Args:
@@ -1184,6 +1185,34 @@ def _generate_indicator_sub_charts(klines: list, warmup_klines: list = None,
                             label="均价偏离度",
                             color="#d1d4dc",
                             data=deviation_pct_data,
+                        ),
+                    ],
+                    signal_text="",
+                )
+            )
+
+        # ── MA5乖离率（基于日线级MA5）──
+        if ma5_price is not None and ma5_price > 0 and "Close" in today_result.columns:
+            ma5_dev_data = []
+            for i in range(len(today_result)):
+                tl = time_labels[i] if i < len(time_labels) else ""
+                close_val = today_result["Close"].iloc[i]
+                if not pd.isna(close_val):
+                    dev = (close_val - ma5_price) / ma5_price * 100
+                    ma5_dev_data.append(
+                        IndicatorLinePoint(time=tl, value=round(float(dev), 2))
+                    )
+            sub_charts.append(
+                IndicatorSubChart(
+                    id="ma5_deviation",
+                    label="MA5乖离率",
+                    height=110,
+                    lines=[
+                        IndicatorLine(
+                            name="ma5_dev_pct",
+                            label="MA5乖离率",
+                            color="#FFA500",
+                            data=ma5_dev_data,
                         ),
                     ],
                     signal_text="",
@@ -1794,7 +1823,16 @@ def get_intraday_data(
         signals, summary, precomputed_result, precomputed_engine = _run_t0_strategy(klines, reference_lines, warmup_klines)
 
         # 生成指标子图数据（含新增价格均线和均价偏离）
-        indicator_sub_charts = _generate_indicator_sub_charts(klines, warmup_klines, precomputed_result, precomputed_engine)
+        # 从参考线中提取日线级MA5价格，用于MA5乖离率计算
+        ma5_price = None
+        for rl in reference_lines:
+            if rl.id == 'ma5':
+                ma5_price = rl.price
+                break
+        indicator_sub_charts = _generate_indicator_sub_charts(
+            klines, warmup_klines, precomputed_result, precomputed_engine,
+            ma5_price=ma5_price,
+        )
 
         # 构建K线响应
         kline_points = [IntradayKlinePoint(**k) for k in klines]
@@ -2388,7 +2426,15 @@ def get_batch_status(
                     else:
                         logger.warning(f"[预热] batch-status {code} 无前日快照数据")
                     signals, summary, precomputed_result, precomputed_engine = _run_t0_strategy(klines, reference_lines, batch_warmup_klines)
-                    indicator_sub_charts = _generate_indicator_sub_charts(klines, batch_warmup_klines, precomputed_result, precomputed_engine)
+                    batch_ma5_price = None
+                    for rl in reference_lines:
+                        if rl.id == 'ma5':
+                            batch_ma5_price = rl.price
+                            break
+                    indicator_sub_charts = _generate_indicator_sub_charts(
+                        klines, batch_warmup_klines, precomputed_result, precomputed_engine,
+                        ma5_price=batch_ma5_price,
+                    )
                     kline_points = [IntradayKlinePoint(**k) for k in klines]
                     sn = raw_snapshots.get(current_code, {})
                     stock_name = sn.get("stock_name", "")

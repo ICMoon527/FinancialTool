@@ -16,7 +16,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 
-from pypinyin import lazy_pinyin, Style
+from pypinyin import pinyin, Style
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +36,7 @@ class StockIndexEntry:
     pinyin_full: str = ""  # 全拼（如 guizhoumaotai）
     pinyin_initials: str = ""  # 简拼（如 gzmt）
     pinyin_first_char: str = ""  # 每字首字母（如 gzm）
+    pinyin_initials_alt: Set[str] = field(default_factory=set)  # 多音字简拼变体（如 长电科技 → cdjk）
     trigrams: Set[str] = field(default_factory=set)  # 2-gram 集合
 
     def __repr__(self) -> str:
@@ -231,19 +232,36 @@ class StockSearchIndex:
     @staticmethod
     def _build_entry(code: str, name: str, market: str) -> "StockIndexEntry":
         """为单只股票生成所有索引字段"""
+        from itertools import product
+
         name_lower = name.lower()
-        py_list = lazy_pinyin(name, style=Style.TONE3, strict=False)
-        # 全拼：去掉声调数字，连接成字符串
-        pinyin_full = "".join(re.sub(r"\d", "", s) for s in py_list)
-        # 简拼：每字拼音首字母（g z m t）
-        pinyin_initials = "".join(s[0] for s in py_list if s)
-        # 首字母：每字拼音首字母，去重连续相同（gzmt → gzm）
-        initials_chars = [s[0] for s in py_list if s]
+
+        # 使用 heteronym=True 获取所有读音
+        all_py = pinyin(name, style=Style.TONE3, heteronym=True)
+        # all_py: [['zha3ng', 'cha2ng'], ['dia4n'], ['ke1'], ['ji4']]
+
+        # 主读音（每字第一个）
+        primary_py = [pron[0] for pron in all_py if pron]
+        pinyin_full = "".join(re.sub(r"\d", "", s) for s in primary_py)
+        pinyin_initials = "".join(s[0] for s in primary_py if s)
+
+        # 首字母（去重连续相同）
+        initials_chars = [s[0] for s in primary_py if s]
         unique_initials: List[str] = []
         for ch in initials_chars:
             if not unique_initials or unique_initials[-1] != ch:
                 unique_initials.append(ch)
         pinyin_first_char = "".join(unique_initials)
+
+        # 多音字：生成所有可能的简拼组合
+        alt_initials: Set[str] = set()
+        has_heteronym = any(len(p) > 1 for p in all_py)
+        if has_heteronym:
+            # 每字取首字母的所有排列
+            char_initials = [[pron[0] for pron in char_py if pron] for char_py in all_py]
+            for combo in product(*char_initials):
+                alt_initials.add("".join(combo))
+            alt_initials.discard(pinyin_initials)  # 排除主读音
 
         # 2-gram 切分
         trigrams: Set[str] = set()
@@ -261,6 +279,7 @@ class StockSearchIndex:
             pinyin_full=pinyin_full,
             pinyin_initials=pinyin_initials,
             pinyin_first_char=pinyin_first_char,
+            pinyin_initials_alt=alt_initials,
             trigrams=trigrams,
         )
 
@@ -272,9 +291,12 @@ class StockSearchIndex:
             # 全拼前缀
             if entry.pinyin_full:
                 self._pinyin_full_trie.insert(entry.pinyin_full, i)
-            # 简拼前缀
+            # 简拼前缀（含多音字变体）
             if entry.pinyin_initials:
                 self._pinyin_initials_trie.insert(entry.pinyin_initials, i)
+            for alt in entry.pinyin_initials_alt:
+                if alt:
+                    self._pinyin_initials_trie.insert(alt, i)
 
     def _build_trigram_index(self) -> None:
         """构建 2-gram 倒排索引"""

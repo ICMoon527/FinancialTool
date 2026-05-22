@@ -249,6 +249,7 @@ const IntradayPage: React.FC = () => {
   const [crosshairKdjDValue, setCrosshairKdjDValue] = useState<number | null>(null);
   const [crosshairKdjJValue, setCrosshairKdjJValue] = useState<number | null>(null);
   const [crosshairDeviationPct, setCrosshairDeviationPct] = useState<number | null>(null);
+  const [crosshairMa5DevPct, setCrosshairMa5DevPct] = useState<number | null>(null);
   const [warmupEnabled, setWarmupEnabled] = useState(true);
   const [hoveredWeightDetails, setHoveredWeightDetails] = useState<{
     buy: WeightContribution[];
@@ -831,6 +832,7 @@ const IntradayPage: React.FC = () => {
     ma5: number;
     ma20: number;
     deviation_pct: number;
+    ma5_dev_pct: number;
     absorption_active: boolean;
     distribution_active: boolean;
     price_above_ma5: boolean;
@@ -1074,6 +1076,7 @@ const IntradayPage: React.FC = () => {
 
     const curSn = snapshots[idx];
     setCrosshairDeviationPct(curSn && !isNaN(curSn.deviation_pct) ? curSn.deviation_pct : null);
+    setCrosshairMa5DevPct(curSn && !isNaN(curSn.ma5_dev_pct) ? curSn.ma5_dev_pct : null);
 
     setIsCrosshairActive(true);
 
@@ -1549,6 +1552,7 @@ const IntradayPage: React.FC = () => {
           setCrosshairKdjDValue(null);
           setCrosshairKdjJValue(null);
           setCrosshairDeviationPct(null);
+          setCrosshairMa5DevPct(null);
         },
       });
       syncEngineRef.current.register(
@@ -1632,7 +1636,7 @@ const IntradayPage: React.FC = () => {
       const buildSnapshot = () => {
         const map = new Map<number, {
           dominant_power: number; absorption: number;
-          close: number; ma5: number; ma20: number; deviation_pct: number;
+          close: number; ma5: number; ma20: number; deviation_pct: number; ma5_dev_pct: number;
           DIF: number; DEA: number; MACD_Bar: number; RSI: number;
           K: number; D: number; J: number;
           mfi_value: number;
@@ -1645,7 +1649,7 @@ const IntradayPage: React.FC = () => {
               if (t <= 0) return;
               if (!map.has(t)) map.set(t, {
                 dominant_power: NaN, absorption: NaN,
-                close: NaN, ma5: NaN, ma20: NaN, deviation_pct: NaN,
+                close: NaN, ma5: NaN, ma20: NaN, deviation_pct: NaN, ma5_dev_pct: NaN,
                 DIF: NaN, DEA: NaN, MACD_Bar: NaN, RSI: NaN,
                 K: NaN, D: NaN, J: NaN,
                 mfi_value: NaN,
@@ -1657,6 +1661,7 @@ const IntradayPage: React.FC = () => {
               else if (line.name === 'ma5') entry.ma5 = pt.value;
               else if (line.name === 'ma20') entry.ma20 = pt.value;
               else if (line.name === 'deviation_pct') entry.deviation_pct = pt.value;
+              else if (line.name === 'ma5_dev_pct') entry.ma5_dev_pct = pt.value;
               else if (line.name === 'DIF') entry.DIF = pt.value;
               else if (line.name === 'DEA') entry.DEA = pt.value;
               else if (line.name === 'MACD_Bar') entry.MACD_Bar = pt.value;
@@ -3306,6 +3311,39 @@ const IntradayPage: React.FC = () => {
                     </div>
                   );
                 })()}
+                {/* MA5乖离率浮动标签 */}
+                {(() => {
+                  const ma5DevPct = isCrosshairActive
+                    ? crosshairMa5DevPct
+                    : (intradayData?.indicator_sub_charts
+                        ?.find((sc: any) => sc.id === 'ma5_deviation')
+                        ?.lines?.find((l: any) => l.name === 'ma5_dev_pct')
+                        ?.data?.slice(-1)[0]?.value ?? null);
+                  if (ma5DevPct == null) return null;
+                  const ma5DevAbs = Math.abs(ma5DevPct);
+                  const ma5textColor =
+                    ma5DevAbs > 7.5 ? '#FF4444' : ma5DevAbs >= 5 ? '#FFAA00' : '#44FF44';
+                  return (
+                    <div
+                      style={{
+                        position: 'absolute',
+                        top: 8,
+                        left: 160,
+                        zIndex: 10,
+                        fontSize: 12,
+                        fontFamily: 'monospace',
+                        fontWeight: 600,
+                        color: ma5textColor,
+                        backgroundColor: 'rgba(26,26,46,0.85)',
+                        padding: '2px 8px',
+                        borderRadius: 4,
+                        pointerEvents: 'none',
+                      }}
+                    >
+                      MA5乖离 {ma5DevPct >= 0 ? '+' : ''}{ma5DevPct.toFixed(2)}%
+                    </div>
+                  );
+                })()}
               </div>
             </Card>
 
@@ -3317,7 +3355,7 @@ const IntradayPage: React.FC = () => {
             {/* 四大指标子图 */}
             {(intradayData?.indicator_sub_charts?.length ?? 0) > 0 && (
               <div className="space-y-2 mb-4">
-                {intradayData?.indicator_sub_charts?.filter((sc) => sc.id !== 'price_ma' && sc.id !== 'avg_price_deviation').map((sc) => {
+                {intradayData?.indicator_sub_charts?.filter((sc) => sc.id !== 'price_ma' && sc.id !== 'avg_price_deviation' && sc.id !== 'ma5_deviation').map((sc) => {
                   const containerRefMap: Record<string, React.RefObject<HTMLDivElement | null>> = {
                     absorption: absorptionContainerRef,
                     macd: macdContainerRef,
