@@ -257,6 +257,8 @@ class StockSelectorService:
                     market_data_cache
                 )
             except Exception as e:
+                if type(e).__name__ == "SnapshotUnavailableError":
+                    raise
                 logger.error("Failed to screen stock %s: %s", code, e)
                 return None
 

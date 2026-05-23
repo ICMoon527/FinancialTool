@@ -312,6 +312,8 @@ class StrategyManager:
                         match = strategy.select(stock_code, stock_name)
                 results.append(match)
             except Exception as e:
+                if type(e).__name__ == "SnapshotUnavailableError":
+                    raise
                 logger.error("Strategy %s failed for %s: %s", strategy.id, stock_code, e)
                 results.append(
                     StrategyMatch(
