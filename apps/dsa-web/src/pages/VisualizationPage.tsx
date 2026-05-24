@@ -9,6 +9,22 @@ import { Card, StockSearchInput } from '../components/common';
 import { useStockPriceHistory } from '../hooks';
 import ChipDistributionChart from '../components/charts/ChipDistributionChart';
 
+/** 计算成交量的 N 日简单移动平均（过滤掉不足N天的数据点） */
+function calculateVolumeMA(
+  volumeData: Array<{ time: any; value: number }>,
+  days: number,
+): Array<{ time: any; value: number }> {
+  const result: Array<{ time: any; value: number }> = [];
+  for (let idx = days - 1; idx < volumeData.length; idx++) {
+    let sum = 0;
+    for (let i = idx - days + 1; i <= idx; i++) {
+      sum += volumeData[i].value;
+    }
+    result.push({ time: volumeData[idx].time, value: sum / days });
+  }
+  return result;
+}
+
 // 定义指标配置
 const INDICATOR_OPTIONS = [
   { id: 'volume', name: '成交量', description: '成交量柱状图', color: '#666666' },
@@ -1292,6 +1308,30 @@ const VisualizationPage: React.FC = () => {
           
           histogramSeries.setData(histogramData);
           subChartSeriesRefs.current[indicatorId] = histogramSeries;
+
+          // 五日平均成交量线（白色）
+          const volume5MA = calculateVolumeMA(volumeData, 5);
+          const vol5maSeries = chart.addSeries(lightweightCharts.LineSeries, {
+            color: '#FFFFFF',
+            lineWidth: 1,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+            priceFormat: { type: 'volume' },
+          });
+          vol5maSeries.setData(volume5MA);
+
+          // 十日平均成交量线（金色）
+          const volume10MA = calculateVolumeMA(volumeData, 10);
+          const vol10maSeries = chart.addSeries(lightweightCharts.LineSeries, {
+            color: '#FFD700',
+            lineWidth: 1,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+            priceFormat: { type: 'volume' },
+          });
+          vol10maSeries.setData(volume10MA);
 
         } else if (indicatorId === 'banker_control' && indicatorData) {
           // 庄家控盘 - 显示能量柱，分三段颜色
@@ -2904,6 +2944,19 @@ const VisualizationPage: React.FC = () => {
                               </>
                             );
                           })()}
+                        </div>
+                      )}
+                      {/* 成交量子图均量线图例 */}
+                      {indicatorId === 'volume' && (
+                        <div className="flex items-center gap-3 ml-auto">
+                          <div className="flex items-center gap-1">
+                            <span className="w-4 h-0.5 rounded" style={{ backgroundColor: '#FFFFFF' }} />
+                            <span className="text-[10px] text-muted/60">5日均量</span>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <span className="w-4 h-0.5 rounded" style={{ backgroundColor: '#FFD700' }} />
+                            <span className="text-[10px] text-muted/60">10日均量</span>
+                          </div>
                         </div>
                       )}
                     </div>

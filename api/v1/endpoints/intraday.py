@@ -1817,6 +1817,7 @@ def get_intraday_data(
             "enabled": warmup_enabled,
             "last_klines_count": len(warmup_klines),
             "prev_date": str(warm_up.get("date", "")) if warm_up else "",
+            "klines": warmup_klines,
         }
 
         # 运行做T策略（含引力场）

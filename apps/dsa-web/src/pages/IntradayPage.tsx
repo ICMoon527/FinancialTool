@@ -28,6 +28,22 @@ import { validateStockCode } from '../utils/validation';
 import { Card, StockSearchInput } from '../components/common';
 import { CrosshairSyncEngine } from './CrosshairSyncEngine';
 
+/** 计算成交量的 N 日简单移动平均（过滤掉不足N天的数据点） */
+function calculateVolumeMA(
+  volumeData: Array<{ time: any; value: number }>,
+  days: number,
+): Array<{ time: any; value: number }> {
+  const result: Array<{ time: any; value: number }> = [];
+  for (let idx = days - 1; idx < volumeData.length; idx++) {
+    let sum = 0;
+    for (let i = idx - days + 1; i <= idx; i++) {
+      sum += volumeData[i].value;
+    }
+    result.push({ time: volumeData[idx].time, value: sum / days });
+  }
+  return result;
+}
+
 const CHART_HEIGHT = 460;
 
 function timeFormatter(time: Time) {
@@ -436,6 +452,8 @@ const IntradayPage: React.FC = () => {
   const volumeChartRef = useRef<lightweightCharts.IChartApi | null>(null);
   const candleSeriesRef = useRef<lightweightCharts.ISeriesApi<'Candlestick'> | lightweightCharts.ISeriesApi<'Line'> | null>(null);
   const volumeSeriesRef = useRef<lightweightCharts.ISeriesApi<'Histogram'> | null>(null);
+  const volume5MASeriesRef = useRef<lightweightCharts.ISeriesApi<'Line'> | null>(null);
+  const volume10MASeriesRef = useRef<lightweightCharts.ISeriesApi<'Line'> | null>(null);
   const refLineSeriesRef = useRef<lightweightCharts.ISeriesApi<'Line'>[]>([]);
   const refLinePriceLinesRef = useRef<lightweightCharts.IPriceLine[]>([]);
   const chipAreaRef = useRef<lightweightCharts.ISeriesApi<'Baseline'> | null>(null);
@@ -764,6 +782,26 @@ const IntradayPage: React.FC = () => {
       priceFormat: { type: 'volume', precision: 0, minMove: 1 },
     });
 
+    // 五日平均成交量线（白色）
+    const vol5ma = volChart.addSeries(lightweightCharts.LineSeries, {
+      color: '#FFFFFF',
+      lineWidth: 1,
+      priceLineVisible: false,
+      lastValueVisible: false,
+      crosshairMarkerVisible: false,
+    });
+    volume5MASeriesRef.current = vol5ma;
+
+    // 十日平均成交量线（金色）
+    const vol10ma = volChart.addSeries(lightweightCharts.LineSeries, {
+      color: '#FFD700',
+      lineWidth: 1,
+      priceLineVisible: false,
+      lastValueVisible: false,
+      crosshairMarkerVisible: false,
+    });
+    volume10MASeriesRef.current = vol10ma;
+
     volumeChartRef.current = volChart;
     volumeSeriesRef.current = volSeries;
 
@@ -812,6 +850,8 @@ const IntradayPage: React.FC = () => {
       try { volChart.remove(); } catch (e) { /* ignore */ }
       chartRef.current = null;
       volumeChartRef.current = null;
+      volume5MASeriesRef.current = null;
+      volume10MASeriesRef.current = null;
       // 清理指标子图
       indicatorChartsRef.current.forEach((c) => {
         try { c.remove(); } catch (e) { /* ignore */ }
@@ -1328,6 +1368,26 @@ const IntradayPage: React.FC = () => {
       volumeChartRef.current = volChart;
       volumeSeriesRef.current = volSeries;
 
+      // 五日平均成交量线（白色）
+      const vol5maLine = volChart.addSeries(lightweightCharts.LineSeries, {
+        color: '#FFFFFF',
+        lineWidth: 1,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+      });
+      volume5MASeriesRef.current = vol5maLine;
+
+      // 十日平均成交量线（金色）
+      const vol10maLine = volChart.addSeries(lightweightCharts.LineSeries, {
+        color: '#FFD700',
+        lineWidth: 1,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+      });
+      volume10MASeriesRef.current = vol10maLine;
+
       const klines = convertKlineData(data.kline_data, date);
       klineRawDataRef.current = klines;
       allSignalsRef.current = data.signals || [];
@@ -1368,6 +1428,21 @@ const IntradayPage: React.FC = () => {
           };
         }),
       );
+
+      // 更新五日/十日平均成交量线（预热模式下用预热数据参与计算，再只保留当日部分）
+      const volumeValues = klines.map(k => ({ time: k.time as any, value: k.volume }));
+      const warmupKlines = data.warmup_info?.klines;
+      let allVolumeValues = volumeValues;
+      if (warmupKlines && warmupKlines.length > 0) {
+        const warmupVolumeValues = warmupKlines.map(k => ({ time: k.time as any, value: k.Volume }));
+        allVolumeValues = [...warmupVolumeValues, ...volumeValues];
+      }
+      const allVolume5MA = calculateVolumeMA(allVolumeValues, 5);
+      const allVolume10MA = calculateVolumeMA(allVolumeValues, 10);
+      const volume5MA = warmupKlines?.length ? allVolume5MA.slice(-klines.length) : allVolume5MA;
+      const volume10MA = warmupKlines?.length ? allVolume10MA.slice(-klines.length) : allVolume10MA;
+      if (volume5MASeriesRef.current) volume5MASeriesRef.current.setData(volume5MA);
+      if (volume10MASeriesRef.current) volume10MASeriesRef.current.setData(volume10MA);
 
       // ── 注册成交量到同步引擎 ──
       syncEngineRef.current.register(

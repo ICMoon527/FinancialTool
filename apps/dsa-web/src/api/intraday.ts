@@ -106,6 +106,7 @@ export interface IntradayDataResponse {
     enabled: boolean;
     last_klines_count: number;
     prev_date: string;
+    klines?: IntradayKlinePoint[];
   } | null;
 }
 
