@@ -8,6 +8,7 @@ const categoryTitleMap: Record<SystemConfigCategory, string> = {
   system: '系统设置',
   agent: 'Agent 设置',
   backtest: '回测配置',
+  visualization: '可视化页面指标配置',
   uncategorized: '其他',
 };
 
@@ -19,6 +20,7 @@ const categoryDescriptionMap: Partial<Record<SystemConfigCategory, string>> = {
   system: '管理调度、日志、端口等系统级参数。',
   agent: '管理 Agent 模式、技能与策略配置。',
   backtest: '管理回测开关、评估窗口和引擎参数。',
+  visualization: '管理可视化页面中各个指标的周期配置等。',
   uncategorized: '其他未归类的配置项。',
 };
 
@@ -54,6 +56,8 @@ const fieldTitleMap: Record<string, string> = {
   BACKTEST_MIN_AGE_DAYS: '回测最小历史天数',
   BACKTEST_ENGINE_VERSION: '回测引擎版本',
   BACKTEST_NEUTRAL_BAND_PCT: '回测中性区间阈值（%）',
+  EXPMA_FAST_PERIOD: 'EXPMA 快速线周期',
+  EXPMA_SLOW_PERIOD: 'EXPMA 慢速线周期',
 };
 
 const fieldDescriptionMap: Record<string, string> = {
@@ -88,6 +92,8 @@ const fieldDescriptionMap: Record<string, string> = {
   BACKTEST_MIN_AGE_DAYS: '仅回测早于该天数的分析记录。',
   BACKTEST_ENGINE_VERSION: '回测引擎版本标识，用于区分结果版本。',
   BACKTEST_NEUTRAL_BAND_PCT: '中性区间阈值百分比，例如 2 表示 -2%~+2%。',
+  EXPMA_FAST_PERIOD: 'EXPMA 快速指数移动平均线的计算周期，默认 13。数值越小，对价格变化越敏感。',
+  EXPMA_SLOW_PERIOD: 'EXPMA 慢速指数移动平均线的计算周期，默认 30。数值越大，趋势越平滑。',
 };
 
 export function getCategoryTitleZh(category: SystemConfigCategory, fallback?: string): string {

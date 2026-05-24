@@ -12,6 +12,7 @@
 """
 
 import logging
+import os
 from datetime import date, datetime, timedelta, time
 from typing import Optional, List, Dict, Any, Tuple
 
@@ -29,10 +30,12 @@ from indicators.indicators.strong_detonation import StrongDetonation
 from indicators.indicators.resonance_chase import ResonanceChase
 from indicators.indicators.dmi import DMI
 from indicators.indicators.macd import MACD
+from indicators.indicators.expma import EXPMA
 from indicators.indicators.chip_distribution import ChipDistribution
 from src.storage import DatabaseManager, get_db
 from src.core.trading_calendar import get_start_date_by_trading_days, get_market_for_stock
 from src.services.turnover_service import TurnoverService
+from src.config import get_config
 
 logger = logging.getLogger(__name__)
 
@@ -161,7 +164,8 @@ AVAILABLE_INDICATORS = [
     'strong_detonation',
     'resonance_chase',
     'dmi',
-    'macd'
+    'macd',
+    'expma'
 ]
 
 # 指标计算器映射
@@ -175,7 +179,8 @@ INDICATOR_CALCULATORS = {
     'strong_detonation': StrongDetonation,
     'resonance_chase': ResonanceChase,
     'dmi': DMI,
-    'macd': MACD
+    'macd': MACD,
+    'expma': EXPMA
 }
 
 
@@ -449,6 +454,11 @@ class VisualizationService:
                 try:
                     if indicator_type == 'main_capital_distribution':
                         calculator = calculator_class(filter_threshold=0.05)
+                    elif indicator_type == 'expma':
+                        # 从环境变量读取 EXPMA 周期参数
+                        fast_period = int(os.getenv('EXPMA_FAST_PERIOD', '13'))
+                        slow_period = int(os.getenv('EXPMA_SLOW_PERIOD', '30'))
+                        calculator = EXPMA(fast_period=fast_period, slow_period=slow_period)
                     else:
                         calculator = calculator_class()
                     # 如果是主力成本指标且有资金流向数据，传递资金流向数据

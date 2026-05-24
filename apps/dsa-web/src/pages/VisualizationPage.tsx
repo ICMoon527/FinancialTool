@@ -13,6 +13,7 @@ import ChipDistributionChart from '../components/charts/ChipDistributionChart';
 const INDICATOR_OPTIONS = [
   { id: 'volume', name: '成交量', description: '成交量柱状图', color: '#666666' },
   { id: 'macd', name: 'MACD', description: '指数平滑异同移动平均线 (DIF/DEA/Bar)', color: '#FFFFFF' },
+  { id: 'expma', name: 'EXPMA', description: '指数移动平均线 (EXPMA13, EXPMA30)', color: '#FFFFFF' },
   { id: 'main_capital_absorption', name: '主力吸筹', description: '主力资金吸筹情况', color: '#AA44FF' },
   { id: 'main_cost', name: '主力成本', description: '主力资金成本', color: '#FFAA00' },
   { id: 'main_trading', name: '主力操盘', description: '主力操盘三线', color: '#FF4444' },
@@ -95,6 +96,8 @@ const VisualizationPage: React.FC = () => {
     macdBarSum?: number;
     macdBarDiff?: number;
     macdSignal?: string;
+    expmaFast?: number;
+    expmaSlow?: number;
   }>({});
 
   useEffect(() => {
@@ -116,6 +119,13 @@ const VisualizationPage: React.FC = () => {
   
   // 存储主力操盘数据用于十字线值查找
   const mainTradingDataRef = useRef<any>(null);
+  
+  // EXPMA 系列引用
+  const expmaFastSeriesRef = useRef<any>(null);
+  const expmaSlowSeriesRef = useRef<any>(null);
+  // 存储 EXPMA 数据用于十字线值查找
+  const expmaDataRef = useRef<any>(null);
+  
   const klineDataRef = useRef<any>(null);
   const latestDateRef = useRef<any>(null);
   const earliestDateRef = useRef<any>(null);
@@ -295,6 +305,8 @@ const VisualizationPage: React.FC = () => {
       macdBarSum?: number;
       macdBarDiff?: number;
       macdSignal?: string;
+      expmaFast?: number;
+      expmaSlow?: number;
     } = {};
 
     const bankerData = getIndicatorDataItem('banker_control', time);
@@ -368,6 +380,12 @@ const VisualizationPage: React.FC = () => {
           values.macdSignal = dif > dea ? 'MACD多头 \u2197' : 'MACD空头 \u2198';
         }
       }
+    }
+
+    const expmaData = getIndicatorDataItem('expma', time);
+    if (expmaData) {
+      values.expmaFast = expmaData.EXPMA_Fast;
+      values.expmaSlow = expmaData.EXPMA_Slow;
     }
 
     return values;
@@ -710,6 +728,8 @@ const VisualizationPage: React.FC = () => {
                 mainNetBuyWan: indicatorValues.mainNetBuyWan,
                 mainDirection: indicatorValues.mainDirection,
                 turnoverRatio: indicatorValues.turnoverRatio,
+                expmaFast: indicatorValues.expmaFast,
+                expmaSlow: indicatorValues.expmaSlow,
               });
             } else {
               const dataPoint = mainTradingDataRef.current.data.find((item: any) => item.date === param.time);
@@ -775,6 +795,8 @@ const VisualizationPage: React.FC = () => {
                   macdBarSum: indicatorValues.macdBarSum,
                   macdBarDiff: indicatorValues.macdBarDiff,
                   macdSignal: indicatorValues.macdSignal,
+                  expmaFast: indicatorValues.expmaFast,
+                  expmaSlow: indicatorValues.expmaSlow,
                 });
               } else {
                 const klinePoint = klineDataRef.current.find((item: any) => item.time === param.time);
@@ -795,6 +817,8 @@ const VisualizationPage: React.FC = () => {
                   macdBarSum: indicatorValues.macdBarSum,
                   macdBarDiff: indicatorValues.macdBarDiff,
                   macdSignal: indicatorValues.macdSignal,
+                  expmaFast: indicatorValues.expmaFast,
+                  expmaSlow: indicatorValues.expmaSlow,
                 });
               }
             }
@@ -985,6 +1009,79 @@ const VisualizationPage: React.FC = () => {
     }
   }, [selectedIndicators, visualizationData, refreshKey]);
 
+  // 3. 更新 EXPMA 系列（主图叠加）
+  useEffect(() => {
+    if (!mainChartRef.current || !visualizationData) return;
+
+    try {
+      // 清理旧的 EXPMA 系列
+      if (expmaFastSeriesRef.current) {
+        mainChartRef.current.removeSeries(expmaFastSeriesRef.current);
+        expmaFastSeriesRef.current = null;
+      }
+      if (expmaSlowSeriesRef.current) {
+        mainChartRef.current.removeSeries(expmaSlowSeriesRef.current);
+        expmaSlowSeriesRef.current = null;
+      }
+
+      const isExpmaSelected = selectedIndicators.includes('expma');
+      const expmaData = visualizationData.indicators.find(
+        (ind: any) => ind.indicator_type === 'expma'
+      );
+
+      // 保存 EXPMA 数据到 ref
+      expmaDataRef.current = expmaData;
+
+      if (isExpmaSelected && expmaData) {
+        // 快速线（白色）
+        const fastData = expmaData.data
+          .map((item: any) => ({
+            time: item.date,
+            value: item.EXPMA_Fast != null ? Number(item.EXPMA_Fast.toFixed(2)) : null,
+          }))
+          .filter((d: any) => d.value !== null && d.value !== undefined);
+
+        if (fastData.length > 0) {
+          const fastSeries = mainChartRef.current!.addSeries(
+            lightweightCharts.LineSeries, {
+              color: '#FFFFFF',
+              lineWidth: 1,
+              priceLineVisible: false,
+              lastValueVisible: true,
+              crosshairMarkerVisible: false,
+            }
+          );
+          fastSeries.setData(fastData);
+          expmaFastSeriesRef.current = fastSeries;
+        }
+
+        // 慢速线（金色）
+        const slowData = expmaData.data
+          .map((item: any) => ({
+            time: item.date,
+            value: item.EXPMA_Slow != null ? Number(item.EXPMA_Slow.toFixed(2)) : null,
+          }))
+          .filter((d: any) => d.value !== null && d.value !== undefined);
+
+        if (slowData.length > 0) {
+          const slowSeries = mainChartRef.current!.addSeries(
+            lightweightCharts.LineSeries, {
+              color: '#FFD700',
+              lineWidth: 1,
+              priceLineVisible: false,
+              lastValueVisible: true,
+              crosshairMarkerVisible: false,
+            }
+          );
+          slowSeries.setData(slowData);
+          expmaSlowSeriesRef.current = slowSeries;
+        }
+      }
+    } catch (error) {
+      console.error('Error updating EXPMA:', error);
+    }
+  }, [selectedIndicators, visualizationData, refreshKey]);
+
   // 更新子图数据
   useEffect(() => {
     // 清理旧的子图
@@ -1057,7 +1154,7 @@ const VisualizationPage: React.FC = () => {
     const createdCharts: Array<{ id: string; chart: any }> = [];
     
     selectedIndicators.forEach(indicatorId => {
-      if (indicatorId === 'main_trading') return;
+      if (indicatorId === 'main_trading' || indicatorId === 'expma') return;
       
       // 成交量不需要从指标数据中获取，它直接使用K线数据
       if (indicatorId !== 'volume') {
@@ -1924,6 +2021,8 @@ const VisualizationPage: React.FC = () => {
                     macdBarSum: indicatorValues.macdBarSum,
                     macdBarDiff: indicatorValues.macdBarDiff,
                     macdSignal: indicatorValues.macdSignal,
+                    expmaFast: indicatorValues.expmaFast,
+                    expmaSlow: indicatorValues.expmaSlow,
                   });
                 } else {
                   // 即使没有主图数据，也要更新所有子图指标的值
@@ -1945,6 +2044,8 @@ const VisualizationPage: React.FC = () => {
                     macdBarSum: indicatorValues.macdBarSum,
                     macdBarDiff: indicatorValues.macdBarDiff,
                     macdSignal: indicatorValues.macdSignal,
+                    expmaFast: indicatorValues.expmaFast,
+                    expmaSlow: indicatorValues.expmaSlow,
                   });
                 }
               }
@@ -2511,6 +2612,23 @@ const VisualizationPage: React.FC = () => {
                         )}
                       </>
                     )}
+                    {selectedIndicators.includes('expma') && (
+                      <>
+                        <h3 className="text-sm font-medium text-white">EXPMA</h3>
+                        {cursorValues.expmaFast !== undefined && cursorValues.expmaFast !== null && !isNaN(cursorValues.expmaFast) && (
+                          <div className="flex items-center gap-2">
+                            <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#FFFFFF' }} />
+                            <span className="text-xs text-white">EXPMA13: <span className="font-mono">{cursorValues.expmaFast.toFixed(2)}</span></span>
+                          </div>
+                        )}
+                        {cursorValues.expmaSlow !== undefined && cursorValues.expmaSlow !== null && !isNaN(cursorValues.expmaSlow) && (
+                          <div className="flex items-center gap-2">
+                            <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#FFD700' }} />
+                            <span className="text-xs text-white">EXPMA30: <span className="font-mono">{cursorValues.expmaSlow.toFixed(2)}</span></span>
+                          </div>
+                        )}
+                      </>
+                    )}
                     {/* 筹码分布标签（只在显示筹码时显示） */}
                     {showChipDistribution && chipDistributionData && (
                       <>
@@ -2571,9 +2689,9 @@ const VisualizationPage: React.FC = () => {
                 )}
               </div>
 
-              {/* 指标子图 - 只在有数据时显示（跳过主力操盘，它在主图显示） */}
+              {/* 指标子图 - 只在有数据时显示（跳过主力操盘和EXPMA，它们在主图显示） */}
               {visualizationData && selectedIndicators.map(indicatorId => {
-                if (indicatorId === 'main_trading') return null;
+                if (indicatorId === 'main_trading' || indicatorId === 'expma') return null;
                 
                 const indicatorData = indicatorId !== 'volume' 
                   ? visualizationData.indicators.find(ind => ind.indicator_type === indicatorId)
