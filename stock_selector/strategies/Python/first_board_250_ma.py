@@ -7,7 +7,7 @@
   2. 量比 > 1（腾讯快照优先，日线 volume 兜底）
   3. 涨幅 ≥ 9.9%（腾讯快照优先，日线 pct_chg 兜底）
   4. 换手率 5% - 15%（腾讯快照优先，日线 turnover_rate 兜底）
-  5. 流通市值 10亿 - 100亿（仅腾讯快照可获取，不可用时放行）
+  
 
 加分条件（仅影响排名）:
   F1. 90自然日横盘（波幅 < 20%）→ +5分
@@ -212,7 +212,7 @@ class FirstBoard250MAStrategy(StockSelectorStrategy):
     250首板战法
 
     筛选条件:
-      必备: MA250上穿 + 量比>1 + 涨幅≥9.9% + 换手率5-15% + 流通市值10-100亿
+      必备: MA250上穿 + 量比>1 + 涨幅≥9.9% + 换手率5-15%
       加分: 90日横盘 + 180日横盘 + 横盘期间有涨停
     """
 
@@ -222,7 +222,7 @@ class FirstBoard250MAStrategy(StockSelectorStrategy):
             name="first_board_250_ma",
             display_name="250首板战法",
             description="基于250日均线突破的首板股票筛选策略。必备条件：股价上穿MA250、量比>1、涨幅≥9.9%、"
-            "换手率5%-15%、流通市值10-100亿。加分条件：90/180日横盘、横盘期内有涨停。",
+            "换手率5%-15%。加分条件：90/180日横盘、横盘期内有涨停。",
             strategy_type=StrategyType.PYTHON,
             category="short_term",
             source="builtin",
@@ -510,16 +510,6 @@ class FirstBoard250MAStrategy(StockSelectorStrategy):
                 reason=result_d["reason"], match_details=match_details,
             )
 
-        # 条件E: 流通市值 10-100 亿
-        result_e = self._check_circ_mv(snapshot)
-        match_details["conditions"]["E_circ_mv"] = result_e
-        if not result_e["passed"]:
-            return StrategyMatch(
-                strategy_id=self.metadata.id, strategy_name=self.metadata.display_name,
-                score=0.0, matched=False,
-                reason=result_e["reason"], match_details=match_details,
-            )
-
         # ── 阶段2: 加分条件（全部必备通过后才到这里） ──
         score = 70.0
         match_details["score_breakdown"]["base"] = 70.0
@@ -559,7 +549,6 @@ class FirstBoard250MAStrategy(StockSelectorStrategy):
         reasons.append(result_b["reason"])
         reasons.append(result_c["reason"])
         reasons.append(result_d["reason"])
-        reasons.append(result_e["reason"])
         if f1_passed:
             reasons.append("横盘3个月 +5")
             if f2_passed:
