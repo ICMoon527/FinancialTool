@@ -1736,16 +1736,14 @@ def get_intraday_data(
             actual_strategy = "cache_only"  # 优先只走缓存/DB
         logger.debug(f"[手动查询] {code}: strategy={strategy} → actual={actual_strategy} (is_today={is_today})")
 
-        # 当日数据优先走完整响应缓存（轮询已计算好，直接返回）
-        if is_today:
-            cached = _get_cached_full_response(code, warmup_enabled)
-            if cached is not None:
-                # 校验缓存数据日期是否匹配目标日期，防止缓存了错误日期的数据
-                if _is_data_fresh([k.model_dump() for k in cached.kline_data], date_str):
-                    logger.info(f"[手动查询] {_format_stock_display(code)}: 命中完整内存缓存")
-                    return cached
-                else:
-                    logger.info(f"[手动查询] {_format_stock_display(code)}: 缓存数据已陈旧，丢弃并重新获取")
+        # 优先走完整响应缓存（TTL自动管理新鲜度，无需is_today限制）
+        cached = _get_cached_full_response(code, warmup_enabled)
+        if cached is not None:
+            logger.info(f"[手动查询] {_format_stock_display(code)}: 命中完整内存缓存")
+            return cached
+        else:
+            if is_today:
+                logger.debug(f"[手动查询] {_format_stock_display(code)}: 缓存未命中(is_today=True)")
 
         klines = None
         # 优先从数据库获取（包括当日：收盘后轮询停止，缓存过期时DB是最快路径）
@@ -1807,21 +1805,21 @@ def get_intraday_data(
         # 计算日线级参考线（引力场模型需要）
         reference_lines = _compute_reference_lines(klines, code, db_manager, date_str)
 
-        # 加载前日快照用于指标预热
+        # 从K线表加载前日数据用于指标预热（直接查K线表，不依赖快照表）
         warmup_klines: list = []
-        warm_up = None
+        prev_day_data = None
         if warmup_enabled:
-            warm_up = db_manager.load_previous_daily_summary(code, q_date)
-            warmup_klines = warm_up.get("last_klines", []) if warm_up else []
+            prev_day_data = db_manager.load_previous_day_klines(code, q_date)
+            warmup_klines = prev_day_data.get("klines", []) if prev_day_data else []
             if warmup_klines:
-                logger.info(f"[预热] {code} 加载前日 {len(warmup_klines)} 根K线进行指标预热，来源日期={warm_up.get('date', '')}")
+                logger.info(f"[预热] {code} 从K线表加载前日 {len(warmup_klines)} 根K线进行指标预热，来源日期={prev_day_data.get('date', '')}")
             else:
-                logger.warning(f"[预热] {code} 无前日快照数据，指标将从零状态开始计算")
+                logger.warning(f"[预热] {code} 无前日K线数据，指标将从零状态开始计算")
 
         warmup_info = {
             "enabled": warmup_enabled,
             "last_klines_count": len(warmup_klines),
-            "prev_date": str(warm_up.get("date", "")) if warm_up else "",
+            "prev_date": str(prev_day_data.get("date", "")) if prev_day_data else "",
             "klines": warmup_klines,
         }
 
@@ -1864,7 +1862,7 @@ def get_intraday_data(
             reference_lines=reference_lines,
             indicator_sub_charts=indicator_sub_charts,
             signal_summary=summary,
-            warm_up_summary=warm_up,
+            warm_up_summary=None,
             warmup_info=warmup_info,
             rsi_overbought=rsi_ob,
             rsi_oversold=rsi_os,
@@ -1874,9 +1872,8 @@ def get_intraday_data(
             sell_weights=sell_weights,
         )
 
-        # 当日数据写入缓存，避免 batch-status 轮询时重复计算
-        if is_today:
-            _set_cached_full_response(code, warmup_enabled, response)
+        # 写入完整响应缓存（不限is_today，切换股票时可直接命中）
+        _set_cached_full_response(code, warmup_enabled, response)
 
         return response
 
@@ -2029,8 +2026,8 @@ def _compute_signal_alert(code: str, db_manager=None) -> Optional[dict]:
                 q_date = date_type.fromisoformat(actual_date_str)
             except (ValueError, TypeError):
                 q_date = date_type.today()
-            warm_up = db_manager.load_previous_daily_summary(code, q_date)
-            warmup_klines = warm_up.get("last_klines", []) if warm_up else []
+            prev_day_data = db_manager.load_previous_day_klines(code, q_date)
+            warmup_klines = prev_day_data.get("klines", []) if prev_day_data else []
 
         signals, _summary, _precomputed, _engine = _run_t0_strategy(klines, None, warmup_klines)
         if not signals:
@@ -2421,13 +2418,13 @@ def get_batch_status(
                 try:
                     _inject_avg_price(klines)
                     reference_lines = _compute_reference_lines(klines, code, db_manager, None)
-                    # 加载前日快照用于指标预热
-                    batch_warm_up = db_manager.load_previous_daily_summary(code, actual_date)
-                    batch_warmup_klines = batch_warm_up.get("last_klines", []) if batch_warm_up else []
+                    # 从K线表加载前日数据用于指标预热
+                    batch_prev_day = db_manager.load_previous_day_klines(code, actual_date)
+                    batch_warmup_klines = batch_prev_day.get("klines", []) if batch_prev_day else []
                     if batch_warmup_klines:
-                        logger.info(f"[预热] batch-status {code} 加载前日 {len(batch_warmup_klines)} 根K线")
+                        logger.info(f"[预热] batch-status {code} 从K线表加载前日 {len(batch_warmup_klines)} 根K线")
                     else:
-                        logger.warning(f"[预热] batch-status {code} 无前日快照数据")
+                        logger.warning(f"[预热] batch-status {code} 无前日K线数据")
                     signals, summary, precomputed_result, precomputed_engine = _run_t0_strategy(klines, reference_lines, batch_warmup_klines)
                     batch_ma5_price = None
                     for rl in reference_lines:
@@ -2460,6 +2457,13 @@ def get_batch_status(
                         reference_lines=reference_lines,
                         indicator_sub_charts=indicator_sub_charts,
                         signal_summary=summary,
+                        warm_up_summary=None,
+                        warmup_info={
+                            "enabled": True,
+                            "last_klines_count": len(batch_warmup_klines),
+                            "prev_date": str(batch_prev_day.get("date", "")) if batch_prev_day else "",
+                            "klines": batch_warmup_klines,
+                        },
                         rsi_overbought=rsi_ob,
                         rsi_oversold=rsi_os,
                         mfi_overbought=mfi_ob,

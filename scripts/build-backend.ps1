@@ -92,9 +92,31 @@ $hiddenImports = @(
   'uvicorn.lifespan.on'
 )
 $hiddenImportArgs = $hiddenImports | ForEach-Object { "--hidden-import=$_" }
+# py_mini_racer 也是隐藏导入（ctypes 动态加载）
+$hiddenImportArgs += '--hidden-import=py_mini_racer'
 
 # 设置 matplotlib 后端为非交互式，避免 PyInstaller 打包 Qt 相关依赖
 $env:MPLBACKEND = 'Agg'
+
+# py_mini_racer 的 DLL 通过 ctypes.CDLL 动态加载，PyInstaller 静态分析无法检测
+# 需要手动收集 mini_racer.dll 和 icudtl.dat
+$pyMiniRacerDir = python -c "import py_mini_racer, os; print(os.path.dirname(py_mini_racer.__file__))"
+if ($LASTEXITCODE -eq 0 -and $pyMiniRacerDir) {
+  $pyMiniRacerDir = $pyMiniRacerDir.Trim()
+  Write-Host "Found py_mini_racer at: $pyMiniRacerDir"
+  $miniRacerDll = Join-Path $pyMiniRacerDir 'mini_racer.dll'
+  $icudtlDat = Join-Path $pyMiniRacerDir 'icudtl.dat'
+  $pyMiniRacerBinaryArgs = @()
+  if (Test-Path $miniRacerDll) {
+    $pyMiniRacerBinaryArgs += "--add-binary=$miniRacerDll`;py_mini_racer"
+  }
+  if (Test-Path $icudtlDat) {
+    $pyMiniRacerBinaryArgs += "--add-binary=$icudtlDat`;py_mini_racer"
+  }
+} else {
+  Write-Host 'WARNING: py_mini_racer not found, skipping DLL collection'
+  $pyMiniRacerBinaryArgs = @()
+}
 
 $pyInstallerArgs = @(
   '-m', 'PyInstaller',
@@ -112,6 +134,7 @@ $pyInstallerArgs = @(
   '--exclude', 'qtpy'
 )
 $pyInstallerArgs += $hiddenImportArgs
+$pyInstallerArgs += $pyMiniRacerBinaryArgs
 $pyInstallerArgs += 'main.py'
 
 Write-Host "Running: $pythonBin $($pyInstallerArgs -join ' ')"

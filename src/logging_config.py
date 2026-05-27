@@ -10,6 +10,7 @@
 3. 自动降低第三方库日志级别
 """
 
+import io
 import logging
 import sys
 from datetime import datetime
@@ -98,8 +99,9 @@ def setup_logging(
     rel_formatter = RelativePathFormatter(
         LOG_FORMAT, LOG_DATE_FORMAT, relative_to=project_root
     )
-    # Handler 1: 控制台输出
-    console_handler = logging.StreamHandler(sys.stdout)
+    # Handler 1: 控制台输出（强制 UTF-8 编码，避免 emoji 在 GBK 下报错）
+    utf8_stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    console_handler = logging.StreamHandler(utf8_stdout)
     console_handler.setLevel(level)
     console_handler.setFormatter(rel_formatter)
     root_logger.addHandler(console_handler)

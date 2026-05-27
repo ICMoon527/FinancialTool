@@ -9,9 +9,9 @@ datas += collect_data_files('akshare')
 a = Analysis(
     ['main.py'],
     pathex=[],
-    binaries=[],
+    binaries=[('E:\\Software\\Anaconda\\Lib\\site-packages\\py_mini_racer\\mini_racer.dll', 'py_mini_racer'), ('E:\\Software\\Anaconda\\Lib\\site-packages\\py_mini_racer\\icudtl.dat', 'py_mini_racer')],
     datas=datas,
-    hiddenimports=['tiktoken_ext.openai_public', 'multipart', 'multipart.multipart', 'json_repair', 'api', 'api.app', 'api.deps', 'api.v1', 'api.v1.router', 'api.v1.endpoints', 'api.v1.endpoints.analysis', 'api.v1.endpoints.history', 'api.v1.endpoints.stocks', 'api.v1.endpoints.health', 'api.v1.schemas', 'api.v1.schemas.analysis', 'api.v1.schemas.history', 'api.v1.schemas.stocks', 'api.v1.schemas.common', 'api.middlewares', 'api.middlewares.error_handler', 'src.services', 'src.services.task_queue', 'src.services.analysis_service', 'src.services.history_service', 'uvicorn.logging', 'uvicorn.loops', 'uvicorn.loops.auto', 'uvicorn.protocols', 'uvicorn.protocols.http', 'uvicorn.protocols.http.auto', 'uvicorn.protocols.websockets', 'uvicorn.protocols.websockets.auto', 'uvicorn.lifespan', 'uvicorn.lifespan.on'],
+    hiddenimports=['tiktoken_ext.openai_public', 'multipart', 'multipart.multipart', 'json_repair', 'api', 'api.app', 'api.deps', 'api.v1', 'api.v1.router', 'api.v1.endpoints', 'api.v1.endpoints.analysis', 'api.v1.endpoints.history', 'api.v1.endpoints.stocks', 'api.v1.endpoints.health', 'api.v1.schemas', 'api.v1.schemas.analysis', 'api.v1.schemas.history', 'api.v1.schemas.stocks', 'api.v1.schemas.common', 'api.middlewares', 'api.middlewares.error_handler', 'src.services', 'src.services.task_queue', 'src.services.analysis_service', 'src.services.history_service', 'uvicorn.logging', 'uvicorn.loops', 'uvicorn.loops.auto', 'uvicorn.protocols', 'uvicorn.protocols.http', 'uvicorn.protocols.http.auto', 'uvicorn.protocols.websockets', 'uvicorn.protocols.websockets.auto', 'uvicorn.lifespan', 'uvicorn.lifespan.on', 'py_mini_racer'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

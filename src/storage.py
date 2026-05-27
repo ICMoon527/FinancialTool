@@ -34,6 +34,7 @@ from sqlalchemy import (
     Index,
     UniqueConstraint,
     Text,
+    asc,
     select,
     and_,
     delete,
@@ -3385,6 +3386,52 @@ class DatabaseManager:
                     result["last_klines"] = []
                 return result
             return None
+
+    def load_previous_day_klines(self, code: str, current_date: date, limit: int = 80) -> Optional[dict]:
+        """从分时K线表加载前一个交易日的最后N根K线，用于指标预热
+
+        直接从 intraday_kline_1min 查询，不依赖 intraday_daily_summary 快照表，
+        确保轮询写入的K线数据也能被预热使用。
+
+        Args:
+            code: 股票代码
+            current_date: 当前日期
+            limit: 加载K线数量（默认80根，与策略WARMUP_BARS保持一致）
+
+        Returns:
+            {"date": date对象, "klines": [K线字典列表]} 或 None
+        """
+        with self.get_session() as session:
+            # 找到当前日期之前最近的一个有K线数据的交易日
+            prev_date = (
+                session.query(IntradayKline1Min.date)
+                .filter(
+                    IntradayKline1Min.code == code,
+                    IntradayKline1Min.date < current_date,
+                )
+                .order_by(desc(IntradayKline1Min.date))
+                .limit(1)
+                .scalar()
+            )
+            if not prev_date:
+                return None
+
+            # 加载该日所有K线（按时间升序）
+            records = (
+                session.query(IntradayKline1Min)
+                .filter(
+                    IntradayKline1Min.code == code,
+                    IntradayKline1Min.date == prev_date,
+                )
+                .order_by(asc(IntradayKline1Min.time))
+                .all()
+            )
+            if not records:
+                return None
+
+            klines = [r.to_dict() for r in records[-limit:]]
+            logger.debug(f"从K线表加载预热数据: {code} prev_date={prev_date}, {len(klines)} 根K线")
+            return {"date": prev_date, "klines": klines}
 
 
 # 便捷函数

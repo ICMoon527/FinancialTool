@@ -122,7 +122,14 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
             static_dir = Path(sys._MEIPASS) / "static"
         else:
             static_dir = Path(__file__).parent.parent / "static"
-    
+
+    # 确保数据库目录存在（提前创建，避免首次 DB 操作前目录缺失）
+    try:
+        from src.config import get_config
+        get_config().get_db_url()
+    except Exception:
+        pass  # 首次部署时 DB 路径可能尚未配置，忽略错误
+
     # 创建 FastAPI 实例
     app = FastAPI(
         title="Daily Stock Analysis API",
