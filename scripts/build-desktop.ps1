@@ -22,6 +22,14 @@ $env:CSC_IDENTITY_AUTO_DISCOVERY = 'false'
 $env:ELECTRON_BUILDER_ALLOW_UNRESOLVED_SYMLINKS = 'true'
 $env:ELECTRON_BUILDER_CACHE = "${PSScriptRoot}\..\.electron-builder-cache"
 
+# 使用国内镜像加速下载（Electron 二进制 + electron-builder 工具链）
+if (-not $env:ELECTRON_MIRROR) {
+  $env:ELECTRON_MIRROR = 'https://npmmirror.com/mirrors/electron/'
+}
+if (-not $env:ELECTRON_BUILDER_BINARIES_MIRROR) {
+  $env:ELECTRON_BUILDER_BINARIES_MIRROR = 'https://npmmirror.com/mirrors/electron-builder-binaries/'
+}
+
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $backendArtifact = Join-Path $repoRoot 'dist\backend\stock_analysis'
 

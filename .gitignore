@@ -81,3 +81,4 @@ static/
 .github/
 .dbg/
 strategy_backtest_results
+.electron-builder-cache/

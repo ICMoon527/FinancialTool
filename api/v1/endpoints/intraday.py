@@ -8,6 +8,7 @@
 
 import logging
 import os
+import sys
 import traceback
 import yaml
 import json
@@ -125,7 +126,14 @@ def _set_cached_klines(code: str, klines: list):
             'klines': klines,
         }
 
-CONFIG_PATH = Path(__file__).resolve().parent.parent.parent.parent / "watchdog" / "strategies" / "intraday_t0_config.yaml"
+def _get_project_root():
+    """获取项目根目录（兼容 PyInstaller 打包和开发模式）"""
+    if getattr(sys, 'frozen', False):
+        return Path(sys._MEIPASS)
+    return Path(__file__).resolve().parent.parent.parent.parent
+
+
+CONFIG_PATH = _get_project_root() / "watchdog" / "strategies" / "intraday_t0_config.yaml"
 
 
 def _load_indicator_config() -> dict:
@@ -593,10 +601,7 @@ def _run_t0_strategy(klines: list, reference_lines: list = None, warmup_klines: 
     try:
         from watchdog.strategies.intraday_t0_strategy import IntradayT0Strategy
 
-        config_path = os.path.join(
-            os.path.dirname(__file__), "..", "..", "..",
-            "watchdog", "strategies", "intraday_t0_config.yaml"
-        )
+        config_path = str(_get_project_root() / "watchdog" / "strategies" / "intraday_t0_config.yaml")
         config_path = os.path.normpath(config_path)
         strategy = IntradayT0Strategy(stock_code="temp", stock_name="", config_path=config_path)
 
@@ -2099,10 +2104,7 @@ def _run_simulated_trading(code: str, db_manager: DatabaseManager) -> Optional[S
         from watchdog.strategies.simulator import T0Simulator
         from watchdog.strategies.intraday_t0_strategy import IntradayT0Strategy
 
-        config_path = os.path.join(
-            os.path.dirname(__file__), "..", "..", "..",
-            "watchdog", "strategies", "intraday_t0_config.yaml"
-        )
+        config_path = str(_get_project_root() / "watchdog" / "strategies" / "intraday_t0_config.yaml")
         config_path = os.path.normpath(config_path)
         strategy = IntradayT0Strategy(stock_code=code, stock_name="", config_path=config_path)
         simulator = T0Simulator(strategy)

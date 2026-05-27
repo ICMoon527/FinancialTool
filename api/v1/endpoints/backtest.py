@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import time
+import sys
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -42,6 +43,17 @@ router = APIRouter()
 _strategy_backtest_service: Optional[StrategyBacktestService] = None
 # 回测运行状态
 _is_backtest_running = False
+
+
+def _get_project_root():
+    """获取项目根目录（兼容 PyInstaller 打包和开发模式）"""
+    if getattr(sys, 'frozen', False):
+        return Path(sys._MEIPASS)
+    current_file = Path(__file__).resolve()
+    for parent in current_file.parents:
+        if (parent / "stock_selector").exists():
+            return parent
+    return Path.cwd()
 
 
 def get_strategy_backtest_service() -> StrategyBacktestService:
@@ -89,16 +101,7 @@ def get_latest_backtest_results():
         import json
         
         # 查找项目根目录
-        project_root = None
-        current_file = Path(__file__).resolve()
-        
-        for parent in current_file.parents:
-            if (parent / "stock_selector").exists():
-                project_root = parent
-                break
-        
-        if project_root is None:
-            project_root = Path.cwd()
+        project_root = _get_project_root()
         
         # 查找可能的回测结果目录 - 优先使用 strategy_backtest_results（新的 QuantStats 目录）
         possible_dirs = [
@@ -227,20 +230,8 @@ def get_backtest_config():
         from pathlib import Path
         import yaml
         
-        # 尝试多种方式查找项目根目录
-        # 方式 1: 从当前文件向上查找
-        current_file = Path(__file__).resolve()
-        project_root = None
-        
-        for parent in current_file.parents:
-            # 检查是否有 stock_selector 文件夹
-            if (parent / "stock_selector").exists():
-                project_root = parent
-                break
-        
-        # 方式 2: 使用当前工作目录作为备选
-        if project_root is None:
-            project_root = Path.cwd()
+        # 查找项目根目录
+        project_root = _get_project_root()
         
         config_path = project_root / "stock_selector" / "backtest_config.yaml"
         

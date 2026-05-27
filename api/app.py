@@ -16,6 +16,7 @@ FastAPI 应用工厂模块
 """
 
 import os
+import sys
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -117,7 +118,10 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
     """
     # 默认静态文件目录
     if static_dir is None:
-        static_dir = Path(__file__).parent.parent / "static"
+        if getattr(sys, 'frozen', False):
+            static_dir = Path(sys._MEIPASS) / "static"
+        else:
+            static_dir = Path(__file__).parent.parent / "static"
     
     # 创建 FastAPI 实例
     app = FastAPI(
@@ -246,17 +250,17 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
     # 回测结果静态文件
     # ============================================================
     
-    # 查找项目根目录
-    project_root = None
-    current_file = Path(__file__).resolve()
-    
-    for parent in current_file.parents:
-        if (parent / "stock_selector").exists():
-            project_root = parent
-            break
-    
-    if project_root is None:
-        project_root = Path.cwd()
+    # 查找项目根目录（兼容 PyInstaller 打包）
+    def _get_project_root():
+        if getattr(sys, 'frozen', False):
+            return Path(sys._MEIPASS)
+        current_file = Path(__file__).resolve()
+        for parent in current_file.parents:
+            if (parent / "stock_selector").exists():
+                return parent
+        return Path.cwd()
+
+    project_root = _get_project_root()
     
     # 挂载 backtest_results 目录（优先）
     backtest_results_dir = project_root / "backtest_results"

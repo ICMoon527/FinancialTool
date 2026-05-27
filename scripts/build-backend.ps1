@@ -93,6 +93,9 @@ $hiddenImports = @(
 )
 $hiddenImportArgs = $hiddenImports | ForEach-Object { "--hidden-import=$_" }
 
+# 设置 matplotlib 后端为非交互式，避免 PyInstaller 打包 Qt 相关依赖
+$env:MPLBACKEND = 'Agg'
+
 $pyInstallerArgs = @(
   '-m', 'PyInstaller',
   '--name', 'stock_analysis',
@@ -100,7 +103,13 @@ $pyInstallerArgs = @(
   '--noconfirm',
   '--noconsole',
   '--add-data', 'static;static',
-  '--collect-data', 'litellm'
+  '--collect-data', 'litellm',
+  '--collect-data', 'akshare',
+  '--hidden-import=tiktoken_ext.openai_public',
+  '--exclude', 'PyQt5',
+  '--exclude', 'PySide6',
+  '--exclude', 'PyQt6',
+  '--exclude', 'qtpy'
 )
 $pyInstallerArgs += $hiddenImportArgs
 $pyInstallerArgs += 'main.py'
@@ -114,6 +123,34 @@ if ($LASTEXITCODE -ne 0) {
 if (!(Test-Path 'dist\stock_analysis')) {
   throw 'PyInstaller finished but dist\stock_analysis was not generated.'
 }
+
+# 冒烟测试：验证打包后的 exe 能否正确导入关键模块
+Write-Host 'Running smoke test on packaged exe...'
+$exePath = Join-Path (Get-Location) 'dist\stock_analysis\stock_analysis.exe'
+$smokeTestCode = @'
+import tiktoken
+try:
+    enc = tiktoken.get_encoding("cl100k_base")
+    print("SMOKE_OK: tiktoken encoding loaded")
+except Exception as e:
+    print("SMOKE_FAIL: tiktoken - " + str(e))
+    raise SystemExit(1)
+
+# 验证 api.app 能正常导入（FastAPI 应用初始化）
+try:
+    import api.app
+    print("SMOKE_OK: api.app imported")
+except Exception as e:
+    print("SMOKE_FAIL: api.app - " + str(e))
+    raise SystemExit(1)
+'@
+$smokeResult = & $exePath -c $smokeTestCode 2>&1
+if ($LASTEXITCODE -ne 0) {
+  Write-Host "Smoke test FAILED:"
+  Write-Host $smokeResult
+  throw 'Smoke test failed - packaged exe has missing dependencies. Check the error above and add --hidden-import for the missing module.'
+}
+Write-Host "Smoke test PASSED: $smokeResult"
 
 Copy-Item -Path 'dist\stock_analysis' -Destination 'dist\backend\stock_analysis' -Recurse -Force
 

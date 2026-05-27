@@ -5,6 +5,10 @@ const { spawn } = require('child_process');
 const net = require('net');
 const http = require('http');
 
+// 禁用 GPU 加速，解决部分 Windows 系统上 Electron 窗口不显示的问题
+// 注意：只用 app.disableHardwareAcceleration()，不混用 Chromium 命令行开关（--disable-gpu / --in-process-gpu 会冲突）
+app.disableHardwareAcceleration();
+
 let mainWindow = null;
 let backendProcess = null;
 let logFilePath = null;
@@ -399,6 +403,7 @@ async function createWindow() {
     height: 800,
     minWidth: 960,
     minHeight: 640,
+    show: true,
     backgroundColor: '#0f172a',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -406,12 +411,35 @@ async function createWindow() {
       contextIsolation: true,
     },
   });
+
+  // 超时保护：5 秒后如果窗口仍然不可见，强制显示
+  let forceShowTimer = setTimeout(() => {
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
+      logLine('[startup] Force showing window (5s timeout)');
+      mainWindow.show();
+    }
+  }, 5000);
+  mainWindow.once('show', () => {
+    clearTimeout(forceShowTimer);
+    forceShowTimer = null;
+  });
+
+  // 监听渲染进程崩溃，写入日志便于排查
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    logLine(`[renderer] Process gone: reason=${details.reason}, exitCode=${details.exitCode}`);
+  });
   logStartup('BrowserWindow created');
 
   const loadingPath = path.join(__dirname, 'renderer', 'loading.html');
   const loadingPageStartedAt = Date.now();
-  await mainWindow.loadFile(loadingPath);
-  logStartup(`Loading page rendered in ${Date.now() - loadingPageStartedAt}ms`);
+  try {
+    await mainWindow.loadFile(loadingPath);
+    logStartup(`Loading page rendered in ${Date.now() - loadingPageStartedAt}ms`);
+  } catch (error) {
+    logStartup(`Loading page FAILED: ${error.message} (path=${loadingPath})`);
+    // 即使加载页失败也不中断启动，窗口会以 backgroundColor 显示，
+    // 后续后端就绪时 loadURL 会正常加载主页面
+  }
 
   const webViewStartedAt = Date.now();
   mainWindow.webContents.on('did-start-loading', () => {
