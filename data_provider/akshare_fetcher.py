@@ -1790,11 +1790,49 @@ class AkshareFetcher(BaseFetcher):
             logger.warning(f"[Akshare] 获取股票 {stock_code} 所属板块失败: {e}")
             return None
 
+    _proxy_check_time: float = 0
+    _proxy_check_result: bool = True  # 默认假定可用，避免首次启动误判
+
+    @staticmethod
+    def _get_proxy_config() -> dict:
+        """获取显式代理配置，绕过系统代理的不稳定性"""
+        return {"https": "http://127.0.0.1:465", "http": "http://127.0.0.1:465"}
+
+    @staticmethod
+    def _check_eastmoney_reachable() -> bool:
+        """
+        检测东财 push2his 是否可达（通过显式代理），带30秒缓存
+        """
+        import time as _time
+
+        now = _time.time()
+        if now - AkshareFetcher._proxy_check_time < 30:
+            return AkshareFetcher._proxy_check_result
+
+        AkshareFetcher._proxy_check_time = now
+        try:
+            import requests as _r
+            resp = _r.get(
+                "https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get",
+                params={"lmt": "0", "klt": "101", "secid": "1.600519"},
+                timeout=5,
+                stream=True,
+                proxies=AkshareFetcher._get_proxy_config(),
+            )
+            resp.close()
+            AkshareFetcher._proxy_check_result = True
+            return True
+        except Exception:
+            AkshareFetcher._proxy_check_result = False
+            return False
+
     def get_fund_flow_data(self, stock_code: str, start_date: Optional[str] = None, end_date: Optional[str] = None) -> Optional[pd.DataFrame]:
         """
         获取个股资金流向数据（获取完整数据，不进行日期范围过滤）
 
-        数据来源：ak.stock_individual_fund_flow()
+        优先方案：直接 requests.get 调用东财API（受益于 eastmoney_patch 的 NID cookie 注入）
+        备选方案：ak.stock_individual_fund_flow()
+
         包含：主力净流入、小单净流入、中单净流入、大单净流入、超大单净流入等
 
         Args:
@@ -1819,15 +1857,25 @@ class AkshareFetcher(BaseFetcher):
             logger.debug(f"[API跳过] {stock_code} 是港股，无资金流向数据")
             return None
 
+        # 判断市场
+        if stock_code.startswith(('6', '5', '9')):
+            market = "sh"
+        else:
+            market = "sz"
+
+        # ---- 代理检测：东财不可达时直接跳过直连，避免等待 ----
+        if AkshareFetcher._check_eastmoney_reachable():
+            df = self._get_fund_flow_direct(stock_code, market)
+            if df is not None and not df.empty:
+                return df
+            logger.info(f"[API回退] 直连失败，尝试 akshare 获取 {stock_code} 资金流向...")
+        else:
+            logger.warning(f"[API跳过] 东财 push2his 不可达（代理转发失败），跳过直连，尝试 akshare...")
+
+        # ---- 方案2: 回退到 akshare ----
         try:
             self._set_random_user_agent()
             self._enforce_rate_limit()
-
-            # 判断市场
-            if stock_code.startswith(('6', '5', '9')):
-                market = "sh"
-            else:
-                market = "sz"
 
             logger.info(f"[API调用] ak.stock_individual_fund_flow(stock={stock_code}, market={market}) 获取资金流向...")
             import time as _time
@@ -1876,7 +1924,101 @@ class AkshareFetcher(BaseFetcher):
             error_msg = str(e).lower()
             if any(keyword in error_msg for keyword in ['banned', 'blocked', '频率', 'rate', '限制']):
                 raise RateLimitError(f"Akshare 资金流向可能被限流: {e}") from e
-            logger.error(f"[API错误] 获取 {stock_code} 资金流向失败: {e}")
+            logger.error(f"[API错误] akshare 获取 {stock_code} 资金流向失败: {e}")
+            return None
+
+    def _get_fund_flow_direct(self, stock_code: str, market: str) -> Optional[pd.DataFrame]:
+        """
+        直接通过 requests 调用东财资金流向API（优先方案）
+
+        利用 eastmoney_patch 注入的 NID cookie 和随机 User-Agent，
+        自行解析返回数据，逻辑与 akshare 内部一致。
+        """
+        import requests
+        import time as _time
+
+        market_map = {"sh": 1, "sz": 0, "bj": 0}
+        url = "https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get"
+        params = {
+            "lmt": "0",
+            "klt": "101",
+            "secid": f"{market_map.get(market, 1)}.{stock_code}",
+            "fields1": "f1,f2,f3,f7",
+            "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65",
+            "ut": "b2884a393a59ad64002292a3e90d46a5",
+            "_": int(_time.time() * 1000),
+        }
+
+        try:
+            api_start = _time.time()
+            logger.info(f"[API调用-直连] requests.get push2his 获取 {stock_code} 资金流向...")
+
+            r = requests.get(
+                url,
+                params=params,
+                timeout=30,
+                proxies=AkshareFetcher._get_proxy_config(),
+            )
+            r.raise_for_status()
+            data = r.json()
+
+            if not data.get("data") or not data["data"].get("klines"):
+                logger.warning(f"[API返回-直连] 资金流向数据为空")
+                return None
+
+            content_list = data["data"]["klines"]
+            temp_df = pd.DataFrame([item.split(",") for item in content_list])
+            temp_df.columns = [
+                "日期", "主力净流入-净额", "小单净流入-净额", "中单净流入-净额",
+                "大单净流入-净额", "超大单净流入-净额", "主力净流入-净占比",
+                "小单净流入-净占比", "中单净流入-净占比", "大单净流入-净占比",
+                "超大单净流入-净占比", "收盘价", "涨跌幅", "-", "-",
+            ]
+            temp_df = temp_df[[
+                "日期", "收盘价", "涨跌幅",
+                "主力净流入-净额", "主力净流入-净占比",
+                "超大单净流入-净额", "超大单净流入-净占比",
+                "大单净流入-净额", "大单净流入-净占比",
+                "中单净流入-净额", "中单净流入-净占比",
+                "小单净流入-净额", "小单净流入-净占比",
+            ]]
+
+            # 类型转换（与 akshare 内部逻辑一致）
+            for col in temp_df.columns:
+                if col == "日期":
+                    temp_df[col] = pd.to_datetime(temp_df[col], errors="coerce").dt.date
+                else:
+                    temp_df[col] = pd.to_numeric(temp_df[col], errors="coerce")
+
+            api_elapsed = _time.time() - api_start
+            logger.info(f"[API返回-直连] 成功: {len(temp_df)} 天数据, 耗时 {api_elapsed:.2f}s")
+
+            # 标准化列名
+            column_mapping = {
+                '日期': 'date',
+                '主力净流入-净额': 'main_net_inflow',
+                '小单净流入-净额': 'small_net_inflow',
+                '中单净流入-净额': 'medium_net_inflow',
+                '大单净流入-净额': 'big_net_inflow',
+                '超大单净流入-净额': 'super_net_inflow',
+                '主力净流入-净占比': 'main_net_ratio',
+                '小单净流入-净占比': 'small_net_ratio',
+                '中单净流入-净占比': 'medium_net_ratio',
+                '大单净流入-净占比': 'big_net_ratio',
+                '超大单净流入-净占比': 'super_net_ratio',
+                '收盘价': 'close',
+                '涨跌幅': 'pct_chg',
+            }
+            temp_df = temp_df.rename(columns=column_mapping)
+            temp_df['code'] = stock_code
+
+            return temp_df
+
+        except Exception as e:
+            error_msg = str(e).lower()
+            if any(keyword in error_msg for keyword in ['banned', 'blocked', '频率', 'rate', '限制']):
+                raise RateLimitError(f"直连资金流向可能被限流: {e}") from e
+            logger.error(f"[API错误-直连] 获取 {stock_code} 资金流向失败: {e}")
             return None
 
     def get_index_daily_data(self, symbol: str, start_date: Optional[str] = None, 

@@ -26,6 +26,7 @@ from .dragon_leader_volume import DragonLeaderVolume
 from .flowing_volume_energy import FlowingVolumeEnergy
 from .turnover_heat import TurnoverHeat
 from .band_bull_bear import BandBullBear
+from .macdfs import MACDFS
 from .market_escape_top import MarketEscapeTop
 
 __all__ = [
@@ -57,5 +58,6 @@ __all__ = [
     "FlowingVolumeEnergy",
     "TurnoverHeat",
     "BandBullBear",
+    "MACDFS",
     "MarketEscapeTop"
 ]

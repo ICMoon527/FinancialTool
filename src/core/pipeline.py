@@ -30,7 +30,7 @@ from src.notification import NotificationService, NotificationChannel
 from src.search_service import SearchService
 from src.enums import ReportType
 from src.stock_analyzer import StockTrendAnalyzer, TrendAnalysisResult
-from src.indicators import calculate_macdfs, get_macdfs_summary
+
 from src.core.trading_calendar import get_market_for_stock, is_market_open
 from src.core.json_parser import (
     extract_stock_name,
@@ -154,7 +154,7 @@ class StockAnalysisPipeline:
             
             # 断点续传检查：如果今日数据已存在且不强制刷新，则跳过
             if not force_refresh and not force_history and self.db.has_today_data(code, today):
-                # 检查历史数据是否足够用于主力成本计算
+                # 检查历史数据是否足够
                 history_end = today
                 history_start = history_end - timedelta(days=150)
                 history_bars = self.db.get_data_range(code, history_start, history_end)
@@ -166,7 +166,7 @@ class StockAnalysisPipeline:
             else:
                 logger.info(f"{stock_name}({code}) 开始从数据源获取数据...")
 
-            # 从数据源获取数据（获取700天数据以满足主力成本计算需求）
+            # 从数据源获取数据（获取700天数据以满足分析需求）
             df, source_name = self.fetcher_manager.get_daily_data(code, days=700)
 
             if df is None or df.empty:
@@ -268,45 +268,9 @@ class StockAnalysisPipeline:
             except Exception as e:
                 logger.warning(f"{stock_name}({code}) 趋势分析失败: {e}", exc_info=True)
             
-            # Step 3.5: 主力成本计算（MACDFS指标）
-            macdfs_summary: Optional[Dict[str, Any]] = None
-            try:
-                macdfs_end_date = date.today()
-                # 尝试直接获取700天的数据
-                macdfs_start_date = macdfs_end_date - timedelta(days=700)  # 直接获取700天数据
-                macdfs_bars = self.db.get_data_range(code, macdfs_start_date, macdfs_end_date)
-                
-                if not macdfs_bars:
-                    logger.warning(f"{stock_name}({code}) 主力成本计算: 未获取到历史数据")
-                elif len(macdfs_bars) < 100:
-                    logger.warning(f"{stock_name}({code}) 主力成本计算: 历史数据不足，仅有 {len(macdfs_bars)} 条，需要至少100条")
-                else:
-                    macdfs_df = pd.DataFrame([bar.to_dict() for bar in macdfs_bars])
-                    # Rename volume to vol for MACDFS calculation
-                    if 'volume' in macdfs_df.columns and 'vol' not in macdfs_df.columns:
-                        macdfs_df['vol'] = macdfs_df['volume']
-                    
-                    required_columns = ['open', 'high', 'low', 'close', 'vol']
-                    missing_columns = [col for col in required_columns if col not in macdfs_df.columns]
-                    if missing_columns:
-                        logger.warning(f"{stock_name}({code}) 主力成本计算: 缺少必要字段: {missing_columns}")
-                    else:
-                        # Augment with realtime data if available
-                        if self.config.enable_realtime_quote and realtime_quote:
-                            macdfs_df = self._augment_historical_with_realtime(macdfs_df, realtime_quote, code)
-                        df_with_macdfs = calculate_macdfs(macdfs_df)
-                        macdfs_summary = get_macdfs_summary(df_with_macdfs)
-                        if macdfs_summary:
-                            logger.info(f"{stock_name}({code}) 主力成本: 核心成本={macdfs_summary.get('core_cost'):.2f}, "
-                                      f"压力位1={macdfs_summary.get('resistance_1'):.2f}")
-                        else:
-                            logger.warning(f"{stock_name}({code}) 主力成本计算: 无法提取主力成本摘要")
-            except Exception as e:
-                logger.warning(f"{stock_name}({code}) 主力成本计算失败: {e}", exc_info=True)
-            
             if use_agent:
                 logger.info(f"{stock_name}({code}) 启用 Agent 模式进行分析")
-                return self._analyze_with_agent(code, report_type, query_id, stock_name, realtime_quote, chip_data, macdfs_summary)
+                return self._analyze_with_agent(code, report_type, query_id, stock_name, realtime_quote, chip_data)
 
             # Step 4: 多维度情报搜索（最新消息+风险排查+业绩预期）
             news_context = None
@@ -361,29 +325,26 @@ class StockAnalysisPipeline:
                     'yesterday': {}
                 }
             
-            # Step 6: 增强上下文数据（添加实时行情、筹码、趋势分析结果、主力成本、股票名称）
+            # Step 6: 增强上下文数据（添加实时行情、筹码、趋势分析结果、股票名称）
             enhanced_context = self._enhance_context(
                 context, 
                 realtime_quote, 
                 chip_data, 
                 trend_result,
-                macdfs_summary,
                 stock_name  # 传入股票名称
             )
             
             # Step 7: 调用 AI 分析（传入增强的上下文和新闻）
             result = self.analyzer.analyze(enhanced_context, news_context=news_context)
 
-            # Step 7.5: 填充分析时的价格信息和主力成本数据到 result
+            # Step 7.5: 填充分析时的价格信息到 result
             if result:
                 realtime_data = enhanced_context.get('realtime', {})
                 result.current_price = realtime_data.get('price')
                 result.change_pct = realtime_data.get('change_pct')
-                # 无论分析是否成功，都添加主力成本数据到 result 对象
                 result._context = enhanced_context
             else:
                 # 如果分析失败（返回 None），创建一个基本的 AnalysisResult 对象
-                # 确保主力成本数据仍然能够传递到邮件中
                 from src.analyzer import AnalysisResult
                 stock_name = enhanced_context.get('stock_name', f'股票{code}')
                 result = AnalysisResult(
@@ -398,7 +359,6 @@ class StockAnalysisPipeline:
                     success=False,
                     error_message='AI 分析失败'
                 )
-                # 添加主力成本数据到 result 对象
                 result._context = enhanced_context
 
             # Step 8: 保存分析历史记录
@@ -434,7 +394,6 @@ class StockAnalysisPipeline:
         realtime_quote,
         chip_data: Optional[ChipDistribution],
         trend_result: Optional[TrendAnalysisResult],
-        macdfs_summary: Optional[Dict[str, Any]],
         stock_name: str = ""
     ) -> Dict[str, Any]:
         """
@@ -576,10 +535,6 @@ class StockAnalysisPipeline:
             context.get('code', ''), enhanced.get('stock_name', stock_name)
         )
 
-        # 添加主力成本数据
-        if macdfs_summary:
-            enhanced['macdfs'] = macdfs_summary
-
         return enhanced
 
     def _analyze_with_agent(
@@ -589,8 +544,7 @@ class StockAnalysisPipeline:
         query_id: str,
         stock_name: str,
         realtime_quote: Any,
-        chip_data: Optional[ChipDistribution],
-        macdfs_summary: Optional[Dict[str, Any]] = None
+        chip_data: Optional[ChipDistribution]
     ) -> Optional[AnalysisResult]:
         """
         使用 Agent 模式分析单只股票。
@@ -644,23 +598,10 @@ class StockAnalysisPipeline:
                 except Exception as e:
                     logger.warning(f"[{code}] Agent 模式保存新闻情报失败: {e}")
 
-            # 添加主力成本数据到 result 对象
-            if result:
-                # 无论分析是否成功，都添加主力成本数据到 result 对象
-                if hasattr(result, '_context') and isinstance(result._context, dict):
-                    if macdfs_summary:
-                        result._context['macdfs'] = macdfs_summary
-                else:
-                    # 如果没有 _context 属性，创建一个
-                    result._context = {'macdfs': macdfs_summary} if macdfs_summary else {}
-
             # 保存分析历史记录
             if result:
                 try:
                     initial_context["stock_name"] = resolved_stock_name
-                    # 将主力成本数据添加到初始上下文
-                    if macdfs_summary:
-                        initial_context['macdfs'] = macdfs_summary
                     self.db.save_analysis_history(
                         result=result,
                         query_id=query_id,
@@ -1045,7 +986,7 @@ class StockAnalysisPipeline:
         
         try:
             # Step 1: 获取并保存数据
-            # 传递 force_history=True 确保获取足够的历史数据用于主力成本计算
+            # 传递 force_history=True 确保获取足够的历史数据
             success, error = self.fetch_and_save_stock_data(code, force_history=True)
             
             if not success:

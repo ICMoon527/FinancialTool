@@ -28,7 +28,7 @@ matplotlib>=3.0.0           # 绘图（quantstats依赖）
 seaborn>=0.9.0              # 统计绘图（quantstats依赖）
 tabulate>=0.8.0             # 表格格式化（quantstats依赖）
 quantstats>=0.0.81          # 专业量化分析库
-json-repair==0.55.5         # JSON 修复
+json-repair==0.55.1         # JSON 修复
 tqdm==4.67.1                # 进度条显示
 
 # 贝叶斯优化
