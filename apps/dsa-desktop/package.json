@@ -39,6 +39,13 @@
       "target": "nsis",
       "signAndEditExecutable": false
     },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "runAfterFinish": true
+    },
     "mac": {
       "target": "dmg"
     }

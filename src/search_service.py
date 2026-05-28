@@ -83,6 +83,104 @@ def fetch_url_content(url: str, timeout: int = 5) -> str:
     return ""
 
 
+def sanitize_news_text(text: str) -> str:
+    """
+    清洗新闻文本：移除 Unicode PUA 字符（图标字体），修复 GBK 编码乱码
+
+    搜索引擎抓取中文网页时可能产生两类乱码：
+    1. Unicode 私有区字符 (U+E000-U+F8FF)：网页图标字体的 Unicode 码位，前端无对应字体
+    2. GBK→UTF-8 解码错乱：GBK 编码的中文被误当作 UTF-8 解码，产生 Latin/Cyrillic 扩展字符
+
+    Args:
+        text: 原始新闻文本
+
+    Returns:
+        清洗后的文本
+    """
+    import re
+
+    if not text:
+        return text
+
+    # 1. 移除 Unicode Private Use Area 字符（icon fonts）
+    text = re.sub(r'[\uE000-\uF8FF]+', '', text)
+
+    # 2. 尝试修复 GBK 被误读为 UTF-8 的乱码
+    text = _fix_gbk_mojibake(text)
+
+    # 3. 清理多余空白和特殊字符
+    text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]', '', text)
+    text = re.sub(r' {3,}', '  ', text)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+
+    return text.strip()
+
+
+def _fix_gbk_mojibake(text: str) -> str:
+    """
+    尝试修复因 GBK 编码被误当作 UTF-8 解码导致的乱码
+
+    检测特征：包含大量 Latin 扩展/Cyrillic 字符但无中文，这些字符的 UTF-8 编码
+    恰好能组成合法的 GBK 双字节序列
+
+    Args:
+        text: 可能存在乱码的文本
+
+    Returns:
+        修复后的文本（如无法修复则返回原文）
+    """
+    import re
+
+    # 统计已有的中文字符数量
+    chinese_chars = len(re.findall(r'[\u4e00-\u9fff]', text))
+
+    # 如果中文字符已经占比超过 20%，说明文本基本正常，不需要修复
+    if chinese_chars > max(len(text) * 0.2, 5):
+        return text
+
+    # 检测乱码特征字符：Latin 扩展 + Cyrillic + 特殊符号
+    garbled_chars = len(re.findall(r'[\u0080-\u04FF\u2018-\u2019\u201c-\u201d]', text))
+    if garbled_chars == 0:
+        return text
+
+    # 对过长的文本分段处理，避免整体转换失败
+    paragraphs = text.split('\n')
+    fixed_paragraphs = []
+
+    for para in paragraphs:
+        para_stripped = para.strip()
+        if not para_stripped:
+            fixed_paragraphs.append(para)
+            continue
+
+        # 如果该段落已经有中文，跳过
+        para_chinese = len(re.findall(r'[\u4e00-\u9fff]', para_stripped))
+        if para_chinese > len(para_stripped) * 0.3:
+            fixed_paragraphs.append(para)
+            continue
+
+        para_garbled = len(re.findall(r'[\u0080-\u04FF]', para_stripped))
+        if para_garbled < 3:
+            fixed_paragraphs.append(para)
+            continue
+
+        try:
+            # 将当前字符串编码为 UTF-8 字节，再用 GBK 解码
+            fixed = para_stripped.encode('utf-8').decode('gbk', errors='replace')
+            fixed_chinese = len(re.findall(r'[\u4e00-\u9fff]', fixed))
+            fixed_garbled = len(re.findall(r'[\u0080-\u04FF]', fixed))
+            # 修复后中文字符增多且乱码字符减少 → 修复成功
+            if fixed_chinese > para_chinese and fixed_garbled < para_garbled:
+                fixed_paragraphs.append(fixed)
+                continue
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            pass
+
+        fixed_paragraphs.append(para)
+
+    return '\n'.join(fixed_paragraphs)
+
+
 @dataclass
 class SearchResult:
     """搜索结果数据类"""

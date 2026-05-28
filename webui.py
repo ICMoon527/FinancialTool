@@ -19,6 +19,10 @@ from __future__ import annotations
 
 import os
 import logging
+import warnings
+
+# 抑制 newspaper3k 等第三方库在 Python 3.12+ 中的无效转义序列警告
+warnings.filterwarnings("ignore", category=SyntaxWarning, module="newspaper")
 
 logger = logging.getLogger(__name__)
 

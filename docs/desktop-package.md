@@ -363,9 +363,9 @@ PyInstaller `--onedir` 模式下打包了整个 Python 环境。如果想减小�
 
 用户使用步骤：
 
-1. **双击安装程序**，按提示完成安装（默认路径 `C:\Program Files\Daily Stock Analysis\`）
-2. **首次启动**桌面应用
-3. **配置 API Key**：打开安装目录，编辑 `Daily Stock Analysis.exe` 同级目录下的 `.env` 文件
+1. **双击安装程序**，按提示完成安装（默认路径 `C:\Program Files\Daily Stock Analysis\`，可在安装向导中修改）
+2. **首次启动**桌面应用（安装完成后默认自动启动）
+3. **配置 API Key**：找到安装目录（或右键桌面快捷方式 → 打开文件所在位置），编辑 `Daily Stock Analysis.exe` 同级目录下的 `.env` 文件
 4. **重新启动**应用即可正常使用
 
 ### 绿色版（免安装）

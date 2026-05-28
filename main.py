@@ -44,8 +44,7 @@ from src.config import setup_env
 setup_env()
 
 # 代理配置 - 通过 USE_PROXY 环境变量控制，默认关闭
-# GitHub Actions 环境自动跳过代理配置
-if os.getenv("GITHUB_ACTIONS") != "true" and os.getenv("USE_PROXY", "false").lower() == "true":
+if os.getenv("USE_PROXY", "false").lower() == "true":
     # 本地开发环境，启用代理（可在 .env 中配置 PROXY_HOST 和 PROXY_PORT）
     proxy_host = os.getenv("PROXY_HOST", "127.0.0.1")
     proxy_port = os.getenv("PROXY_PORT", "10809")
@@ -540,7 +539,7 @@ def setup_and_start_web_service(
     Returns:
         bool: Web 服务是否成功启动
     """
-    start_serve = (args.serve or args.serve_only) and os.getenv("GITHUB_ACTIONS") != "true"
+    start_serve = (args.serve or args.serve_only)
     
     if not start_serve:
         return False

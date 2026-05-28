@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List
 
 from src.storage import DatabaseManager
+from src.search_service import sanitize_news_text
 
 logger = logging.getLogger(__name__)
 
@@ -250,11 +251,13 @@ class HistoryService:
 
             items: List[Dict[str, str]] = []
             for record in records:
-                snippet = (record.snippet or "").strip()
+                title = sanitize_news_text(record.title)
+                snippet_raw = (record.snippet or "").strip()
+                snippet = sanitize_news_text(snippet_raw)
                 if len(snippet) > 200:
                     snippet = f"{snippet[:197]}..."
                 items.append({
-                    "title": record.title,
+                    "title": title,
                     "snippet": snippet,
                     "url": record.url,
                 })

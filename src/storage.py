@@ -48,6 +48,8 @@ from sqlalchemy.orm import (
 )
 from sqlalchemy.exc import IntegrityError
 
+from src.search_service import sanitize_news_text
+
 from src.config import get_config
 from src.cache import get_cache
 
@@ -1039,10 +1041,10 @@ class DatabaseManager:
         with self.get_session() as session:
             try:
                 for item in response.results:
-                    title = (item.title or "").strip()
+                    title = sanitize_news_text(item.title or "")
                     url = (item.url or "").strip()
                     source = (item.source or "").strip()
-                    snippet = (item.snippet or "").strip()
+                    snippet = sanitize_news_text(item.snippet or "")
                     published_date = self._parse_published_date(item.published_date)
 
                     if not title and not url:
