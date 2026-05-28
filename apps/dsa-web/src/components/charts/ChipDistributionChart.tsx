@@ -240,9 +240,7 @@ const ChipDistributionChart: React.FC<ChipDistributionChartProps> = ({
   return (
     <div className="w-full h-full">
       {loading ? (
-        <div className="w-full h-full flex items-center justify-center bg-[#1a1a2e]">
-          <div className="text-xs text-muted">加载中...</div>
-        </div>
+        <div className="w-full h-full bg-[#1a1a2e]" />
       ) : !data || data.price_bins.length === 0 ? (
         <div className="w-full h-full flex items-center justify-center p-4 bg-[#1a1a2e]">
           <div className="text-center">
