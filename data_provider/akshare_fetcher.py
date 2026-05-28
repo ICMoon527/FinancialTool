@@ -2045,6 +2045,11 @@ class AkshareFetcher(BaseFetcher):
                 proxies=AkshareFetcher._get_proxy_config(),
             )
             r.raise_for_status()
+            # 诊断：如果响应非 JSON，记录前500字符帮助排查
+            content_type = r.headers.get("Content-Type", "")
+            raw_text_preview = r.text[:500]
+            if not raw_text_preview.startswith("{"):
+                logger.warning(f"[API返回-直连] 非JSON响应: Content-Type={content_type}, 前500字符={raw_text_preview}")
             data = r.json()
 
             if not data.get("data") or not data["data"].get("klines"):
@@ -2104,6 +2109,10 @@ class AkshareFetcher(BaseFetcher):
             if any(keyword in error_msg for keyword in ['banned', 'blocked', '频率', 'rate', '限制']):
                 raise RateLimitError(f"直连资金流向可能被限流: {e}") from e
             logger.error(f"[API错误-直连] 获取 {stock_code} 资金流向失败: {e}")
+            try:
+                logger.warning(f"[API返回-直连] 响应快照: status={r.status_code}, Content-Type={r.headers.get('Content-Type','')}, 前200字符={r.text[:200]}")
+            except NameError:
+                pass
             return None
 
     def get_index_daily_data(self, symbol: str, start_date: Optional[str] = None, 
