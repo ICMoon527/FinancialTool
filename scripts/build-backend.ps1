@@ -131,6 +131,7 @@ $pyInstallerArgs = @(
   '--add-data', 'stock_selector\strategies\NLP;stock_selector\strategies\NLP',
   '--add-data', 'stock_selector\backtest_config.yaml;stock_selector',
   '--add-data', 'strategies;strategies',
+  '--add-data', 'watchdog\strategies\intraday_t0_config.yaml;watchdog\strategies',
   '--hidden-import=tiktoken_ext.openai_public',
   '--exclude', 'PyQt5',
   '--exclude', 'PySide6',

@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_data_files
 
-datas = [('static', 'static'), ('stock_selector\\strategies\\Python', 'stock_selector\\strategies\\Python'), ('stock_selector\\strategies\\NLP', 'stock_selector\\strategies\\NLP'), ('stock_selector\\backtest_config.yaml', 'stock_selector'), ('strategies', 'strategies')]
+datas = [('static', 'static'), ('stock_selector\\strategies\\Python', 'stock_selector\\strategies\\Python'), ('stock_selector\\strategies\\NLP', 'stock_selector\\strategies\\NLP'), ('stock_selector\\backtest_config.yaml', 'stock_selector'), ('strategies', 'strategies'), ('watchdog\\strategies\\intraday_t0_config.yaml', 'watchdog\\strategies')]
 datas += collect_data_files('litellm')
 datas += collect_data_files('akshare')
 
