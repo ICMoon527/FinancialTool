@@ -292,10 +292,12 @@ win-unpacked/
 
 | 配置项 | 说明 | 是否必需 |
 |---|---|---|
-| `GEMINI_API_KEY` 或 `OPENAI_API_KEY` | AI 分析 API Key | 是 |
-| `STOCK_LIST` | 自选股列表（逗号分隔，如 `600519,000001`） | 是 |
+| `TUSHARE_TOKEN` | 数据源 Token（[tushare.pro](https://tushare.pro) 注册获取） | 推荐（缺少则降级到其他数据源） |
+| `GEMINI_API_KEY` / `LITELLM_MODEL` | AI 分析 API Key | AI 诊股/分析功能必需 |
+| `STOCK_LIST` | 自选股列表（逗号分隔，如 `600519,000001`） | 选股范围 |
 | `LOG_LEVEL` | 日志级别（默认 `INFO`） | 否 |
-| 其他 | 参考 `resources/.env.example`（如存在） | 否 |
+
+> **注意：** 即使不配置 API Key，桌面版的核心功能（行情查看、分时图、技术指标、策略筛选）仍可使用。仅 AI 诊股、智能分析等功能需要配置 LLM 的 API Key。
 
 ## 常见问题
 
@@ -353,7 +355,22 @@ PyInstaller `--onedir` 模式下打包了整个 Python 环境。如果想减小�
 
 ## 分发给用户
 
-将 `apps/dsa-desktop/dist/win-unpacked/` 整个文件夹打包为 zip 发给用户即可。
+打包产物的分发方式有两种：安装包（推荐）和绿色版。
+
+### 安装包（推荐）
+
+产物为 `apps/dsa-desktop/dist/Daily Stock Analysis Setup x.x.x.exe`。
+
+用户使用步骤：
+
+1. **双击安装程序**，按提示完成安装（默认路径 `C:\Program Files\Daily Stock Analysis\`）
+2. **首次启动**桌面应用
+3. **配置 API Key**：打开安装目录，编辑 `Daily Stock Analysis.exe` 同级目录下的 `.env` 文件
+4. **重新启动**应用即可正常使用
+
+### 绿色版（免安装）
+
+将 `apps/dsa-desktop/dist/win-unpacked/` 整个文件夹打包为 zip 发给用户。
 
 用户使用步骤：
 

@@ -167,13 +167,27 @@ def eastmoney_patch():
         user_agent = ua.random
         # 处理 Headers：确保不破坏业务代码传入的 headers
         headers = kwargs.get("headers", {})
-        headers["User-Agent"] = user_agent
+        headers.setdefault("User-Agent", user_agent)
+        # 浏览器常规请求头，避免 Header 指纹被识别为脚本
+        headers.setdefault("Accept", "application/json, text/javascript, */*; q=0.01")
+        headers.setdefault("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+        headers.setdefault("Accept-Encoding", "gzip, deflate, br")
+        headers.setdefault("Connection", "keep-alive")
+        # 模拟 AJAX 请求，降低被服务端识别为脚本爬虫的概率
+        headers.setdefault("X-Requested-With", "XMLHttpRequest")
+        # Referer 链路校验：东财要求 Referer 中必须包含 eastmoney.com
+        headers.setdefault("Referer", "https://data.eastmoney.com/zjlx/detail.html")
         nid = _get_nid(user_agent)
         if nid:
-            headers["Cookie"] = f"nid18={nid}"
+            # 保留调用方可能已有的 Cookie，追加 nid
+            existing_cookie = headers.get("Cookie", "")
+            if existing_cookie:
+                headers["Cookie"] = f"{existing_cookie}; nid18={nid}"
+            else:
+                headers["Cookie"] = f"nid18={nid}"
         kwargs["headers"] = headers
-        # 随机休眠，降低被封风险
-        sleep_time = random.uniform(1, 4)
+        # 轻量随机休眠，降低突发请求被识别为爬虫的风险
+        sleep_time = random.uniform(0.5, 1.5)
         time.sleep(sleep_time)
         return original_request(self, method, url, **kwargs)
 

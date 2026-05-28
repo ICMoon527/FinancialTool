@@ -17,6 +17,15 @@ FastAPI 应用工厂模块
 
 import os
 import sys
+
+# ── 必须在任何 litellm 相关模块导入前设置，否则无效 ──
+os.environ.setdefault("LITELLM_LOG", "ERROR")
+try:
+    import litellm
+    litellm.suppress_debug_info = True
+except ImportError:
+    pass
+
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -78,16 +87,13 @@ async def app_lifespan(app: FastAPI):
     """Initialize and release shared services for the app lifecycle."""
     app.state.system_config_service = SystemConfigService()
 
-    # 启动时构建股票搜索索引
     try:
         from src.stock_search_index import get_search_index
-        import logging
         _logger = logging.getLogger(__name__)
         _logger.info("正在构建股票搜索索引...")
         get_search_index()
         _logger.info("股票搜索索引构建完成")
     except Exception:
-        import logging
         _logger = logging.getLogger(__name__)
         _logger.warning("股票搜索索引构建失败，搜索功能将返回空结果", exc_info=True)
 

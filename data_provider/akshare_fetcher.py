@@ -1836,11 +1836,44 @@ class AkshareFetcher(BaseFetcher):
 
     _proxy_check_time: float = 0
     _proxy_check_result: bool = True  # 默认假定可用，避免首次启动误判
+    _fund_flow_session = None  # 持久 Session，复用 TCP 连接和 Cookie
+    _last_eastmoney_request_time: float = 0  # 东财域名级别的请求节流
 
     @staticmethod
     def _get_proxy_config() -> dict:
         """获取显式代理配置，绕过系统代理的不稳定性"""
         return {"https": "http://127.0.0.1:465", "http": "http://127.0.0.1:465"}
+
+    @staticmethod
+    def _get_fund_flow_session():
+        """
+        获取持久化的 requests.Session，用于东财资金流向API
+
+        复用 Session 可以：
+        1. 保持 TCP 连接（HTTP Keep-Alive）
+        2. 持久化 Cookie（__jsl_clearance_s 等跨请求传递）
+        3. 减少 TLS 握手开销
+        """
+        if AkshareFetcher._fund_flow_session is None:
+            import requests as _requests
+            AkshareFetcher._fund_flow_session = _requests.Session()
+        return AkshareFetcher._fund_flow_session
+
+    @staticmethod
+    def _enforce_eastmoney_rate_limit():
+        """
+        东财域名级别的请求速率控制
+
+        确保 push2his/push2 域名的请求间隔不低于指定值，
+        配合 eastmoney_patch 的随机休眠，将频率控制在安全范围内。
+        """
+        import time as _time
+        now = _time.time()
+        elapsed = now - AkshareFetcher._last_eastmoney_request_time
+        min_interval = 3.0  # 最小间隔3秒，理论上限 20次/分钟，远低于 15次/分钟的阈值
+        if elapsed < min_interval:
+            _time.sleep(min_interval - elapsed)
+        AkshareFetcher._last_eastmoney_request_time = _time.time()
 
     @staticmethod
     def _check_eastmoney_reachable() -> bool:
@@ -1854,6 +1887,7 @@ class AkshareFetcher(BaseFetcher):
             return AkshareFetcher._proxy_check_result
 
         AkshareFetcher._proxy_check_time = now
+        AkshareFetcher._enforce_eastmoney_rate_limit()
         try:
             import requests as _r
             resp = _r.get(
@@ -1978,8 +2012,11 @@ class AkshareFetcher(BaseFetcher):
         利用 eastmoney_patch 注入的 NID cookie 和随机 User-Agent，
         自行解析返回数据，逻辑与 akshare 内部一致。
         """
-        import requests
         import time as _time
+
+        # 速率控制：实例级 + 东财域名级双重保障
+        self._enforce_rate_limit()
+        AkshareFetcher._enforce_eastmoney_rate_limit()
 
         market_map = {"sh": 1, "sz": 0, "bj": 0}
         url = "https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get"
@@ -1987,6 +2024,9 @@ class AkshareFetcher(BaseFetcher):
             "lmt": "0",
             "klt": "101",
             "secid": f"{market_map.get(market, 1)}.{stock_code}",
+            "fqt": "1",
+            "end": "20500000",
+            "iscca": "1",
             "fields1": "f1,f2,f3,f7",
             "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65",
             "ut": "b2884a393a59ad64002292a3e90d46a5",
@@ -1995,9 +2035,10 @@ class AkshareFetcher(BaseFetcher):
 
         try:
             api_start = _time.time()
-            logger.info(f"[API调用-直连] requests.get push2his 获取 {stock_code} 资金流向...")
+            logger.info(f"[API调用-直连] 持久Session获取 {stock_code} 资金流向...")
 
-            r = requests.get(
+            session = AkshareFetcher._get_fund_flow_session()
+            r = session.get(
                 url,
                 params=params,
                 timeout=30,
