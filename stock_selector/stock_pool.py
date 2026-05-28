@@ -76,7 +76,7 @@ class StockPoolManager:
         
         if self.data_fetcher_manager is None:
             from data_provider import DataFetcherManager
-            self.data_fetcher_manager = DataFetcherManager(include_akshare=False, enable_realtime=False)
+            self.data_fetcher_manager = DataFetcherManager(include_akshare=True, enable_realtime=False)
         
         # Create table if not exists
         self._create_table()
@@ -148,15 +148,43 @@ class StockPoolManager:
     
     def _fetch_stock_list_from_sources(self) -> List[tuple]:
         """
-        从数据源获取股票列表（仅使用 Tushare，失败则回退到数据库缓存）。
-        
-        Returns:
-            List of tuples (code, name, market)
+        从数据源获取股票列表
+
+        策略：
+        1. 优先使用 Akshare 快照缓存（_realtime_cache），缓存命中零 API 调用
+        2. Akshare 快照失败时降级到 Tushare stock_basic 接口
         """
+        stock_list = self._fetch_from_akshare_snapshot()
+        if stock_list:
+            return stock_list
+
         stock_list = self._fetch_from_tushare()
         if stock_list:
             return stock_list
 
+        return []
+
+    def _fetch_from_akshare_snapshot(self) -> List[tuple]:
+        """从 Akshare 快照缓存获取股票列表"""
+        try:
+            for fetcher in self.data_fetcher_manager._fetchers:
+                if fetcher.name == "AkshareFetcher":
+                    if not hasattr(fetcher, 'get_stock_list'):
+                        logger.warning("AkshareFetcher 缺少 get_stock_list 方法，请确认已更新源码并重新打包桌面版")
+                        return []
+                    df = fetcher.get_stock_list()
+                    if df is not None and not df.empty:
+                        stock_list = []
+                        for _, row in df.iterrows():
+                            code = row.get('code')
+                            name = row.get('name')
+                            if code and name:
+                                market = 'SH' if code.startswith('6') else 'SZ'
+                                stock_list.append((code, name, market))
+                        logger.info(f"Fetched {len(stock_list)} stocks from Akshare snapshot")
+                        return stock_list
+        except Exception as e:
+            logger.warning(f"Failed to fetch from Akshare: {e}")
         return []
     
     def _fetch_from_tushare(self) -> List[tuple]:

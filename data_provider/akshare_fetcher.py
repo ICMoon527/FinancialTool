@@ -315,6 +315,50 @@ class AkshareFetcher(BaseFetcher):
 
         return None
 
+    def get_stock_list(self) -> Optional[pd.DataFrame]:
+        """
+        获取股票列表
+
+        优先使用 ak.stock_info_a_code_name() 轻量接口获取全量 A 股代码-名称对；
+        该接口仅返回代码和名称，不拉取行情数据，比 stock_zh_a_spot_em() 更稳定。
+
+        降级策略：若常规接口失败且实时行情快照缓存（_realtime_cache）有效，
+        则从缓存中提取代码-名称作为备用。
+
+        Returns:
+            包含 code, name 列的 DataFrame，失败返回 None
+        """
+        import akshare as ak
+
+        # 主路径：轻量代码-名称接口
+        try:
+            self._set_random_user_agent()
+            self._enforce_rate_limit()
+            logger.info("[API调用] ak.stock_info_a_code_name() 获取股票列表...")
+            df = ak.stock_info_a_code_name()
+            if df is not None and not df.empty:
+                logger.info(f"Akshare 获取股票列表成功: {len(df)} 条")
+                result = df[['code', 'name']].copy()
+                return result
+        except Exception as e:
+            logger.warning(f"Akshare stock_info_a_code_name 获取失败: {e}")
+
+        # 降级：从实时行情快照缓存中提取
+        current_time = time.time()
+        cache_valid = (
+            _realtime_cache['data'] is not None
+            and current_time - _realtime_cache['timestamp'] < _realtime_cache['ttl']
+        )
+        if cache_valid:
+            df = _realtime_cache['data']
+            logger.info(f"Akshare 从快照缓存获取股票列表: {len(df)} 条")
+            result = df[['代码', '名称']].copy()
+            result.columns = ['code', 'name']
+            return result
+
+        logger.warning("Akshare 获取股票列表失败（主路径和缓存降级均无效）")
+        return None
+
     @retry(
         stop=stop_after_attempt(3),  # 最多重试3次
         wait=wait_exponential(multiplier=1, min=2, max=30),  # 指数退避：2, 4, 8... 最大30秒
