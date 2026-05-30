@@ -279,6 +279,22 @@ const IntradayPage: React.FC = () => {
   const [simulationReport, setSimulationReport] = useState<SimulationReportResponse | null>(null);
   const [simulationLoading, setSimulationLoading] = useState(false);
 
+  // 复盘功能
+  const [isReplaying, setIsReplaying] = useState(false);
+  const [isReplayPaused, setIsReplayPaused] = useState(false);
+  const isReplayingRef = useRef(false);
+  const replayIndexRef = useRef<number>(0);
+  const replayTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const fullKlineBackupRef = useRef<any[] | null>(null);
+  const fullSubChartDataBackupRef = useRef<any | null>(null);
+  const indicatorSubChartsBackupRef = useRef<any[] | null>(null);
+  const signalsBackupRef = useRef<IntradaySignal[] | null>(null);
+  const isTencentDataRef = useRef(false);
+
+  useEffect(() => {
+    isReplayingRef.current = isReplaying;
+  }, [isReplaying]);
+
   // 批量下载分时数据
   const [batchDownload, setBatchDownload] = useState<BatchDownloadStatus | null>(null);
   const [showBatchModal, setShowBatchModal] = useState(false);
@@ -433,6 +449,10 @@ const IntradayPage: React.FC = () => {
       if (batchPollingRef.current) {
         clearInterval(batchPollingRef.current);
         batchPollingRef.current = null;
+      }
+      if (replayTimerRef.current) {
+        clearInterval(replayTimerRef.current);
+        replayTimerRef.current = null;
       }
     };
   }, [batchDownload?.status]);
@@ -1220,6 +1240,39 @@ const IntradayPage: React.FC = () => {
     }
   };
 
+  // 复盘交互锁定/恢复
+  const applyReplayInteractionLock = useCallback(() => {
+    const disableInteraction = {
+      handleScroll: { mouseWheel: false, pressedMouseMove: false, horzTouchDrag: false, vertTouchDrag: false },
+      handleScale: { mouseWheel: false, axisPressedMouseMove: false, pinch: false },
+    };
+    if (chartRef.current) {
+      chartRef.current.applyOptions(disableInteraction);
+    }
+    if (volumeChartRef.current) {
+      volumeChartRef.current.applyOptions(disableInteraction);
+    }
+    indicatorChartsRef.current.forEach((c) => {
+      try { c.applyOptions(disableInteraction); } catch (e) { /* ignore */ }
+    });
+  }, []);
+
+  const restoreChartInteraction = useCallback(() => {
+    const enableInteraction = {
+      handleScroll: { mouseWheel: false, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
+      handleScale: { mouseWheel: true, axisPressedMouseMove: false, pinch: true },
+    };
+    if (chartRef.current) {
+      chartRef.current.applyOptions(enableInteraction);
+    }
+    if (volumeChartRef.current) {
+      volumeChartRef.current.applyOptions(enableInteraction);
+    }
+    indicatorChartsRef.current.forEach((c) => {
+      try { c.applyOptions(enableInteraction); } catch (e) { /* ignore */ }
+    });
+  }, []);
+
   // ── 渲染数据 ──
   const renderData = useCallback(
     (data: IntradayDataResponse, date: string) => {
@@ -1409,6 +1462,7 @@ const IntradayPage: React.FC = () => {
       // 检测腾讯数据：每根K线中 Open===High===Low===Close 的比例
       const flatCount = klines.filter((k) => k.open === k.high && k.high === k.low && k.low === k.close).length;
       const isTencentData = klines.length > 10 && flatCount / klines.length > 0.95;
+      isTencentDataRef.current = isTencentData;
 
       // 总是重建主系列以重置价格 scale，避免手动调整后切换股票 scale 不重置
       // 注意：分时白线延迟添加，待筹码区色带先添加后再添加，使白线处于最上层
@@ -2284,6 +2338,268 @@ const IntradayPage: React.FC = () => {
     [],
   );
 
+  const stopReplay = useCallback(() => {
+    if (replayTimerRef.current) {
+      clearInterval(replayTimerRef.current);
+      replayTimerRef.current = null;
+    }
+
+    restoreChartInteraction();
+
+    setIsReplaying(false);
+    setIsReplayPaused(false);
+    replayIndexRef.current = 0;
+
+    if (fullSubChartDataBackupRef.current) {
+      const data = fullSubChartDataBackupRef.current;
+      const date = data.date || todayDateStr;
+      requestAnimationFrame(() => {
+        renderData(data, date);
+      });
+    }
+
+    fullKlineBackupRef.current = null;
+    fullSubChartDataBackupRef.current = null;
+    indicatorSubChartsBackupRef.current = null;
+    signalsBackupRef.current = null;
+  }, [renderData, restoreChartInteraction, todayDateStr]);
+
+  // 复盘：将累积的K线数据 slice 设置到图表各系列中
+  const applyReplayFrame = useCallback(
+    (klines: any[], idx: number, dateStr: string, subChartsData: any[] | null) => {
+      const slice = klines.slice(0, idx + 1);
+      const currentKline = klines[idx];
+      const currentTime = currentKline.time as number;
+
+      // 更新主图K线/白线
+      if (candleSeriesRef.current) {
+        if (isTencentDataRef.current) {
+          (candleSeriesRef.current as any).setData(
+            slice.map((k) => ({
+              time: k.time as any,
+              value: k.close,
+            })),
+          );
+        } else {
+          (candleSeriesRef.current as any).setData(
+            slice.map((k) => ({
+              time: k.time as any,
+              open: k.open,
+              high: k.high,
+              low: k.low,
+              close: k.close,
+            })),
+          );
+        }
+      }
+
+      // 更新成交量
+      if (volumeSeriesRef.current) {
+        volumeSeriesRef.current.setData(
+          slice.map((k, i) => {
+            const prevClose = i > 0 ? slice[i - 1].close : slice[0].close;
+            const isUp = isTencentDataRef.current ? k.close >= prevClose : k.close >= k.open;
+            return {
+              time: k.time as any,
+              value: k.volume,
+              color: isUp ? '#FF444466' : '#44AA4466',
+            };
+          }),
+        );
+      }
+
+      // 更新均价线
+      if (avgPriceLineRef.current) {
+        avgPriceLineRef.current.setData(
+          slice
+            .filter((k: any) => k.avgPrice != null)
+            .map((k: any) => ({
+              time: k.time,
+              value: k.avgPrice,
+            })),
+        );
+      }
+
+      // 更新成交量均线
+      const volumeValues = slice.map((k) => ({ time: k.time as any, value: k.volume }));
+      const volume5MA = slice.length >= 5 ? calculateVolumeMA(volumeValues, 5) : [];
+      const volume10MA = slice.length >= 10 ? calculateVolumeMA(volumeValues, 10) : [];
+      if (volume5MASeriesRef.current) volume5MASeriesRef.current.setData(volume5MA);
+      if (volume10MASeriesRef.current) volume10MASeriesRef.current.setData(volume10MA);
+
+      // 时间窗口管理：数据始终填满画布（与真实交易日行为一致）
+      // 使用 setVisibleRange 替代 fitContent，避免 ghost 系列（全时段数据）干扰时间范围计算
+      const sliceFirstTime = slice[0].time as number;
+      const sliceLastTime = slice[slice.length - 1].time as number;
+      // 保证最小时间跨度（至少60秒），避免 setVisibleRange from===to 报错
+      const minSpan = 60;
+      const effectiveFrom = sliceFirstTime as any;
+      const effectiveTo =
+        sliceLastTime > sliceFirstTime ? (sliceLastTime as any) : ((sliceFirstTime + minSpan) as any);
+
+      if (chartRef.current) {
+        chartRef.current.timeScale().setVisibleRange({ from: effectiveFrom, to: effectiveTo });
+      }
+      if (volumeChartRef.current) {
+        volumeChartRef.current.timeScale().setVisibleRange({ from: effectiveFrom, to: effectiveTo });
+      }
+
+      // 更新指标子图
+      if (subChartsData && subChartsData.length > 0) {
+        subChartsData.forEach((sc) => {
+          const lineSeriesList = indicatorSeriesRef.current.get(sc.id);
+          if (!lineSeriesList || lineSeriesList.length === 0) return;
+
+          sc.lines.forEach((line: any, li: number) => {
+            if (li >= lineSeriesList.length) return;
+            const series = lineSeriesList[li];
+            if (!series || !line.data) return;
+
+            const filteredData = line.data
+              .filter((pt: any) => {
+                if (!pt.time) return false;
+                const ptMs = parseTimestamp(pt.time, dateStr);
+                const ptSec = Math.floor(ptMs / 1000);
+                return ptSec <= currentTime;
+              })
+              .map((pt: any) => {
+                const ms = parseTimestamp(pt.time, dateStr);
+                return { time: Math.floor(ms / 1000) as any, value: pt.value };
+              })
+              .sort((a: any, b: any) => (a.time as number) - (b.time as number));
+
+            if (filteredData.length > 0) {
+              try {
+                series.setData(filteredData);
+              } catch (_e) { /* ignore */ }
+            }
+          });
+        });
+
+        // 同步子图时间轴
+        indicatorChartsRef.current.forEach((ic) => {
+          try {
+            ic.timeScale().setVisibleRange({ from: effectiveFrom, to: effectiveTo });
+          } catch (_e) { /* ignore */ }
+        });
+      }
+
+      // 更新信号标记（模拟真实交易日信号逐一出现）
+      if (candleSeriesRef.current && signalsBackupRef.current && signalsBackupRef.current.length > 0) {
+        const activeSignals = signalsBackupRef.current.filter((sig) => {
+          const sigMs = parseTimestamp(sig.trigger_time, dateStr);
+          const sigUnix = Math.floor(sigMs / 1000);
+          return sigUnix > 0 && sigUnix <= currentTime;
+        });
+        const newMarkers: lightweightCharts.SeriesMarker<lightweightCharts.Time>[] = [];
+        for (const sig of activeSignals) {
+          const sigUnix = Math.floor(parseTimestamp(sig.trigger_time, dateStr) / 1000);
+          if (sigUnix <= 0) continue;
+          if (sig.signal_type === 'buy') {
+            newMarkers.push({
+              time: sigUnix as any,
+              position: 'belowBar',
+              color: '#FF2222',
+              shape: 'arrowUp',
+              text: '',
+              size: 1,
+            });
+          } else if (sig.signal_type === 'sell') {
+            newMarkers.push({
+              time: sigUnix as any,
+              position: 'aboveBar',
+              color: '#22DD44',
+              shape: 'arrowDown',
+              text: '',
+              size: 1,
+            });
+          }
+        }
+        if (seriesMarkersRef.current) {
+          try { seriesMarkersRef.current.setMarkers([]); } catch (_e) { /* ignore */ }
+          try { seriesMarkersRef.current.detach(); } catch (_e) { /* ignore */ }
+          seriesMarkersRef.current = null;
+        }
+        if (newMarkers.length > 0) {
+          seriesMarkersRef.current = createSeriesMarkers(
+            candleSeriesRef.current as any,
+            newMarkers as any,
+          );
+        }
+      }
+    },
+    [],
+  );
+
+  const startReplay = useCallback(() => {
+    const klines = klineRawDataRef.current;
+    if (!klines || klines.length === 0) return;
+
+    fullKlineBackupRef.current = [...klines];
+    fullSubChartDataBackupRef.current = intradayData;
+    indicatorSubChartsBackupRef.current =
+      intradayData?.indicator_sub_charts
+        ? [...intradayData.indicator_sub_charts]
+        : null;
+    signalsBackupRef.current = filteredSignalsRef.current
+      ? [...filteredSignalsRef.current]
+      : null;
+
+    // 清除当前信号标记
+    if (seriesMarkersRef.current) {
+      try { seriesMarkersRef.current.setMarkers([]); } catch (_e) { /* ignore */ }
+      try { seriesMarkersRef.current.detach(); } catch (_e) { /* ignore */ }
+      seriesMarkersRef.current = null;
+    }
+
+    const dateStr = intradayData?.date || todayDateStr;
+
+    setIsReplaying(true);
+    setIsReplayPaused(false);
+    replayIndexRef.current = 0;
+
+    applyReplayInteractionLock();
+
+    applyReplayFrame(klines, 0, dateStr, indicatorSubChartsBackupRef.current);
+
+    replayTimerRef.current = setInterval(() => {
+      replayIndexRef.current++;
+      const idx = replayIndexRef.current;
+      if (idx >= klines.length) {
+        stopReplay();
+        return;
+      }
+      applyReplayFrame(klines, idx, dateStr, indicatorSubChartsBackupRef.current);
+    }, 80);
+  }, [intradayData, applyReplayInteractionLock, applyReplayFrame, stopReplay, todayDateStr]);
+
+  const pauseReplay = useCallback(() => {
+    if (replayTimerRef.current) {
+      clearInterval(replayTimerRef.current);
+      replayTimerRef.current = null;
+    }
+    setIsReplayPaused(true);
+  }, []);
+
+  const resumeReplay = useCallback(() => {
+    const klines = klineRawDataRef.current;
+    if (!klines || klines.length === 0) return;
+
+    const dateStr = fullSubChartDataBackupRef.current?.date || todayDateStr;
+
+    setIsReplayPaused(false);
+
+    replayTimerRef.current = setInterval(() => {
+      replayIndexRef.current++;
+      const idx = replayIndexRef.current;
+      if (idx >= klines.length) {
+        stopReplay();
+        return;
+      }
+      applyReplayFrame(klines, idx, dateStr, indicatorSubChartsBackupRef.current);
+    }, 80);
+  }, [applyReplayFrame, stopReplay, todayDateStr]);
+
   // 当数据变更时重新渲染
   useEffect(() => {
     if (intradayData) {
@@ -2297,6 +2613,21 @@ const IntradayPage: React.FC = () => {
     const v = validateStockCode(code);
     setInputError(v.valid ? undefined : v.message);
     if (!v.valid) return;
+
+    if (isReplayingRef.current) {
+      if (replayTimerRef.current) {
+        clearInterval(replayTimerRef.current);
+        replayTimerRef.current = null;
+      }
+      restoreChartInteraction();
+      setIsReplaying(false);
+      setIsReplayPaused(false);
+      replayIndexRef.current = 0;
+      fullKlineBackupRef.current = null;
+    fullSubChartDataBackupRef.current = null;
+    indicatorSubChartsBackupRef.current = null;
+    signalsBackupRef.current = null;
+    }
 
     setIsLoading(true);
     try {
@@ -2322,7 +2653,7 @@ const IntradayPage: React.FC = () => {
     } finally {
       setIsLoading(false);
     }
-  }, [stockCode, loadHistory, isTradingTime, todayDateStr, warmupEnabled]);
+  }, [stockCode, loadHistory, isTradingTime, todayDateStr, warmupEnabled, restoreChartInteraction]);
 
   // 点击历史记录
   const handleHistoryClick = useCallback(
@@ -2341,6 +2672,20 @@ const IntradayPage: React.FC = () => {
           delete next[item.stock_code];
           return next;
         });
+      }
+      if (isReplayingRef.current) {
+        if (replayTimerRef.current) {
+          clearInterval(replayTimerRef.current);
+          replayTimerRef.current = null;
+        }
+        restoreChartInteraction();
+        setIsReplaying(false);
+        setIsReplayPaused(false);
+        replayIndexRef.current = 0;
+        fullKlineBackupRef.current = null;
+        fullSubChartDataBackupRef.current = null;
+        indicatorSubChartsBackupRef.current = null;
+        signalsBackupRef.current = null;
       }
       setIsLoading(true);
       try {
@@ -2366,7 +2711,7 @@ const IntradayPage: React.FC = () => {
         setIsLoading(false);
       }
     },
-    [todayDateStr, loadHistory, isTradingTime, warmupEnabled],
+    [todayDateStr, loadHistory, isTradingTime, warmupEnabled, restoreChartInteraction],
   );
 
   // 删除历史
@@ -3023,7 +3368,7 @@ const IntradayPage: React.FC = () => {
                   <button
                     type="button"
                     onClick={handleSimulateTrading}
-                    disabled={simulationLoading}
+                    disabled={simulationLoading || isReplaying}
                     className={`px-2.5 py-1 text-xs font-medium rounded border transition-colors ${
                       simulationReport
                         ? 'text-emerald border-emerald/40 bg-emerald/10 hover:bg-emerald/20'
@@ -3040,6 +3385,25 @@ const IntradayPage: React.FC = () => {
                     ) : (
                       '模拟交易'
                     )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (isReplaying) {
+                        if (isReplayPaused) resumeReplay();
+                        else pauseReplay();
+                      } else {
+                        startReplay();
+                      }
+                    }}
+                    disabled={!intradayData}
+                    className={`px-2.5 py-1 text-xs font-medium rounded border transition-colors ${
+                      isReplaying
+                        ? 'text-cyan border-cyan/40 bg-cyan/10 hover:bg-cyan/20'
+                        : 'text-muted border-muted/30 bg-transparent hover:text-white hover:border-white/50'
+                    } disabled:opacity-50 disabled:cursor-not-allowed`}
+                  >
+                    {isReplaying ? (isReplayPaused ? '继续' : '暂停') : '复盘'}
                   </button>
                   {simulationReport && (
                     <button
