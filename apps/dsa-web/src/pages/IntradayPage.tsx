@@ -748,6 +748,17 @@ const IntradayPage: React.FC = () => {
       },
     });
 
+    // 时间锚点系列：始终覆盖 9:30-15:00，确保复盘时时间轴不收缩
+    // 注意：必须放在 CandlestickSeries 之前添加，使其渲染在下层
+    const mainAnchor = chart.addSeries(lightweightCharts.LineSeries, {
+      color: '#1a1a2e',
+      lineWidth: 1,
+      priceLineVisible: false,
+      lastValueVisible: false,
+      crosshairMarkerVisible: false,
+    });
+    mainTimeAnchorRef.current = mainAnchor;
+
     const candleSeries = chart.addSeries(lightweightCharts.CandlestickSeries, {
       upColor: '#FF4444',
       downColor: '#44AA44',
@@ -760,16 +771,6 @@ const IntradayPage: React.FC = () => {
 
     chartRef.current = chart;
     candleSeriesRef.current = candleSeries;
-
-    // 时间锚点系列：始终覆盖 9:30-15:00，确保复盘时时间轴不收缩
-    const mainAnchor = chart.addSeries(lightweightCharts.LineSeries, {
-      color: '#1a1a2e',
-      lineWidth: 1,
-      priceLineVisible: false,
-      lastValueVisible: false,
-      crosshairMarkerVisible: false,
-    });
-    mainTimeAnchorRef.current = mainAnchor;
 
     // 成交量子图
     const volChart = lightweightCharts.createChart(volumeContainerRef.current, {
@@ -1669,7 +1670,23 @@ const IntradayPage: React.FC = () => {
         });
       }
 
-      // ── 分时白线/K线（在参考线图层之后添加，使其始终处于最上层，仅次于箭头标记）──
+      // 时间锚点系列：始终覆盖 9:30-15:00，确保复盘时时间轴不收缩
+      // 注意：必须放在分时白线/K线之前添加，使其渲染在下层，避免深色锚点线覆盖白线
+      if (mainTimeAnchorRef.current) {
+        try { chart.removeSeries(mainTimeAnchorRef.current); } catch (_e) { /* ignore */ }
+        mainTimeAnchorRef.current = null;
+      }
+      const mainAnchor = chart.addSeries(lightweightCharts.LineSeries, {
+        color: '#1a1a2e',
+        lineWidth: 1,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+      });
+      mainAnchor.setData(klines.map((k) => ({ time: k.time as any, value: k.close })));
+      mainTimeAnchorRef.current = mainAnchor;
+
+      // ── 分时白线/K线（最后添加，使其始终处于最上层，仅次于锚点和箭头标记）──
       if (isTencentData) {
         const lineSeries = chart.addSeries(lightweightCharts.LineSeries, {
           color: '#FFFFFF',
@@ -1706,21 +1723,6 @@ const IntradayPage: React.FC = () => {
         );
         candleSeriesRef.current = newCandleSeries;
       }
-
-      // 时间锚点系列：始终覆盖 9:30-15:00，确保复盘时时间轴不收缩
-      if (mainTimeAnchorRef.current) {
-        try { chart.removeSeries(mainTimeAnchorRef.current); } catch (_e) { /* ignore */ }
-        mainTimeAnchorRef.current = null;
-      }
-      const mainAnchor = chart.addSeries(lightweightCharts.LineSeries, {
-        color: '#1a1a2e',
-        lineWidth: 1,
-        priceLineVisible: false,
-        lastValueVisible: false,
-        crosshairMarkerVisible: false,
-      });
-      mainAnchor.setData(klines.map((k) => ({ time: k.time as any, value: k.close })));
-      mainTimeAnchorRef.current = mainAnchor;
 
       chart.timeScale().fitContent();
 
