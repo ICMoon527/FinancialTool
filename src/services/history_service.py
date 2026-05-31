@@ -324,6 +324,28 @@ class HistoryService:
 
         return matched[:limit]
     
+    def delete_history_record(self, record_id: int) -> bool:
+        """
+        删除历史分析记录
+
+        Args:
+            record_id: 分析历史记录主键 ID
+
+        Returns:
+            是否删除成功
+        """
+        try:
+            with self.db.session_scope() as session:
+                from src.storage import AnalysisHistory
+                record = session.query(AnalysisHistory).filter(AnalysisHistory.id == record_id).first()
+                if not record:
+                    return False
+                session.delete(record)
+            return True
+        except Exception as e:
+            logger.error(f"删除历史记录失败: {e}", exc_info=True)
+            return False
+
     def _get_sentiment_label(self, score: int) -> str:
         """
         根据评分获取情绪标签

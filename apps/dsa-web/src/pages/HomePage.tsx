@@ -173,6 +173,21 @@ const HomePage: React.FC = () => {
     }
   }, [fetchHistory, isLoadingMore, hasMore]);
 
+  // 删除历史记录
+  const handleDeleteHistory = useCallback(async (id: number) => {
+    try {
+      await historyApi.delete(id);
+      // 从本地列表中移除，避免全量刷新
+      setHistoryItems(prev => prev.filter(item => item.id !== id));
+      // 如果正在删除的是当前选中的报告，清空选中
+      if (selectedReport?.meta.id === id) {
+        setSelectedReport(null);
+      }
+    } catch (err) {
+      console.error('删除历史记录失败:', err);
+    }
+  }, [selectedReport?.meta.id]);
+
   // 初始加载 - 自动选择第一条（仅挂载时执行一次）
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
@@ -279,6 +294,7 @@ const HomePage: React.FC = () => {
         selectedId={selectedReport?.meta.id}
         onItemClick={(id) => { handleHistoryClick(id); setSidebarOpen(false); }}
         onLoadMore={handleLoadMore}
+        onDelete={handleDeleteHistory}
         className="max-h-[88vh] md:max-h-[88vh] flex-1 overflow-hidden"
       />
     </div>

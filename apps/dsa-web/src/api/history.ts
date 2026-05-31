@@ -67,4 +67,12 @@ export const historyApi = {
       items: (data.items || []).map(item => toCamelCase<NewsIntelItem>(item)),
     };
   },
+
+  /**
+   * 删除历史记录
+   * @param id 分析历史记录主键 ID
+   */
+  delete: async (id: number): Promise<void> => {
+    await apiClient.delete(`/api/v1/history/${id}`);
+  },
 };

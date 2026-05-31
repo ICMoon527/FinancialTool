@@ -26,8 +26,17 @@ import warnings
 import sys
 
 # ====== 最激进的警告抑制 - 在任何导入前设置 ======
+warnings.filterwarnings("ignore")
 warnings.simplefilter("ignore")
 os.environ["PYTHONWARNINGS"] = "ignore"
+
+# 强制抑制 pkg_resources 的 DeprecationWarning（它内部显式 emit 绕过 simplefilter）
+try:
+    import pkg_resources
+    if hasattr(pkg_resources, '_warn_if_resource_unavailable'):
+        pkg_resources._warn_if_resource_unavailable = lambda *a, **k: ...  # type: ignore[assignment]
+except ImportError:
+    pass
 # =======================================================
 
 # ====== 关键！在任何导入前禁用所有 SDK 的内部重试 ======
