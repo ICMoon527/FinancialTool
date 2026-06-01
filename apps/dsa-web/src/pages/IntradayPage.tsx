@@ -1508,7 +1508,7 @@ const IntradayPage: React.FC = () => {
 
       // 检测腾讯数据：每根K线中 Open===High===Low===Close 的比例
       const flatCount = klines.filter((k) => k.open === k.high && k.high === k.low && k.low === k.close).length;
-      const isTencentData = klines.length > 10 && flatCount / klines.length > 0.95;
+      const isTencentData = klines.length > 0 && flatCount / klines.length > 0.95;
       isTencentDataRef.current = isTencentData;
 
       // 总是重建主系列以重置价格 scale，避免手动调整后切换股票 scale 不重置
