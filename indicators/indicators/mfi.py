@@ -106,6 +106,13 @@ class MFI(BaseIndicator):
 
         df['MFI'] = 100 - (100 / (1 + mr))
 
+        # 前向填充NaN值，处理价格不变期间MFI无法计算的情况
+        # 当TP连续不变时，PMF和NMF均为0，导致MR=NaN→MFI=NaN
+        # 使用ffill保持最后一个有效值，避免前端图表数据中断
+        df['MFI'] = df['MFI'].ffill()
+        # 起始位置（滚动窗口未满期）可能仍为NaN，填充为50（中性值）
+        df['MFI'] = df['MFI'].fillna(50)
+
         df['overbought'] = df['MFI'] > 80
         df['oversold'] = df['MFI'] < 20
 

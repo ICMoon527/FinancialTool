@@ -89,6 +89,34 @@ function hexToRgba(hex: string, alpha: number): string {
 }
 
 /**
+ * 生成完整交易日时间点（9:30-11:30, 13:00-15:00），用于锚点系列撑开时间轴
+ * dateStr: "YYYY-MM-DD"
+ * refPrice: 用于 Y 轴值的参考价格
+ */
+function generateFullDayTimePoints(dateStr: string, refPrice: number): Array<{ time: number; value: number }> {
+  const points: Array<{ time: number; value: number }> = [];
+  const [y, m, d] = dateStr.split('-').map(Number);
+  // 上午 9:30 - 11:30
+  for (let h = 9; h <= 11; h++) {
+    const startMin = h === 9 ? 30 : 0;
+    const endMin = h === 11 ? 30 : 59;
+    for (let min = startMin; min <= endMin; min++) {
+      const time = new Date(y, m - 1, d, h, min, 0).getTime() / 1000;
+      points.push({ time, value: refPrice });
+    }
+  }
+  // 下午 13:00 - 15:00
+  for (let h = 13; h <= 15; h++) {
+    const endMin = h === 15 ? 0 : 59;
+    for (let min = 0; min <= endMin; min++) {
+      const time = new Date(y, m - 1, d, h, min, 0).getTime() / 1000;
+      points.push({ time, value: refPrice });
+    }
+  }
+  return points;
+}
+
+/**
  * 将分时K线数据转换为 lightweight-charts 可用格式
  * dateStr: 当前查询日期 "YYYY-MM-DD"
  */
@@ -141,7 +169,7 @@ function convertKlineData(
  */
 function padDataStart(pts: any[], firstKlineTime: number): any[] {
   if (firstKlineTime > 0 && pts.length > 0 && (pts[0].time as number) > firstKlineTime) {
-    return [{ time: firstKlineTime, value: null }, ...pts];
+    return [{ time: firstKlineTime, value: NaN }, ...pts];
   }
   return pts;
 }
@@ -485,6 +513,7 @@ const IntradayPage: React.FC = () => {
   const timeSyncSubRef = useRef<(() => void) | null>(null);
   const isTimeSyncingRef = useRef(false);
   const isInitialRenderRef = useRef(false);
+  const renderDataRafIdsRef = useRef<number[]>([]);
   const currentDateRef = useRef(todayDateStr);
   const priceRangeEnabledRef = useRef(false);
   const syncEngineRef = useRef(new CrosshairSyncEngine());
@@ -1488,9 +1517,13 @@ const IntradayPage: React.FC = () => {
       allSignalsRef.current = data.signals || [];
       const firstKlineTime: number = klines.length > 0 ? (klines[0].time as number) : 0;
 
+      // 生成全天时间点用于锚点系列撑开时间轴
+      const refPrice = klines.length > 0 ? klines[klines.length - 1].close : 0;
+      const fullDayPoints = generateFullDayTimePoints(date, refPrice);
+
       // 成交量子图锚点数据填充（klines 已定义）
       if (volTimeAnchorRef.current && klines.length > 0) {
-        try { volTimeAnchorRef.current.setData(klines.map((k) => ({ time: k.time as any, value: k.volume }))); } catch (_e) { /* ignore */ }
+        try { volTimeAnchorRef.current.setData(fullDayPoints as any); } catch (_e) { /* ignore */ }
       }
 
       // 默认显示最后一个信号的权重贡献
@@ -1683,7 +1716,7 @@ const IntradayPage: React.FC = () => {
         lastValueVisible: false,
         crosshairMarkerVisible: false,
       });
-      mainAnchor.setData(klines.map((k) => ({ time: k.time as any, value: k.close })));
+      mainAnchor.setData(fullDayPoints as any);
       mainTimeAnchorRef.current = mainAnchor;
 
       // ── 分时白线/K线（最后添加，使其始终处于最上层，仅次于锚点和箭头标记）──
@@ -2364,12 +2397,14 @@ const IntradayPage: React.FC = () => {
         if (firstTime > 0 && lastTime > firstTime) {
           const range = { from: firstTime as any, to: lastTime as any };
           syncEngineRef.current.syncTimeRange(range);
-          requestAnimationFrame(() => {
+          const id1 = requestAnimationFrame(() => {
             syncEngineRef.current.syncTimeRange(range);
-            requestAnimationFrame(() => {
+            const id2 = requestAnimationFrame(() => {
               syncEngineRef.current.syncTimeRange(range);
             });
+            renderDataRafIdsRef.current.push(id2);
           });
+          renderDataRafIdsRef.current.push(id1);
         }
       }
 
@@ -2453,7 +2488,12 @@ const IntradayPage: React.FC = () => {
     fullSubChartDataBackupRef.current = null;
     indicatorSubChartsBackupRef.current = null;
     signalsBackupRef.current = null;
-  }, [renderData, restoreChartInteraction, todayDateStr]);
+
+    // 恢复轮询
+    if (searchHistoryRef.current.length > 0) {
+      startPolling();
+    }
+  }, [renderData, restoreChartInteraction, todayDateStr, startPolling]);
 
   // 复盘帧：用隐藏锚点系列强制时间轴覆盖 9:30-15:00，主系列只传实际数据
   const applyReplayFrame = useCallback(
@@ -2461,7 +2501,9 @@ const IntradayPage: React.FC = () => {
       const currentKline = klines[idx];
       const currentTime = currentKline.time as number;
       const visibleKlines = klines.slice(0, idx + 1);
-      const totalBars = klines.length;
+
+      // 复盘期间阻止 CrosshairSyncEngine 时间轴同步传播，避免子图 setData 触发窄范围覆盖主图
+      isTimeSyncingRef.current = true;
 
       // 主图K线/白线
       if (candleSeriesRef.current) {
@@ -2592,7 +2634,44 @@ const IntradayPage: React.FC = () => {
         }
       }
 
+      // 锚点系列：使用全天时间点撑开时间轴，与实盘行为一致
+      // 锚点值使用当前K线收盘价（而非0），避免 priceScale 自动缩放时将Y轴拉到0以下
+      const refPrice = currentKline.close || (klines.length > 0 ? klines[0].close : 0);
+      const fullDayAnchorData = generateFullDayTimePoints(dateStr, refPrice);
+      if (mainTimeAnchorRef.current) {
+        try { mainTimeAnchorRef.current.setData(fullDayAnchorData as any); } catch (_e) { /* ignore */ }
+      }
+      if (volTimeAnchorRef.current) {
+        try { volTimeAnchorRef.current.setData(fullDayAnchorData as any); } catch (_e) { /* ignore */ }
+      }
+
+      // 子图锚点系列：使用全天时间点，value=0 避免价格轴被拉至指标量级外
+      const subFullDayAnchorData = generateFullDayTimePoints(dateStr, 0);
+      indicatorAnchorRefs.current.forEach((subAnchor) => {
+        try { subAnchor.setData(subFullDayAnchorData as any); } catch (_e) { /* ignore */ }
+      });
+
+      // 首帧：使用 fitContent 让锚点系列撑开时间轴到全天
+      // 必须在 ghostSeries 创建之前调用，避免 ghostSeries 的宽时间范围干扰 fitContent
+      if (idx === 0 && chartRef.current) {
+        try { chartRef.current.timeScale().fitContent(); } catch (_e) { /* ignore */ }
+        const mainRange = chartRef.current.timeScale().getVisibleRange();
+        console.log('[ReplayDebug] idx=0 主图 fitContent 后 range:', mainRange,
+          `from=${mainRange ? new Date(Number(mainRange.from) * 1000).toLocaleTimeString() : 'N/A'}`,
+          `to=${mainRange ? new Date(Number(mainRange.to) * 1000).toLocaleTimeString() : 'N/A'}`);
+        if (volumeChartRef.current) {
+          try { volumeChartRef.current.timeScale().fitContent(); } catch (_e) { /* ignore */ }
+        }
+        indicatorChartsRef.current.forEach((subChart, key) => {
+          try { subChart.timeScale().fitContent(); } catch (_e) { /* ignore */ }
+          const sr = subChart.timeScale().getVisibleRange();
+          console.log(`[ReplayDebug] idx=0 子图 ${key} fitContent 后 range:`, sr,
+            `from=${sr ? new Date(Number(sr.from) * 1000).toLocaleTimeString() : 'N/A'}`);
+        });
+      }
+
       // 首帧：创建复盘价格范围 ghostSeries 锁定 Y 轴，确保分时线位置与正常视图一致
+      // 放在 fitContent 之后，避免 ghostSeries 仅有的 2 个边界点干扰时间轴拟合
       if (idx === 0 && !replayPriceRangeSeriesRef.current && chartRef.current) {
         const range = replayPriceRangeRef.current;
         if (range && klines.length >= 2) {
@@ -2612,46 +2691,41 @@ const IntradayPage: React.FC = () => {
               ]);
               replayPriceRangeSeriesRef.current = ghost;
               chartRef.current.priceScale('right').applyOptions({ autoScale: false });
+              const rangeAfterGhost = chartRef.current.timeScale().getVisibleRange();
+              console.log('[ReplayDebug] idx=0 ghostSeries 创建后 range:', rangeAfterGhost,
+                `from=${rangeAfterGhost ? new Date(Number(rangeAfterGhost.from) * 1000).toLocaleTimeString() : 'N/A'}`,
+                `to=${rangeAfterGhost ? new Date(Number(rangeAfterGhost.to) * 1000).toLocaleTimeString() : 'N/A'}`);
             }
           } catch (_e) { /* ignore */ }
         }
       }
 
-      // 锚点系列：最后设置，强制时间轴覆盖完整 9:30-15:00
-      // 锚点值使用当前K线收盘价（而非0），避免 priceScale 自动缩放时将Y轴拉到0以下
-      const refPrice = currentKline.close || (klines.length > 0 ? klines[0].close : 0);
-      const anchorData = klines.map((k) => ({ time: k.time as any, value: refPrice }));
-      if (mainTimeAnchorRef.current) {
-        try { mainTimeAnchorRef.current.setData(anchorData as any); } catch (_e) { /* ignore */ }
-      }
-      if (volTimeAnchorRef.current) {
-        try { volTimeAnchorRef.current.setData(anchorData as any); } catch (_e) { /* ignore */ }
-      }
-
-      // 子图锚点系列：使用 value=0 而非收盘价，避免价格轴被拉至指标量级外
-      const indicatorAnchorData = klines.map((k) => ({ time: k.time as any, value: 0 }));
-      indicatorAnchorRefs.current.forEach((subAnchor) => {
-        try { subAnchor.setData(indicatorAnchorData as any); } catch (_e) { /* ignore */ }
-      });
-
-      // 兜底：显式锁定所有图表的时间轴可见范围
-      const logicalRange = { from: 0, to: totalBars - 1 };
-      if (chartRef.current) {
-        try { chartRef.current.timeScale().setVisibleLogicalRange(logicalRange); } catch (_e) { /* ignore */ }
-      }
-      if (volumeChartRef.current) {
-        try { volumeChartRef.current.timeScale().setVisibleLogicalRange(logicalRange); } catch (_e) { /* ignore */ }
-      }
-      indicatorChartsRef.current.forEach((subChart) => {
-        try { subChart.timeScale().setVisibleLogicalRange(logicalRange); } catch (_e) { /* ignore */ }
-      });
+      // 延迟恢复时间轴同步，覆盖下一帧到来前的间隙
+      setTimeout(() => { isTimeSyncingRef.current = false; }, 200);
     },
     [],
   );
 
   const startReplay = useCallback(() => {
+    // 停止轮询，避免复盘期间数据更新触发 renderData 重新渲染导致图表销毁重建
+    stopPolling();
+
+    // 取消 renderData 中未完成的 requestAnimationFrame 回调
+    // 避免它们用数据范围覆盖复盘的全天范围
+    renderDataRafIdsRef.current.forEach((id) => cancelAnimationFrame(id));
+    renderDataRafIdsRef.current = [];
+
     const klines = klineRawDataRef.current;
     if (!klines || klines.length === 0) return;
+
+    console.log(`[ReplayDebug] startReplay: klines数量=${klines.length}, isTencentData=${isTencentDataRef.current}`);
+    if (klines.length > 0) {
+      const firstTime = klines[0].time;
+      const lastTime = klines[klines.length - 1].time;
+      console.log(`[ReplayDebug] startReplay: firstTime=${new Date(firstTime * 1000).toLocaleTimeString()}, lastTime=${new Date(lastTime * 1000).toLocaleTimeString()}`);
+    }
+    const subCharts = intradayData?.indicator_sub_charts || [];
+    console.log(`[ReplayDebug] startReplay: 指标子图数量=${subCharts.length}, ids=${subCharts.map((s: any) => s.id).join(',')}`);
 
     fullKlineBackupRef.current = [...klines];
     fullSubChartDataBackupRef.current = intradayData;
@@ -2704,7 +2778,7 @@ const IntradayPage: React.FC = () => {
       }
       applyReplayFrame(klines, idx, dateStr, subChartsData);
     }, 80);
-  }, [intradayData, applyReplayInteractionLock, applyReplayFrame, stopReplay, todayDateStr]);
+  }, [intradayData, applyReplayInteractionLock, applyReplayFrame, stopReplay, todayDateStr, stopPolling]);
 
   const pauseReplay = useCallback(() => {
     if (replayTimerRef.current) {
@@ -2735,7 +2809,7 @@ const IntradayPage: React.FC = () => {
 
   // 当数据变更时重新渲染
   useEffect(() => {
-    if (intradayData) {
+    if (intradayData && !isReplayingRef.current) {
       renderData(intradayData, intradayData.date || todayDateStr);
     }
   }, [intradayData, renderData, priceRangeEnabled]);

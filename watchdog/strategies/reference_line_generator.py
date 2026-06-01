@@ -146,6 +146,32 @@ class ReferenceLineGenerator:
 
         return result
 
+    # ---------- EXPMA ----------
+
+    def _calc_expma_lines(self) -> List[Dict[str, Any]]:
+        """计算EXPMA13参考线
+
+        使用与 indicators/indicators/expma.py 一致的指数移动平均公式：
+        EXPMA = Close.ewm(span=13, adjust=False).mean()
+        """
+        if len(self.daily_data) < 13:
+            return []
+
+        close = self.daily_data["Close"]
+        expma13 = float(self._ema(close, 13).iloc[-1])
+
+        return [
+            {
+                "id": "expma_13",
+                "label": "EXPMA13",
+                "price": round(expma13, 2),
+                "category": "expma",
+                "color": "#FFFFFF",
+                "style": "solid",
+                "base_weight": 1.0,
+            },
+        ]
+
     # ---------- 前高/前低 ----------
 
     def _calc_extreme_lines(self) -> List[Dict[str, Any]]:
@@ -296,6 +322,7 @@ class ReferenceLineGenerator:
 
         lines.extend(self._calc_main_trading_lines())
         lines.extend(self._calc_ma_lines())
+        lines.extend(self._calc_expma_lines())
         lines.extend(self._calc_extreme_lines())
         lines.extend(self._calc_chip_dense_zone())
         lines.extend(self._calc_prev_close())
