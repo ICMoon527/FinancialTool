@@ -2385,15 +2385,15 @@ const IntradayPage: React.FC = () => {
           lastValueVisible: false,
           crosshairMarkerVisible: false,
         });
-        subAnchor.setData(klines.map((k) => ({ time: k.time as any, value: 0 })));
+        subAnchor.setData(fullDayPoints.map((p: any) => ({ time: p.time, value: 0 })));
         indicatorAnchorRefs.current.set(sc.id, subAnchor);
       }
 
-      // 初次同步：多帧重试确保所有子图时间轴对齐
+      // 初次同步：使用全天时间点范围，确保所有子图时间轴与主图一致（9:30-15:00）
       // lightweight-charts 内部布局是异步的，单次 setVisibleRange 可能在布局完成前被忽略
-      if (klines.length >= 2) {
-        const firstTime = klines[0].time as number;
-        const lastTime = klines[klines.length - 1].time as number;
+      if (fullDayPoints.length >= 2) {
+        const firstTime = fullDayPoints[0].time as number;
+        const lastTime = fullDayPoints[fullDayPoints.length - 1].time as number;
         if (firstTime > 0 && lastTime > firstTime) {
           const range = { from: firstTime as any, to: lastTime as any };
           syncEngineRef.current.syncTimeRange(range);

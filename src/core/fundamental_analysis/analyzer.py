@@ -376,6 +376,12 @@ class FundamentalAnalyzer:
             data["cost_of_goods_sold"] = _sf("营业成本")
             data["eps"] = _sf("基本每股收益")
 
+            # 扣非净利润（用于判断利润可持续性）
+            data["deducted_net_profit"] = _sf("扣除非经常性损益后的净利润")
+
+            # 其他综合收益（用于留存收益变动校验，补偿净利润-分配之外的调整项）
+            data["other_comprehensive_income"] = _sf("归属母公司所有者的其他综合收益")
+
             # 尝试补充利息资本化金额（在附注中）
             data["interest_capitalized"] = _sf("利息资本化")
 

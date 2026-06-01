@@ -47,7 +47,7 @@ class FinancialIndicators:
         """
         计算盈利能力指标
 
-        包含：ROE、ROA、毛利率、净利率、营业利润率
+        包含：ROE、ROA、毛利率、净利率、营业利润率、扣非净利润率
 
         Args:
             abstract_df: 财务摘要 DataFrame
@@ -63,6 +63,7 @@ class FinancialIndicators:
             "gross_profit_margin": None,
             "net_profit_margin": None,
             "operating_profit_margin": None,
+            "deducted_net_profit_margin": None,
         }
 
         # 从财务摘要中提取 ROE
@@ -72,13 +73,16 @@ class FinancialIndicators:
             result["gross_profit_margin"] = FinancialIndicators._safe_float(latest, "销售毛利率")
             result["net_profit_margin"] = FinancialIndicators._safe_float(latest, "销售净利率")
 
-        # 从利润表中提取营业利润率
+        # 从利润表中提取营业利润率和扣非净利润率
         if income_df is not None and not income_df.empty:
             latest = income_df.iloc[0]
             total_revenue = FinancialIndicators._safe_float(latest, "营业总收入")
             operate_profit = FinancialIndicators._safe_float(latest, "营业利润")
             if total_revenue and operate_profit and total_revenue > 0:
                 result["operating_profit_margin"] = round(operate_profit / total_revenue * 100, 2)
+            deducted_net = FinancialIndicators._safe_float(latest, "扣除非经常性损益后的净利润")
+            if total_revenue and deducted_net and total_revenue > 0:
+                result["deducted_net_profit_margin"] = round(deducted_net / total_revenue * 100, 2)
 
         # 计算 ROA（总资产收益率）
         if income_df is not None and not income_df.empty and balance_df is not None and not balance_df.empty:

@@ -19,9 +19,13 @@ from typing import Dict, Optional, Any, List, Tuple
 from src.core.fundamental_analysis.industry_config import (
     IndustryType,
     resolve_industry_type,
-    get_industry_thresholds,
     is_financial_or_real_estate,
     is_liquor_industry,
+)
+from src.core.fundamental_analysis.industry_percentile import score_by_percentile, get_percentile_info
+from src.core.fundamental_analysis.scorer_config import (
+    get_scorer_config,
+    _get_default_threshold_score,
 )
 
 logger = logging.getLogger(__name__)
@@ -122,6 +126,7 @@ class FinancialScorer(FundamentalScorer):
         self.data = data
         self.scores: Dict[str, float] = {}
         self.reasons: List[str] = []
+        self._config = get_scorer_config()
 
         # 解析行业分类
         if industry_type is not None:
@@ -131,13 +136,9 @@ class FinancialScorer(FundamentalScorer):
         else:
             self.industry_type = IndustryType.UNKNOWN
 
-        self.thresholds = get_industry_thresholds(self.industry_type)
         self._is_fin_or_re = is_financial_or_real_estate(self.industry_type)
         self._is_liquor = is_liquor_industry(sectors or [])
 
-        # 归一化：统一货币单位到元，统一百分比到百分数
-        self.data = self._normalize_units(self.data)
-        self.data = self._normalize_percent(self.data)
         logger.info(f"评分器初始化完毕，行业分类: {self.industry_type.value}")
 
     def _add_reason(self, item: str, score: float, max_score: float, detail: str):
@@ -145,132 +146,74 @@ class FinancialScorer(FundamentalScorer):
         self.scores[item] = score
         self.reasons.append(f"{item} ({score}/{max_score}): {detail}")
 
-    # ============================================================
-    # 单位与数值归一化
-    # ============================================================
-
-    @staticmethod
-    def _normalize_units(data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        统一货币字段的单位到"元"
-
-        通过检测关键货币字段的量级，自动判断数据是以"元"、"万元"还是"亿元"
-        为单位，并统一转为"元"。避免因单位不一致导致 PE 等比率计算错误。
-
-        检测逻辑：
-        - 取净利润或营收作为参考值
-        - 参考值 < 10^4 → 推测单位为亿（×1e8 转元）
-        - 10^4 ≤ 参考值 < 10^8 → 推测单位为万（×1e4 转元）
-        - 参考值 ≥ 10^8 → 推测单位为元（不变）
-        """
-        data = dict(data)
-
-        # 待检测的货币字段
-        monetary_fields = {
-            "net_income", "market_cap", "revenue", "ebit",
-            "operating_cash_flow", "fcf", "capex",
-            "dividends", "share_buyback", "dividend_plus_buyback",
-            "avg_receivables", "avg_inventory", "avg_payables",
-            "cash_balance_end", "cash_balance_start",
-            "cash_change_from_cf", "interest_expense", "tax_expense",
-            "total_debt",
-        }
-
-        # 取参考值：优先用 net_income 或 revenue
-        ref = None
-        for key in ("net_income", "revenue", "market_cap", "operating_cash_flow"):
-            val = data.get(key)
-            if val is not None and val != 0:
-                ref = abs(val)
-                break
-
-        if ref is None:
-            return data
-
-        # 判断量级
-        if ref < 1e4:       # 0 ~ 9,999 → 亿
-            scale = 1e8
-            logger.info(f"货币单位归一化：检测到参考值 {ref:.2f}，推测单位为亿，×{scale:.0e} 转元")
-        elif ref < 1e8:     # 1万 ~ 9,999万 → 万
-            scale = 1e4
-            logger.info(f"货币单位归一化：检测到参考值 {ref:.2f}，推测单位为万，×{scale:.0e} 转元")
-        else:
-            scale = 1        # 已经是元
-
-        if scale != 1:
-            for k in monetary_fields:
-                v = data.get(k)
-                if v is not None:
-                    data[k] = v * scale
-            logger.info(f"货币单位归一化完成，共处理了 {len(monetary_fields & set(data.keys()))} 个字段")
-
-        return data
-
-    @staticmethod
-    def _normalize_percent(data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        统一百分比字段到百分数格式（如 26.92 表示 26.92%）
-
-        检测规则：
-        - 如果值在 (0, 1) 范围内，视为小数格式，×100 转为百分数
-        - 特殊处理 ROE：茅台 ROE 可达 30+，双位数正常
-        """
-        percent_fields = {"net_profit_margin", "roe", "roic",
-                          "revenue_growth_yoy", "net_profit_growth_yoy",
-                          "eps_growth_yoy", "gross_profit_margin",
-                          "operating_profit_margin",
-                          "operating_cashflow_to_revenue",
-                          "debt_to_asset_ratio"}
-
-        for field in percent_fields:
-            val = data.get(field)
-            if val is not None and 0 < val < 1:
-                data[field] = round(val * 100, 2)
-                logger.debug(f"百分比归一化: {field} 从 {val} 转为 {data[field]}")
-
-        return data
-
     def score_integrity(self) -> float:
-        """三表勾稽与真实性（20分）"""
-        max_score = 20.0
+        """三表勾稽与真实性"""
+        cfg = self._config.integrity
+        max_score = self._config.weights.get("integrity", 20.0)
         score = 0.0
         details = []
 
-        # 1. 净利润 vs 留存收益变动 (5分)
+        # 1. 净利润 vs 留存收益变动
+        #    留存收益变动 = 净利润 - 分红 - 回购 + 其他综合收益 + 会计政策变更
+        #                  + 前期差错更正 + 设定受益计划重计量 + ...
+        #    注意：分红数据为年度汇总，与单期净利润期间不匹配，不纳入校验
+        #    我们可获取：净利润、其他综合收益
+        #    不可获取：会计政策变更、前期差错更正、设定受益计划重计量
         if 'net_income' in self.data and 'retained_earnings_change' in self.data:
             ni = self.data['net_income']
             re_change = self.data['retained_earnings_change']
-            # 考虑分红回购会减少留存收益，调整净利润后对比
-            adjustment = self.data.get('dividends', 0) + self.data.get('share_buyback', 0)
-            adjusted_ni = ni - adjustment
-            if abs(adjusted_ni - re_change) < abs(ni) * 0.05:  # 5%误差
-                s = 5.0
-                detail = "净利润与留存收益变动基本匹配"
+            oci = self.data.get('other_comprehensive_income', 0) or 0
+
+            adjusted_ni = ni + oci
+            diff = abs(adjusted_ni - re_change)
+            diff_ratio = diff / abs(ni) if ni != 0 else 0
+
+            oci_note = f"，其他综合收益{oci}" if oci else ""
+
+            re_cfg = cfg.retained_earnings
+            s = _get_default_threshold_score(
+                diff_ratio, re_cfg.thresholds, [re_cfg.weight, re_cfg.weight * 0.8, re_cfg.weight * 0.4, 0.0])
+
+            if diff_ratio < re_cfg.thresholds[0]:
+                detail = f"净利润{ni}与留存收益变动{re_change}高度匹配（差异{diff_ratio:.1%}），勾稽严谨"
+            elif diff_ratio < re_cfg.thresholds[1]:
+                detail = (
+                    f"净利润{ni}，加其他综合收益后"
+                    f"与留存收益变动{re_change}存在{diff_ratio:.1%}差异，"
+                    f"可能由会计政策变更、前期差错更正等未获取的调整项导致，基本可信"
+                )
+            elif diff_ratio < re_cfg.thresholds[2]:
+                detail = (
+                    f"净利润{ni}，加其他综合收益后"
+                    f"与留存收益变动{re_change}差异{diff_ratio:.1%}，较大，建议关注附注"
+                )
             else:
-                s = 2.0
-                detail = f"净利润{ni}，分红回购{adjustment}，留存收益变动{re_change}，差异较大"
+                detail = (
+                    f"净利润{ni}，加其他综合收益后"
+                    f"与留存收益变动{re_change}严重不符（差异{diff_ratio:.1%}），"
+                    f"存在重大勾稽异常"
+                )
             score += s
             details.append(detail)
         else:
             details.append("未提供净利润或留存收益变动，本项得0分")
 
-        # 2. 经营现金流 vs 净利润 (10分)
+        # 2. 经营现金流 vs 净利润
         if 'operating_cash_flow' in self.data and 'net_income' in self.data:
             ocf = self.data['operating_cash_flow']
             ni = self.data['net_income']
+            ocf_cfg = cfg.ocf_vs_ni
             if ni != 0:
                 ratio = ocf / ni
+                s = _get_default_threshold_score(
+                    ratio, ocf_cfg.thresholds, [ocf_cfg.weight, ocf_cfg.weight * 0.7, ocf_cfg.weight * 0.4, 0.0])
                 if ocf > ni:
-                    s = 10.0
                     detail = f"经营现金流({ocf}) > 净利润({ni})，利润含金量高"
-                elif ratio > 0.8:
-                    s = 7.0
+                elif ratio > ocf_cfg.thresholds[1]:
                     detail = f"经营现金流/净利润 = {ratio:.2f}，含金量尚可"
-                elif ratio > 0.5:
-                    s = 4.0
+                elif ratio > ocf_cfg.thresholds[2]:
                     detail = f"经营现金流/净利润 = {ratio:.2f}，利润质量偏低"
                 else:
-                    s = 0.0
                     detail = f"经营现金流/净利润 = {ratio:.2f}，纸面富贵风险高"
             else:
                 s = 0.0
@@ -280,16 +223,40 @@ class FinancialScorer(FundamentalScorer):
         else:
             details.append("未提供经营现金流或净利润，本项得0分")
 
-        # 3. 现金变动一致性 (5分)
+        # 3. 现金变动一致性
+        #    现金流量表"现金净增加额" vs 资产负债表"货币资金"期末-期初变动
+        #    两者可能因以下正常会计分类产生差异：
+        #    - 定期存款计入货币资金但不属于现金等价物
+        #    - 受限资金重分类（保证金、司法冻结等）
+        #    - 三个月以上银行承兑汇票贴现
         if all(k in self.data for k in ['cash_change_from_cf', 'cash_balance_end', 'cash_balance_start']):
             cf_change = self.data['cash_change_from_cf']
             bs_change = self.data['cash_balance_end'] - self.data['cash_balance_start']
-            if abs(cf_change - bs_change) < max(abs(cf_change), 1e-6) * 0.02:
-                s = 5.0
-                detail = "现金流量表现金净变化与资产负债表现金差额一致"
+
+            base = max(abs(cf_change), abs(bs_change), 1e-6)
+            diff_ratio = abs(cf_change - bs_change) / base
+
+            cc_cfg = cfg.cash_change
+            s = _get_default_threshold_score(
+                diff_ratio, cc_cfg.thresholds, [cc_cfg.weight, cc_cfg.weight * 0.8, cc_cfg.weight * 0.4, 0.0])
+
+            if diff_ratio < cc_cfg.thresholds[0]:
+                detail = f"现金变动高度一致（差异{diff_ratio:.1%}），勾稽严谨"
+            elif diff_ratio < cc_cfg.thresholds[1]:
+                detail = (
+                    f"现金变动存在{diff_ratio:.1%}轻微差异（CF={cf_change}，BS={bs_change}），"
+                    f"可能由定期存款分类、受限资金重分类等正常会计处理导致"
+                )
+            elif diff_ratio < cc_cfg.thresholds[2]:
+                detail = (
+                    f"现金变动差异{diff_ratio:.1%}较大（CF={cf_change}，BS={bs_change}），"
+                    f"建议关注附注中的现金等价物说明"
+                )
             else:
-                s = 0.0
-                detail = f"现金变动不一致：CF净变化={cf_change}，BS变动={bs_change}"
+                detail = (
+                    f"现金变动严重不一致（差异{diff_ratio:.1%}）：CF净变化={cf_change}，"
+                    f"BS变动={bs_change}，可能存在分类错误或异常"
+                )
             score += s
             details.append(detail)
         else:
@@ -300,16 +267,17 @@ class FinancialScorer(FundamentalScorer):
         return score
 
     def score_cash_earnings(self) -> float:
-        """核心盈利与现金流质量（30分）"""
-        max_score = 30.0
+        """核心盈利与现金流质量"""
+        cfg = self._config.cash_earnings
+        max_score = self._config.weights.get("cash_earnings", 30.0)
         score = 0.0
         details = []
 
-        # EBIT (5分) - 假设连续3年为正需要外部提供，这里仅判断当年
+        # EBIT - 假设连续3年为正需要外部提供，这里仅判断当年
         if 'ebit' in self.data:
             ebit = self.data['ebit']
             if ebit > 0:
-                s = 5.0
+                s = cfg.ebit_positive.weight
                 detail = f"EBIT = {ebit} > 0，经营盈利为正"
             else:
                 s = 0.0
@@ -319,101 +287,126 @@ class FinancialScorer(FundamentalScorer):
         else:
             details.append("未提供EBIT，本项得0分")
 
-        # 利息保障倍数 (5分)
+        # 利息保障倍数
         if 'ebit' in self.data and 'interest_expense' in self.data:
             interest = self.data['interest_expense']
+            ic_cfg = cfg.interest_coverage
             if interest != 0:
                 cover = self.data['ebit'] / interest
-                if cover >= 3:
-                    s = 5.0
-                    detail = f"利息保障倍数 = {cover:.2f} ≥ 3，偿债能力强"
-                elif cover >= 2:
-                    s = 3.0
-                    detail = f"利息保障倍数 = {cover:.2f}，处于2~3之间，需关注"
+                s = _get_default_threshold_score(
+                    cover, ic_cfg.thresholds, [ic_cfg.weight, ic_cfg.weight * 0.6, 0.0])
+                if cover >= ic_cfg.thresholds[0]:
+                    detail = f"利息保障倍数 = {cover:.2f} ≥ {ic_cfg.thresholds[0]}，偿债能力强"
+                elif cover >= ic_cfg.thresholds[1]:
+                    detail = f"利息保障倍数 = {cover:.2f}，处于{ic_cfg.thresholds[1]}~{ic_cfg.thresholds[0]}之间，需关注"
                 else:
-                    s = 0.0
-                    detail = f"利息保障倍数 = {cover:.2f} < 2，风险信号"
+                    detail = f"利息保障倍数 = {cover:.2f} < {ic_cfg.thresholds[1]}，风险信号"
             else:
-                # 利息费用为零：需要区分三种情况
-                interest_capitalized = self.data.get('interest_capitalized', 0)
+                # 利息费用为零：区分有息负债/无息负债/资本化
+                interest_capitalized = self.data.get('interest_capitalized', 0) or 0
                 total_debt = self.data.get('total_debt')
+                debt_ratio = self.data.get('debt_to_asset_ratio')
                 has_debt = total_debt is not None and abs(total_debt) > 0
 
                 if interest_capitalized and abs(interest_capitalized) > 0:
-                    s = 1.0
+                    s = ic_cfg.zero_interest_score_capitalized
                     detail = f"利息费用为零但存在利息资本化({interest_capitalized:.2f})，可能有粉饰嫌疑"
                 elif has_debt:
-                    s = 2.0
-                    detail = f"有负债({total_debt:.2f})但利息费用为零，可能数据异常"
+                    if debt_ratio is not None and debt_ratio < ic_cfg.zero_interest_debt_ratio_low:
+                        s = ic_cfg.zero_interest_score_low_leverage
+                        detail = (
+                            f"有负债({total_debt:.2f})但无利息费用，"
+                            f"资产负债率仅{debt_ratio:.1f}%，"
+                            f"可能为应付账款、预收账款等无息负债，议价能力强的表现"
+                        )
+                    else:
+                        s = ic_cfg.zero_interest_score_has_debt
+                        detail = (
+                            f"有负债({total_debt:.2f})但利息费用为零，"
+                            f"可能为无息负债或数据缺失，建议关注负债结构"
+                        )
                 else:
-                    s = 5.0
+                    s = ic_cfg.zero_interest_score_no_debt
                     detail = "无负债且无利息费用，财务稳健"
             score += s
             details.append(detail)
         else:
             details.append("未提供EBIT或利息费用，本项得0分")
 
-        # ROIC (5分)
+        # ROIC - 基于行业分位数的动态阈值
         if 'roic' in self.data:
             roic = self.data['roic']
-            if roic > 15:
-                s = 5.0
-                detail = f"ROIC = {roic:.1f}% > 15%，资本回报优秀"
-            elif roic >= 10:
-                s = 3.0
-                detail = f"ROIC = {roic:.1f}%，处于10%~15%之间"
-            else:
-                s = 1.0
-                detail = f"ROIC = {roic:.1f}% < 10%，资本回报较差"
+            s, detail = score_by_percentile(
+                roic, "roic", self.industry_type, max_score=cfg.roic.weight, higher_better=True,
+            )
+            detail = f"{detail}（{get_percentile_info(self.industry_type, 'roic')}）"
             score += s
             details.append(detail)
         elif 'ebit' in self.data and 'tax_expense' in self.data and 'net_operating_assets' in self.data:
-            # 尝试计算：ROIC = EBIT*(1-税率)/净经营资产
-            tax_rate = self.data['tax_expense'] / (self.data['ebit'] + self.data['tax_expense']) if (self.data['ebit']+self.data['tax_expense']) != 0 else 0
+            # 回退：用 EBIT 和所得税费用估算税率，再计算 ROIC
+            pretax = self.data['ebit'] + self.data['tax_expense']
+            if pretax != 0:
+                raw_rate = self.data['tax_expense'] / pretax
+                tax_rate = max(0, min(raw_rate, 0.25))
+            else:
+                tax_rate = 0.15
             nopat = self.data['ebit'] * (1 - tax_rate)
             roic = nopat / self.data['net_operating_assets'] * 100
-            if roic > 15:
-                s = 5.0
-                detail = f"计算得ROIC={roic:.1f}% > 15%"
-            elif roic >= 10:
-                s = 3.0
-                detail = f"计算得ROIC={roic:.1f}%"
-            else:
-                s = 1.0
-                detail = f"计算得ROIC={roic:.1f}%"
+            s, detail = score_by_percentile(
+                roic, "roic", self.industry_type, max_score=cfg.roic.weight, higher_better=True,
+            )
+            detail = f"估算ROIC={roic:.1f}%（税率约{tax_rate:.0%}），{detail}"
             score += s
             details.append(detail)
         else:
             details.append("未提供ROIC或计算所需数据，本项得0分")
 
-        # 自由现金流为正 (5分)
+        # 自由现金流为正
+        #    注意：FCF = 经营现金流 - capex 是简化定义，未区分维持性capex与扩张性capex
+        #    高成长公司扩张性capex巨大导致负FCF，不等于"烧钱"，需结合营收增速判断
         fcf = self.data.get('fcf')
         if fcf is None and 'operating_cash_flow' in self.data and 'capex' in self.data:
             fcf = self.data['operating_cash_flow'] - self.data['capex']
         if fcf is not None:
             if fcf > 0:
-                s = 5.0
+                s = cfg.fcf_positive.weight
                 detail = f"自由现金流 = {fcf:.2f} > 0"
             else:
-                s = 0.0
-                detail = f"自由现金流 = {fcf:.2f}，持续为负有烧钱风险"
+                rev_growth = self.data.get('revenue_growth_yoy')
+                ocf = self.data.get('operating_cash_flow')
+                if rev_growth is not None and rev_growth > cfg.high_growth_threshold:
+                    s = cfg.fcf_positive.weight * 0.6
+                    detail = (
+                        f"自由现金流 = {fcf:.2f} < 0，但营收增速{rev_growth:.1f}%，"
+                        f"负FCF可能由战略性扩张capex导致，非经营恶化"
+                    )
+                elif ocf is not None and ocf > 0:
+                    s = cfg.fcf_positive.weight * 0.4
+                    detail = (
+                        f"自由现金流 = {fcf:.2f} < 0，但经营现金流({ocf:.2f})为正，"
+                        f"负FCF由capex导致，需关注投资回报率"
+                    )
+                else:
+                    s = 0.0
+                    detail = f"自由现金流 = {fcf:.2f}，经营现金流也为负，存在烧钱风险"
             score += s
             details.append(detail)
         else:
             details.append("未提供自由现金流数据，本项得0分")
 
-        # FCF vs 净利润 (5分)
+        # FCF vs 净利润
         if fcf is not None and 'net_income' in self.data:
             ni = self.data['net_income']
+            fcf_ni_cfg = cfg.fcf_vs_ni
             if ni != 0:
                 if fcf >= ni:
-                    s = 5.0
+                    s = fcf_ni_cfg.weight
                     detail = f"FCF({fcf:.2f}) ≥ 净利润({ni})，盈利质量极佳"
-                elif fcf >= ni * 0.8:
-                    s = 3.0
+                elif fcf >= ni * fcf_ni_cfg.thresholds[1] if len(fcf_ni_cfg.thresholds) > 1 else fcf >= ni * 0.8:
+                    s = fcf_ni_cfg.weight * 0.6
                     detail = f"FCF/净利润 = {fcf/ni:.2f}，质量尚可"
                 else:
-                    s = 1.0
+                    s = fcf_ni_cfg.weight * 0.2
                     detail = f"FCF长期低于净利润，仅{fcf/ni:.2f}倍"
             else:
                 s = 0.0
@@ -423,11 +416,11 @@ class FinancialScorer(FundamentalScorer):
         else:
             details.append("未提供FCF或净利润，本项得0分")
 
-        # FCF vs 分红+回购 (5分)
+        # FCF vs 分红+回购
         dpb = self.data.get('dividend_plus_buyback')
         if fcf is not None and dpb is not None:
             if fcf >= dpb:
-                s = 5.0
+                s = cfg.fcf_vs_dividend.weight
                 detail = f"FCF({fcf:.2f}) ≥ 分红回购总额({dpb:.2f})，可持续"
             else:
                 s = 0.0
@@ -441,59 +434,48 @@ class FinancialScorer(FundamentalScorer):
         return score
 
     def score_efficiency(self) -> float:
-        """营运效率与议价能力（15分）"""
-        max_score = 15.0
+        """营运效率与议价能力"""
+        cfg = self._config.efficiency
+        max_score = self._config.weights.get("efficiency", 15.0)
         score = 0.0
         details = []
-        rec_thresholds = self.thresholds["receivables"]
-        inv_thresholds = self.thresholds["inventory"]
-        ap_thresholds = self.thresholds["payables"]
 
         # --------------------------------------------------
-        # 应收账款周转天数
+        # 应收账款周转天数（基于行业分位数）
         # --------------------------------------------------
         if self._is_fin_or_re:
-            # 金融/地产行业不适用应收周转，给基础分
-            details.append("金融/地产行业，应收账款周转指标不适用，给基础分 2.5/5")
-            score += 2.5
+            details.append(f"金融/地产行业，应收账款周转指标不适用，给基础分 {cfg.fin_re_base_score}/{cfg.receivables.weight}")
+            score += cfg.fin_re_base_score
         elif 'avg_receivables' in self.data and 'revenue' in self.data:
             rec_days = 365 * self.data['avg_receivables'] / self.data['revenue']
-            excellent, good, fair = rec_thresholds
-            if rec_days < excellent:
-                s = 5.0
-                detail = f"应收账款周转天数 = {rec_days:.1f}天，回款极快（行业优秀 < {excellent}天）"
-            elif rec_days < good:
-                s = 4.0
-                detail = f"应收账款周转天数 = {rec_days:.1f}天，回款较快"
-            elif rec_days < fair:
-                s = 2.0
-                detail = f"应收账款周转天数 = {rec_days:.1f}天，偏长"
-            else:
-                s = 0.0
-                detail = f"应收账款周转天数 = {rec_days:.1f}天，资金占用严重"
+            s, detail = score_by_percentile(
+                rec_days, "receivables_days", self.industry_type,
+                max_score=cfg.receivables.weight, higher_better=False,
+            )
+            detail = f"{detail}（{get_percentile_info(self.industry_type, 'receivables_days')}）"
             score += s
             details.append(detail)
         else:
             details.append("未提供应收账款或营收，本项得0分")
 
         # --------------------------------------------------
-        # 存货周转天数
+        # 存货周转天数（基于行业分位数，白酒特例）
         # --------------------------------------------------
         if self._is_fin_or_re:
-            details.append("金融/地产行业，存货周转指标不适用，给基础分 2.5/5")
-            score += 2.5
+            details.append(f"金融/地产行业，存货周转指标不适用，给基础分 {cfg.fin_re_base_score}/{cfg.inventory.weight}")
+            score += cfg.fin_re_base_score
         elif self._is_liquor:
-            # 白酒行业：存货越久越值钱，周转慢反而是优势
+            # 白酒行业：存货越久越值钱，基酒储备是核心资产
             if 'avg_inventory' in self.data and 'cost_of_goods_sold' in self.data:
                 inv_days = 365 * self.data['avg_inventory'] / self.data['cost_of_goods_sold']
-                if inv_days < 180:
-                    s = 3.0
+                if inv_days < cfg.liquor_base_reserve_threshold:
+                    s = cfg.inventory.weight * 0.6
                     detail = f"白酒行业存货周转天数 = {inv_days:.1f}天，基酒储备充足性一般"
-                elif inv_days < 730:
-                    s = 5.0
+                elif inv_days < cfg.liquor_abundant_threshold:
+                    s = cfg.inventory.weight
                     detail = f"白酒行业存货周转天数 = {inv_days:.1f}天，基酒储备充足，越陈越香"
                 else:
-                    s = 5.0
+                    s = cfg.inventory.weight
                     detail = f"白酒行业存货周转天数 = {inv_days:.1f}天，基酒储备极为丰富"
                 score += s
                 details.append(detail)
@@ -501,39 +483,29 @@ class FinancialScorer(FundamentalScorer):
                 details.append("未提供存货或营业成本，本项得0分")
         elif 'avg_inventory' in self.data and 'cost_of_goods_sold' in self.data:
             inv_days = 365 * self.data['avg_inventory'] / self.data['cost_of_goods_sold']
-            excellent, fair = inv_thresholds
-            if inv_days < excellent:
-                s = 5.0
-                detail = f"存货周转天数 = {inv_days:.1f}天，管理优秀（行业优秀 < {excellent}天）"
-            elif inv_days < fair:
-                s = 3.0
-                detail = f"存货周转天数 = {inv_days:.1f}天，正常水平"
-            else:
-                s = 1.0
-                detail = f"存货周转天数 = {inv_days:.1f}天，可能积压"
+            s, detail = score_by_percentile(
+                inv_days, "inventory_days", self.industry_type,
+                max_score=cfg.inventory.weight, higher_better=False,
+            )
+            detail = f"{detail}（{get_percentile_info(self.industry_type, 'inventory_days')}）"
             score += s
             details.append(detail)
         else:
             details.append("未提供存货或营业成本，本项得0分")
 
         # --------------------------------------------------
-        # 应付账款周转天数
+        # 应付账款周转天数（基于行业分位数，议价能力）
         # --------------------------------------------------
         if self._is_fin_or_re:
-            details.append("金融/地产行业，应付账款周转指标不适用，给基础分 2.5/5")
-            score += 2.5
+            details.append(f"金融/地产行业，应付账款周转指标不适用，给基础分 {cfg.fin_re_base_score}/{cfg.payables.weight}")
+            score += cfg.fin_re_base_score
         elif 'avg_payables' in self.data and 'cost_of_goods_sold' in self.data:
             ap_days = 365 * self.data['avg_payables'] / self.data['cost_of_goods_sold']
-            strong, general = ap_thresholds
-            if ap_days > strong:
-                s = 5.0
-                detail = f"应付账款周转天数 = {ap_days:.1f}天，强议价能力（行业强 > {strong}天）"
-            elif ap_days > general:
-                s = 3.0
-                detail = f"应付账款周转天数 = {ap_days:.1f}天，议价能力一般"
-            else:
-                s = 1.0
-                detail = f"应付账款周转天数 = {ap_days:.1f}天，弱势"
+            s, detail = score_by_percentile(
+                ap_days, "payables_days", self.industry_type,
+                max_score=cfg.payables.weight, higher_better=True,
+            )
+            detail = f"{detail}（{get_percentile_info(self.industry_type, 'payables_days')}）"
             score += s
             details.append(detail)
         else:
@@ -543,65 +515,102 @@ class FinancialScorer(FundamentalScorer):
         return score
 
     def score_duPont(self) -> float:
-        """杜邦分析 – ROE驱动力质量（20分）"""
-        max_score = 20.0
+        """杜邦分析 – ROE驱动力质量与利润可持续性"""
+        cfg = self._config.dupont
+        max_score = self._config.weights.get("dupont", 20.0)
         score = 0.0
         details = []
 
-        # 需要净利润率、资产周转率、权益乘数，或至少ROE
         npm = self.data.get('net_profit_margin')
+        deducted_npm = self.data.get('deducted_net_profit_margin')
         turnover = self.data.get('asset_turnover')
         lev = self.data.get('equity_multiplier')
         roe = self.data.get('roe')
 
-        # 如果没有分解因子但给了ROE，尝试粗略判断（无法准确拆解则降低分数）
         if npm is not None and turnover is not None and lev is not None:
-            # 高质量：净利润率 > 15%
-            if npm > 15:
-                s_npm = 10.0
-                detail_npm = f"高净利润率驱动({npm:.1f}%)，可持续性强"
+            # ==========================================
+            # 1. 可持续利润率：基于行业分位数的动态阈值
+            # ==========================================
+            if deducted_npm is not None:
+                s_npm, detail_npm = score_by_percentile(
+                    deducted_npm, "deducted_net_profit_margin",
+                    self.industry_type, max_score=cfg.deducted_weight, higher_better=True,
+                )
+                detail_npm = f"{detail_npm}（{get_percentile_info(self.industry_type, 'deducted_net_profit_margin')}）"
             else:
-                s_npm = 0.0
-                detail_npm = f"净利润率偏低({npm:.1f}%)"
+                # 回退：无扣非数据时使用净利润率
+                s_npm, detail_npm = score_by_percentile(
+                    npm, "net_profit_margin",
+                    self.industry_type, max_score=cfg.fallback_weight, higher_better=True,
+                )
+                detail_npm = f"无扣非数据，{detail_npm}（{get_percentile_info(self.industry_type, 'net_profit_margin')}）"
 
-            # 周转：>1为高效
-            if turnover > 1:
-                s_turn = 5.0
-                detail_turn = f"资产周转率{turnover:.2f}次，高效"
+            # ==========================================
+            # 2. 利润质量：非经常性损益占比（绝对标准，不依赖行业分位）
+            # ==========================================
+            net_income = self.data.get('net_income')
+            deducted_net = self.data.get('deducted_net_profit')
+            pq_cfg = cfg.profit_quality
+            if net_income is not None and deducted_net is not None and net_income != 0:
+                non_recurring = net_income - deducted_net
+                non_recurring_ratio = abs(non_recurring) / abs(net_income) * 100
+
+                if deducted_net < 0 and net_income > 0:
+                    s_quality = 0.0
+                    detail_quality = (
+                        f"净利润{net_income:.2f}元但扣非净利润{deducted_net:.2f}元为负，"
+                        f"利润完全依赖非经常性损益，质量极差"
+                    )
+                else:
+                    s_quality = _get_default_threshold_score(
+                        non_recurring_ratio, pq_cfg.thresholds,
+                        [pq_cfg.weight, pq_cfg.weight * 0.75, pq_cfg.weight * 0.25, 0.0])
+
+                    if non_recurring_ratio < pq_cfg.thresholds[0]:
+                        detail_quality = f"非经常性损益占比{non_recurring_ratio:.1f}%，利润质量高"
+                    elif non_recurring_ratio <= pq_cfg.thresholds[1]:
+                        detail_quality = f"非经常性损益占比{non_recurring_ratio:.1f}%，利润质量尚可"
+                    elif non_recurring_ratio <= pq_cfg.thresholds[2]:
+                        detail_quality = f"非经常性损益占比{non_recurring_ratio:.1f}%，偏高需关注"
+                    else:
+                        detail_quality = f"非经常性损益占比{non_recurring_ratio:.1f}%，利润质量差"
             else:
-                s_turn = 2.0
-                detail_turn = f"资产周转率{turnover:.2f}次，偏低"
+                s_quality = cfg.missing_deducted_score
+                detail_quality = f"缺少扣非净利润数据，无法评估利润质量，给基础分{cfg.missing_deducted_score}/{pq_cfg.weight}"
 
-            # 杠杆：>3为高风险依赖
-            if lev > 3:
-                s_lev = 0.0
-                detail_lev = f"权益乘数{lev:.2f}倍，高杠杆驱动风险大"
-                # 但如果净利润率也很高，可以适当补偿
-                if npm > 15:
-                    s_lev = 3.0
-                    detail_lev = f"虽然杠杆高({lev:.2f})，但高利润率支撑，风险中等"
-            elif lev > 2:
-                s_lev = 3.0
-                detail_lev = f"权益乘数{lev:.2f}倍，中等杠杆"
-            else:
-                s_lev = 5.0
-                detail_lev = f"权益乘数{lev:.2f}倍，低杠杆安全"
+            # ==========================================
+            # 3. 资产周转率：基于行业分位数的动态阈值
+            # ==========================================
+            s_turn, detail_turn = score_by_percentile(
+                turnover, "asset_turnover",
+                self.industry_type, max_score=cfg.asset_turnover.weight, higher_better=True,
+            )
+            detail_turn = f"{detail_turn}（{get_percentile_info(self.industry_type, 'asset_turnover')}）"
 
-            score = s_npm + s_turn + s_lev
+            # ==========================================
+            # 4. 杠杆质量：基于行业分位数的动态阈值
+            # ==========================================
+            s_lev, detail_lev = score_by_percentile(
+                lev, "equity_multiplier",
+                self.industry_type, max_score=cfg.leverage.weight, higher_better=False,
+            )
+            detail_lev = f"{detail_lev}（{get_percentile_info(self.industry_type, 'equity_multiplier')}）"
+
+            score = s_npm + s_quality + s_turn + s_lev
             details.append(detail_npm)
+            details.append(detail_quality)
             details.append(detail_turn)
             details.append(detail_lev)
         else:
-            # 如果只有ROE，采用简化评分
             if roe is not None:
-                if roe > 20:
-                    details.append(f"ROE为{roe:.1f}%，但缺乏杜邦分解，无法判断驱动质量，给基础分8/20")
-                    score = 8.0
-                elif roe > 10:
-                    score = 5.0
-                    details.append(f"ROE为{roe:.1f}%，缺乏分解，给5分")
+                if roe > cfg.fallback_roe_high:
+                    details.append(f"ROE为{roe:.1f}%，但缺乏杜邦分解，无法判断驱动质量，给基础分{cfg.fallback_score_high}/{max_score}")
+                    score = cfg.fallback_score_high
+                elif roe > cfg.fallback_roe_mid:
+                    score = cfg.fallback_score_mid
+                    details.append(f"ROE为{roe:.1f}%，缺乏分解，给{cfg.fallback_score_mid}分")
                 else:
-                    score = 2.0
+                    score = cfg.fallback_score_low
                     details.append(f"ROE为{roe:.1f}%，较低且缺乏分解")
             else:
                 details.append("未提供杜邦分解数据或ROE，本项得0分")
@@ -611,12 +620,13 @@ class FinancialScorer(FundamentalScorer):
         return score
 
     def score_valuation(self) -> float:
-        """估值合理性（15分）"""
-        max_score = 15.0
+        """估值合理性"""
+        cfg = self._config.valuation
+        max_score = self._config.weights.get("valuation", 15.0)
         score = 0.0
         details = []
 
-        # 市盈率相对行业 (5分)
+        # 市盈率相对行业
         if 'market_cap' in self.data and 'net_income' in self.data:
             ni = self.data['net_income']
             if ni > 0:
@@ -624,25 +634,20 @@ class FinancialScorer(FundamentalScorer):
                 industry_pe = self.data.get('industry_pe')
                 if industry_pe is not None:
                     if pe < industry_pe:
-                        s = 5.0
+                        s = cfg.pe_industry.weight
                         detail = f"PE = {pe:.1f}，低于行业均值{industry_pe:.1f}，估值有吸引力"
-                    elif pe < industry_pe * 1.2:
-                        s = 3.0
+                    elif pe < industry_pe * cfg.premium_ratio:
+                        s = cfg.pe_industry.weight * 0.6
                         detail = f"PE = {pe:.1f}，接近行业均值，合理"
                     else:
-                        s = 1.0
+                        s = cfg.pe_industry.weight * 0.2
                         detail = f"PE = {pe:.1f}，显著高于行业{industry_pe:.1f}，可能高估"
                 else:
-                    # 没有行业PE，用绝对标准
-                    if pe < 15:
-                        s = 5.0
-                        detail = f"PE = {pe:.1f}，绝对值较低"
-                    elif pe < 25:
-                        s = 3.0
-                        detail = f"PE = {pe:.1f}，中等水平"
-                    else:
-                        s = 1.0
-                        detail = f"PE = {pe:.1f}，偏贵"
+                    # 无行业PE均值时，使用行业分位数（自动适应不同利率环境下的市场整体估值水平）
+                    s, detail = score_by_percentile(
+                        pe, "pe", self.industry_type, max_score=cfg.pe_industry.weight, higher_better=False,
+                    )
+                    detail = f"{detail}（{get_percentile_info(self.industry_type, 'pe')}）"
                 score += s
                 details.append(detail)
             else:
@@ -650,17 +655,54 @@ class FinancialScorer(FundamentalScorer):
         else:
             details.append("未提供市值或净利润，无法计算PE")
 
-        # DCF估值区间 (5分)
+        # DCF估值区间
+        #    注意：DCF模型依赖简化假设（WACC=10%, 终值增长率=3%, 营收增速推导FCF增长）
+        #    区间过宽或与股价偏离过大时降低置信度
         if 'current_price' in self.data and 'dcf_low' in self.data and 'dcf_high' in self.data:
             price = self.data['current_price']
             low = self.data['dcf_low']
             high = self.data['dcf_high']
-            if price < low:
-                s = 5.0
-                detail = f"股价{price}低于DCF下限{low}，明显低估"
+            dcf_range_ratio = high / low if low > 0 else 0
+
+            # 合理性检验
+            if dcf_range_ratio > cfg.dcf_range_ratio_limit:
+                if price < high:
+                    s = cfg.dcf.weight * 0.4
+                    detail = (
+                        f"股价{price}在DCF区间[{low},{high}]内，"
+                        f"但区间跨度{dcf_range_ratio:.1f}倍过宽，"
+                        f"模型对增长假设高度敏感，参考价值有限"
+                    )
+                else:
+                    s = cfg.dcf.weight * 0.2
+                    detail = (
+                        f"DCF区间[{low},{high}]跨度{dcf_range_ratio:.1f}倍过宽，"
+                        f"参考价值有限；股价{price}高于上限"
+                    )
+            elif low > price * cfg.dcf_price_low_ratio:
+                s = cfg.dcf.weight * 0.4
+                detail = (
+                    f"DCF下限{low}为股价{price}的{low/price:.1f}倍，"
+                    f"估值模型可能与当前市场定价严重脱节，参考价值有限"
+                )
+            elif high < price * cfg.dcf_price_high_ratio:
+                s = cfg.dcf.weight * 0.4
+                detail = (
+                    f"DCF上限{high}仅股价{price}的{high/price:.1%}，"
+                    f"估值模型可能过于保守，参考价值有限"
+                )
+            elif price < low:
+                s = cfg.dcf.weight
+                detail = (
+                    f"股价{price}低于DCF下限{low}，明显低估"
+                    f"（基于WACC=10%、终值增长率=3%的简化两阶段模型）"
+                )
             elif price < high:
-                s = 3.0
-                detail = f"股价{price}在DCF区间[{low},{high}]内，合理"
+                s = cfg.dcf.weight * 0.6
+                detail = (
+                    f"股价{price}在DCF区间[{low},{high}]内，合理"
+                    f"（基于WACC=10%、终值增长率=3%的简化两阶段模型）"
+                )
             else:
                 s = 0.0
                 detail = f"股价{price}高于DCF上限{high}，高估"
@@ -669,31 +711,15 @@ class FinancialScorer(FundamentalScorer):
         else:
             details.append("未提供当前股价或DCF区间，本项得0分")
 
-        # P/B 结合资产类型 (5分)
+        # P/B 结合行业分位数
         if 'pb' in self.data and 'is_asset_heavy' in self.data:
             pb = self.data['pb']
             heavy = self.data['is_asset_heavy']
-            if heavy:
-                if pb < 1.5:
-                    s = 5.0
-                    detail = f"重资产公司，PB={pb:.2f}，低于1.5倍，估值合理"
-                elif pb < 2.5:
-                    s = 3.0
-                    detail = f"重资产公司，PB={pb:.2f}，略高于净资产"
-                else:
-                    s = 0.0
-                    detail = f"重资产公司，PB={pb:.2f}，显著高估"
-            else:
-                # 轻资产，PB高可接受
-                if pb < 3:
-                    s = 5.0
-                    detail = f"轻资产公司，PB={pb:.2f}，合理偏低"
-                elif pb < 10:
-                    s = 3.0
-                    detail = f"轻资产公司，PB={pb:.2f}，属于正常范围"
-                else:
-                    s = 1.0
-                    detail = f"轻资产公司，PB={pb:.2f}，极高，但若品牌强仍可接受"
+            s, detail = score_by_percentile(
+                pb, "pb", self.industry_type, max_score=cfg.pb.weight, higher_better=False,
+            )
+            asset_label = "重资产" if heavy else "轻资产"
+            detail = f"{asset_label}公司，{detail}（{get_percentile_info(self.industry_type, 'pb')}）"
             score += s
             details.append(detail)
         else:
@@ -717,27 +743,61 @@ class FinancialScorer(FundamentalScorer):
         for category, metrics in indicators.items():
             if metrics:
                 flat_data.update(metrics)
-        self.data.update(flat_data)
 
-        total, module_scores, reasons = self.full_score()
+        # 创建 data 副本，避免副作用累积
+        original_data = self.data
+        self.data = {**self.data, **flat_data}
+        try:
+            # 数据完备性检查
+            completeness = self._check_data_completeness()
+            total, module_scores, reasons = self.full_score()
+            return {
+                "total_score": total,
+                "dimension_scores": module_scores,
+                "rating": self._rating(total),
+                "reasons": reasons,
+                "data_completeness": completeness,
+            }
+        finally:
+            self.data = original_data
+
+    def _check_data_completeness(self) -> Dict[str, Any]:
+        """检查数据完备性，返回完备性比例和缺失字段列表"""
+        dc_cfg = self._config.data_completeness
+        required_fields = dc_cfg.required_fields
+
+        all_required = []
+        for module_fields in required_fields.values():
+            all_required.extend(module_fields)
+
+        available = sum(1 for f in all_required if f in self.data and self.data[f] is not None)
+        total = len(all_required)
+        ratio = available / total if total > 0 else 1.0
+
+        missing = [f for f in all_required if f not in self.data or self.data[f] is None]
+
+        module_completeness = {}
+        for module, fields in required_fields.items():
+            mod_avail = sum(1 for f in fields if f in self.data and self.data[f] is not None)
+            module_completeness[module] = mod_avail / len(fields) if fields else 1.0
+
         return {
-            "total_score": total,
-            "dimension_scores": module_scores,
-            "rating": self._rating(total),
-            "reasons": reasons,
+            "overall_ratio": round(ratio, 3),
+            "is_sufficient": ratio >= dc_cfg.min_ratio,
+            "missing_fields": missing,
+            "module_ratios": module_completeness,
         }
 
     @staticmethod
     def _rating(total: float) -> str:
         """根据总分返回评级"""
-        if total >= 85:
-            return "优秀"
-        elif total >= 70:
-            return "良好"
-        elif total >= 60:
-            return "一般"
-        else:
-            return "较差"
+        config = get_scorer_config()
+        thresholds = config.rating_thresholds
+        labels = config.rating_labels
+        for i, t in enumerate(thresholds):
+            if total >= t:
+                return labels[i]
+        return labels[-1] if len(labels) > len(thresholds) else "较差"
 
     def full_score(self) -> Tuple[float, Dict[str, float], List[str]]:
         """计算总分，返回(总分, 各模块得分, 所有理由列表)"""

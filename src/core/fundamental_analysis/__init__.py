@@ -14,6 +14,8 @@
 - fetcher.py: 财报数据抓取器
 - indicators.py: 财务指标计算
 - scorer.py: 基本面评分算法
+- industry_config.py: 行业分类与阈值配置
+- industry_percentile.py: 行业分位数动态阈值
 - analyzer.py: 对外主入口，编排抓取→计算→评分流程
 """
 
@@ -28,6 +30,18 @@ from src.core.fundamental_analysis.industry_config import (
     reload_pe_config,
     INDUSTRY_PE_CONFIG_PATH,
 )
+from src.core.fundamental_analysis.industry_percentile import (
+    score_by_percentile,
+    get_percentile,
+    get_percentile_info,
+    reload_percentiles,
+    refresh_percentiles_from_market,
+)
+from src.core.fundamental_analysis.scorer_config import (
+    get_scorer_config,
+    reload_scorer_config,
+    ScorerConfig,
+)
 
 __all__ = [
     "FinancialReportFetcher",
@@ -40,4 +54,12 @@ __all__ = [
     "load_pe_ranges",
     "reload_pe_config",
     "INDUSTRY_PE_CONFIG_PATH",
+    "score_by_percentile",
+    "get_percentile",
+    "get_percentile_info",
+    "reload_percentiles",
+    "refresh_percentiles_from_market",
+    "get_scorer_config",
+    "reload_scorer_config",
+    "ScorerConfig",
 ]

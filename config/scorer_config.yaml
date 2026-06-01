@@ -1,0 +1,185 @@
+# ============================================================
+# 基本面评分器配置
+# ============================================================
+# 说明：
+#   本文件控制基本面评分器的权重、阈值和完备性要求。
+#   修改后重新加载评分器即可生效，无需改动代码。
+#
+# 更新建议：
+#   - 根据回测结果动态调整权重和阈值
+#   - 权重调整应保持各模块总权重之和为 100
+#   - 阈值调整建议基于历史数据分位数统计
+# ============================================================
+
+# ============================================================
+# 评分模块权重（五模块总分 100）
+# ============================================================
+weights:
+  integrity: 20
+  cash_earnings: 30
+  efficiency: 15
+  dupont: 20
+  valuation: 15
+
+# ============================================================
+# 综合评级阈值
+# ============================================================
+rating:
+  thresholds: [85, 70, 60]
+  labels: ["优秀", "良好", "一般", "较差"]
+
+# ============================================================
+# 三表勾稽与真实性
+# ============================================================
+integrity:
+  # 净利润 vs 留存收益变动
+  retained_earnings:
+    weight: 5
+    # diff_ratio 阈值 → 对应分数 [5, 4, 2, 0]
+    thresholds: [0.05, 0.15, 0.30]
+
+  # 经营现金流 vs 净利润
+  ocf_vs_ni:
+    weight: 10
+    # ratio 阈值 → 对应分数 [10, 7, 4, 0]
+    thresholds: [1.0, 0.8, 0.5]
+
+  # 现金变动一致性
+  cash_change:
+    weight: 5
+    # diff_ratio 阈值 → 对应分数 [5, 4, 2, 0]
+    thresholds: [0.02, 0.10, 0.25]
+
+# ============================================================
+# 核心盈利与现金流质量
+# ============================================================
+cash_earnings:
+  ebit_positive:
+    weight: 5
+
+  interest_coverage:
+    weight: 5
+    # cover 阈值 → 对应分数 [5, 3, 0]
+    thresholds: [3.0, 2.0]
+    # 零利息费用时的评分
+    zero_interest:
+      debt_ratio_low: 30          # 资产负债率低于此值视为低负债
+      score_no_debt: 5
+      score_low_leverage: 4
+      score_has_debt: 3
+      score_capitalized: 1
+
+  roic:
+    weight: 5
+
+  fcf_positive:
+    weight: 5
+    # 负FCF时结合营收增速判断
+    high_growth_threshold: 20     # 营收增速超过此值视为高成长
+
+  fcf_vs_ni:
+    weight: 5
+    # ratio 阈值 → 对应分数 [5, 3, 1]
+    thresholds: [1.0, 0.8]
+
+  fcf_vs_dividend:
+    weight: 5
+
+# ============================================================
+# 营运效率与议价能力
+# ============================================================
+efficiency:
+  receivables:
+    weight: 5
+  inventory:
+    weight: 5
+    # 白酒行业存货周转天数阈值
+    liquor:
+      base_reserve_threshold: 180   # 基酒储备充足起点
+      abundant_threshold: 730       # 基酒储备丰富起点
+  payables:
+    weight: 5
+  # 金融/地产行业不适用周转指标时的基础分
+  fin_re_base_score: 2.5
+
+# ============================================================
+# 杜邦驱动质量
+# ============================================================
+dupont:
+  profit_margin:
+    deducted_weight: 6           # 有扣非数据时的权重
+    fallback_weight: 4           # 无扣非数据时的权重
+
+  profit_quality:
+    weight: 4
+    # 非经常性损益占比阈值 → 对应分数 [4, 3, 1, 0]
+    thresholds: [5.0, 15.0, 30.0]
+    # 缺少扣非数据时的基础分
+    missing_deducted_score: 2.0
+
+  asset_turnover:
+    weight: 5
+
+  leverage:
+    weight: 5
+
+  # 缺乏杜邦分解时的回退评分
+  fallback:
+    roe_high: 20       # ROE > 此值 → 8 分
+    roe_mid: 10        # ROE > 此值 → 5 分
+    score_high: 8.0
+    score_mid: 5.0
+    score_low: 2.0
+
+# ============================================================
+# 估值合理性
+# ============================================================
+valuation:
+  pe_industry:
+    weight: 5
+    premium_ratio: 1.2            # 接近行业均值的倍数
+
+  dcf:
+    weight: 5
+    range_ratio_limit: 5.0        # DCF区间跨度上限
+    price_low_ratio: 3.0          # DCF下限/股价比值上限
+    price_high_ratio: 0.3         # 股价/DCF上限比值下限
+
+  pb:
+    weight: 5
+
+# ============================================================
+# 数据完备性
+# ============================================================
+data_completeness:
+  min_ratio: 0.6                  # 最低数据完备性比例
+  # 各模块关键字段（用于计算完备性比例）
+  required_fields:
+    integrity:
+      - net_income
+      - retained_earnings_change
+      - operating_cash_flow
+      - cash_change_from_cf
+      - cash_balance_end
+      - cash_balance_start
+    cash_earnings:
+      - ebit
+      - interest_expense
+      - operating_cash_flow
+      - capex
+      - net_income
+    efficiency:
+      - revenue
+      - avg_receivables
+      - avg_inventory
+      - avg_payables
+      - cost_of_goods_sold
+    dupont:
+      - net_profit_margin
+      - asset_turnover
+      - equity_multiplier
+    valuation:
+      - market_cap
+      - current_price
+      - pb
+      - is_asset_heavy
