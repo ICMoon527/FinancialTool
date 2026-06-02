@@ -46,7 +46,7 @@ google-search-results==2.4.2  # SerpAPI（每月 100 次免费）
 # 网络请求
 requests==2.32.3            # HTTP 请求
 markdown2==2.5.4            # Markdown 转 HTML
-imgkit==1.2.5                # Markdown 转图片（需安装 wkhtmltopdf）
+imgkit==1.2.3                # Markdown 转图片（需安装 wkhtmltopdf）
 fake-useragent==1.5.1        # 随机 User-Agent 防封禁
 httpx[socks]==0.28.1         # HTTP 客户端 + SOCKS 代理支持（OpenAI 可选依赖）
 dingtalk-stream==0.24.3      # 钉钉 Stream SDK
@@ -60,7 +60,7 @@ discord.py==2.4.0            # Discord 机器人开发库
 
 # Web Content Extraction
 newspaper3k==0.2.8          # Article extraction
-lxml-html-clean==0.1.2       # Fix for lxml.html.clean ImportError in newer lxml versions
+lxml-html-clean==0.4.5       # Fix for lxml.html.clean ImportError in newer lxml versions
 
 # FastAPI Web 框架
 fastapi==0.135.1             # 现代 Python Web 框架

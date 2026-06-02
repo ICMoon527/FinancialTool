@@ -128,13 +128,6 @@ const DockNav: React.FC = () => {
     return (
         <aside className="dock-nav" aria-label="主导航">
             <div className="dock-surface">
-                <NavLink to="/" className="dock-logo" title="首页" aria-label="首页">
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                              d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/>
-                    </svg>
-                </NavLink>
-
                 <nav className="dock-items" aria-label="页面">
                     {NAV_ITEMS.map((item) => {
                         const Icon = item.icon;

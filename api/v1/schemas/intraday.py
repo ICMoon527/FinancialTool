@@ -190,6 +190,7 @@ class BatchStatusRequest(BaseModel):
     current_code: str = Field("", description="当前展示的股票代码")
     include_signals: bool = Field(False, description="是否对全部股票进行信号检测（用于铃铛通知）")
     skip_kline_fetch: bool = Field(False, description="是否跳过K线拉取（仅返回快照，可视化页面使用）")
+    existing_kline_count: int = Field(0, description="前端已有的K线数量，用于增量返回新K线（0表示返回全部）")
 
 
 class SignalAlert(BaseModel):

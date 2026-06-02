@@ -12,8 +12,9 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Iterable, Optional, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +125,48 @@ def _run_frontend_commands(commands: Sequence[Sequence[str]], frontend_dir: Path
 def _manual_build_command(frontend_dir: Path) -> str:
     return f'cd "{frontend_dir}" && npm install && npm run build'
 
+def _resolve_frontend_dir() -> Path:
+    """
+    按优先级查找前端项目目录：
+
+    1. 环境变量 FRONTEND_DIR（显式覆盖）
+    2. 相对 __file__（源码运行：<项目根>/apps/dsa-web）
+    3. 相对当前工作目录（cwd/apps/dsa-web，兜底）
+    """
+    env_dir = os.getenv("FRONTEND_DIR")
+    if env_dir:
+        candidate = Path(env_dir).resolve()
+        if (candidate / "package.json").exists():
+            return candidate
+        logger.warning("环境变量 FRONTEND_DIR=%s 指向的目录不存在 package.json，尝试其他路径", env_dir)
+
+    # 策略2：相对 __file__
+    candidate = Path(__file__).resolve().parent.parent / "apps" / "dsa-web"
+    if (candidate / "package.json").exists():
+        return candidate
+
+    # 策略3：相对当前工作目录
+    candidate = Path.cwd() / "apps" / "dsa-web"
+    if (candidate / "package.json").exists():
+        return candidate
+
+    # 全都不存在时，仍返回 __file__ 相对路径（保持旧行为，后续会报错）
+    return Path(__file__).resolve().parent.parent / "apps" / "dsa-web"
+
+
+def _is_bundled() -> bool:
+    """判断是否运行在 PyInstaller 打包模式（sys.frozen）。"""
+    return getattr(sys, 'frozen', False)
+
+
+def _bundled_static_dir() -> Optional[Path]:
+    """打包模式下，返回 _internal/static/ 目录（如果存在）。"""
+    if not _is_bundled():
+        return None
+    candidate = Path(sys._MEIPASS) / "static"
+    return candidate if (candidate / "index.html").exists() else None
+
+
 def prepare_webui_frontend_assets() -> bool:
     """
     Prepare frontend assets for WebUI startup.
@@ -136,7 +179,16 @@ def prepare_webui_frontend_assets() -> bool:
     - Do not compile frontend during backend startup.
     - Only check whether existing artifacts are available.
     """
-    frontend_dir = Path(__file__).resolve().parent.parent / "apps" / "dsa-web"
+    # ── PyInstaller 打包模式：前端已内置在 static/，无需构建 ──
+    if _is_bundled():
+        bundled_static = _bundled_static_dir()
+        if bundled_static is not None and (bundled_static / "index.html").exists():
+            logger.info("打包模式：检测到内置前端静态产物: %s", bundled_static / "index.html")
+            return True
+        logger.warning("打包模式下未找到内置前端静态产物 （_internal/static/index.html）")
+        return False
+
+    frontend_dir = _resolve_frontend_dir()
     auto_build_enabled = _is_truthy_env("WEBUI_AUTO_BUILD", "true")
     artifact_index = _resolve_artifact_index(frontend_dir)
 

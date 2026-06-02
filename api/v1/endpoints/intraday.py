@@ -2448,6 +2448,7 @@ def get_batch_status(
                     rsi_ob, rsi_os = _get_rsi_thresholds()
                     mfi_ob, mfi_os = _get_mfi_thresholds()
                     buy_weights, sell_weights = _get_signal_weights()
+
                     current_full_data = IntradayDataResponse(
                         stock_code=code,
                         stock_name=stock_name,

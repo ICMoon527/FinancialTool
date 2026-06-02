@@ -277,11 +277,17 @@ export async function getBatchStatus(
   stockCodes: string[],
   currentCode: string,
   includeSignals: boolean = false,
+  existingKlineCount: number = 0,
 ): Promise<BatchStatusResponse> {
   const resp = await fetch(`${API_BASE}/batch-status`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ stock_codes: stockCodes, current_code: currentCode, include_signals: includeSignals }),
+    body: JSON.stringify({
+      stock_codes: stockCodes,
+      current_code: currentCode,
+      include_signals: includeSignals,
+      existing_kline_count: existingKlineCount,
+    }),
   });
   if (!resp.ok) throw new Error(`批量状态查询失败: ${resp.status}`);
   return resp.json();
