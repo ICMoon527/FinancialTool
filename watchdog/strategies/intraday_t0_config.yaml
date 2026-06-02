@@ -71,7 +71,7 @@ signals:
   buy:
     thresholds:
       strong: 100   # 强买入
-      medium: 30    # 中买入
+      medium: 25    # 中买入
       weak: 10      # 弱买入
     positions:
       strong: "全仓"
@@ -99,7 +99,7 @@ signals:
   sell:
     thresholds:
       strong: 100   # 强卖出
-      medium: 30    # 中卖出
+      medium: 25    # 中卖出
       weak: 10      # 弱卖出
     positions:
       strong: "全仓卖出"

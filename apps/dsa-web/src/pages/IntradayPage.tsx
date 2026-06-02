@@ -588,6 +588,12 @@ const IntradayPage: React.FC = () => {
         });
       }
       // 处理信号铃铛（从同一响应中提取）
+      // 铃铛持久保留策略：
+      // - 出现买入/卖出信号 → 添加/更新铃铛（合并保留，不清除旧铃铛）
+      // - 用户点击查看后 → handleHistoryClick 中清理铃铛
+      // - 后续新信号（trigger_time 不同）→ 覆盖更新为最新信号类型
+      // - 无新信号 → 保留已有铃铛，提示用户近期出现过信号
+      // - 当前展示的股票生成了新信号 → 不显示铃铛（后台才需要铃铛提醒）
       if (resp.signal_alerts) {
         const seen = seenSignalTimesRef.current;
         const newBells: Record<string, { type: 'buy' | 'sell'; time: string; price: number }> = {};
