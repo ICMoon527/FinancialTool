@@ -1806,6 +1806,7 @@ const IntradayPage: React.FC = () => {
           }
         },
         onLeave: () => {
+          currentCrosshairTimeRef.current = null;
           setIsCrosshairActive(false);
           setCrosshairMacdSum(null);
           setCrosshairMacdDiff(null);
@@ -2021,6 +2022,16 @@ const IntradayPage: React.FC = () => {
       // ── 主图十字线联动 ──
       const mainHandleCrosshairMove = (param: any) => {
         syncEngineRef.current.handleMove('main', param);
+        // mode 0 图表：RA 重设 crosshair（下一帧内置 crosshair 渲染后）
+        if (param.time) {
+          const capturedTime = param.time;
+          const rafId = requestAnimationFrame(() => {
+            if (currentCrosshairTimeRef.current === capturedTime) {
+              syncEngineRef.current.reapplyCrosshair('main', capturedTime);
+            }
+          });
+          renderDataRafIdsRef.current.push(rafId);
+        }
       };
       crosshairSubsRef.current.push(chart.subscribeCrosshairMove(mainHandleCrosshairMove));
 
@@ -2042,6 +2053,16 @@ const IntradayPage: React.FC = () => {
       if (volChart && volSeries) {
         const volHandleCrosshairMove = (param: any) => {
           syncEngineRef.current.handleMove('volume', param);
+          // mode 0 图表：RAF 重设 crosshair
+          if (param.time) {
+            const capturedTime = param.time;
+            const rafId = requestAnimationFrame(() => {
+              if (currentCrosshairTimeRef.current === capturedTime) {
+                syncEngineRef.current.reapplyCrosshair('volume', capturedTime);
+              }
+            });
+            renderDataRafIdsRef.current.push(rafId);
+          }
         };
         crosshairSubsRef.current.push(volChart.subscribeCrosshairMove(volHandleCrosshairMove));
 

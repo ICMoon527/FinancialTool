@@ -139,29 +139,44 @@ export class CrosshairSyncEngine {
     });
   }
 
+  /** 用于 mode 0 图表在 RAF 回调中重设 crosshair，抵消内置 crosshair 的覆盖 */
+  reapplyCrosshair(id: string, time: Time): void {
+    const entry = this.entries.get(id);
+    if (entry) {
+      this._setCrosshair(entry, time, id);
+    }
+  }
+
   private _setCrosshair(entry: ChartEntry, time: Time, targetId: string): void {
     try {
       const { chart, primarySeries, data } = entry;
       const timeNum = Number(time);
       const dataPt = data.find((d) => d.time === timeNum);
       let value: number | null = null;
+      let matchTime: number; // 实际匹配到的数据点时间，用于 setCrosshairPosition
       if (dataPt && dataPt.value != null && !isNaN(dataPt.value)) {
         value = dataPt.value;
+        matchTime = dataPt.time;
       } else {
         let bestDiff = Infinity;
         let bestVal: number | null = null;
+        let bestTime = timeNum;
         for (const d of data) {
           if (d.value == null || isNaN(d.value)) continue;
           const diff = Math.abs(d.time - timeNum);
           if (diff < bestDiff) {
             bestDiff = diff;
             bestVal = d.value;
+            bestTime = d.time;
           }
         }
         value = bestVal;
+        matchTime = bestTime;
       }
       if (value != null && isFinite(value) && !isNaN(value)) {
-        chart.setCrosshairPosition(value, time, primarySeries);
+        // 使用 matchTime（实际数据点时间）而非传入的 time（可能超出数据范围），
+        // 确保 crosshair 始终定位在有数据的点上，避免空白区域定位不准
+        chart.setCrosshairPosition(value, matchTime as Time, primarySeries);
       }
     } catch (e) {
       console.error(`[Engine] _setCrosshair error id=${targetId}`, e);
