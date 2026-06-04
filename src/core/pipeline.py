@@ -361,6 +361,31 @@ class StockAnalysisPipeline:
                 )
                 result._context = enhanced_context
 
+            # Step 7.6: 基本面结构化评分
+            fundamental_data = None
+            try:
+                from src.core.fundamental_analysis.analyzer import FundamentalAnalyzer
+                fa = FundamentalAnalyzer()
+                fa_result = fa.analyze(code)
+                if fa_result.get("success") and fa_result.get("score"):
+                    score = fa_result["score"]
+                    indicators = fa_result.get("indicators", {})
+                    fundamental_data = {
+                        "total_score": score["total_score"],
+                        "rating": score["rating"],
+                        "dimension_scores": score["dimension_scores"],
+                        "reasons": score["reasons"],
+                        "industry": score["industry"],
+                        "raw_data": _extract_key_indicators(indicators),
+                    }
+                    logger.info(f"{stock_name}({code}) 基本面评分完成: 总分={score['total_score']:.1f}")
+            except Exception as e:
+                logger.warning(f"{stock_name}({code}) 基本面评分获取失败: {e}")
+
+            # 将结构化评分附加到 result 上，供 API 响应返回给前端
+            if result and fundamental_data:
+                result.fundamental_score = fundamental_data
+
             # Step 8: 保存分析历史记录
             if result:
                 try:
@@ -368,7 +393,8 @@ class StockAnalysisPipeline:
                         enhanced_context=enhanced_context,
                         news_content=news_context,
                         realtime_quote=realtime_quote,
-                        chip_data=chip_data
+                        chip_data=chip_data,
+                        fundamental_data=fundamental_data,
                     )
                     self.db.save_analysis_history(
                         result=result,
@@ -601,6 +627,29 @@ class StockAnalysisPipeline:
             # 保存分析历史记录
             if result:
                 try:
+                    # 基本面结构化评分（Agent 路径也需要注入）
+                    fundamental_data = None
+                    try:
+                        from src.core.fundamental_analysis.analyzer import FundamentalAnalyzer
+                        fa = FundamentalAnalyzer()
+                        fa_result = fa.analyze(code)
+                        if fa_result.get("success") and fa_result.get("score"):
+                            score = fa_result["score"]
+                            indicators = fa_result.get("indicators", {})
+                            fundamental_data = {
+                                "total_score": score["total_score"],
+                                "rating": score["rating"],
+                                "dimension_scores": score["dimension_scores"],
+                                "reasons": score["reasons"],
+                                "industry": score["industry"],
+                                "raw_data": _extract_key_indicators(indicators),
+                            }
+                            result.fundamental_score = fundamental_data
+                            initial_context["fundamental"] = fundamental_data
+                            logger.info(f"[{code}] Agent 模式基本面评分: 总分={score['total_score']:.1f}")
+                    except Exception as e:
+                        logger.warning(f"[{code}] Agent 模式基本面评分获取失败: {e}")
+
                     initial_context["stock_name"] = resolved_stock_name
                     self.db.save_analysis_history(
                         result=result,
@@ -875,17 +924,21 @@ class StockAnalysisPipeline:
         enhanced_context: Dict[str, Any],
         news_content: Optional[str],
         realtime_quote: Any,
-        chip_data: Optional[ChipDistribution]
+        chip_data: Optional[ChipDistribution],
+        fundamental_data: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         构建分析上下文快照
         """
-        return {
+        snapshot = {
             "enhanced_context": enhanced_context,
             "news_content": news_content,
             "realtime_quote_raw": self._safe_to_dict(realtime_quote),
             "chip_distribution_raw": self._safe_to_dict(chip_data),
         }
+        if fundamental_data:
+            snapshot["fundamental"] = fundamental_data
+        return snapshot
 
     @staticmethod
     def _safe_to_dict(value: Any) -> Optional[Dict[str, Any]]:
@@ -1282,3 +1335,22 @@ class StockAnalysisPipeline:
                 
         except Exception as e:
             logger.error(f"发送通知失败: {e}")
+
+
+def _extract_key_indicators(indicators: Dict[str, Any]) -> Dict[str, Any]:
+    """从 FinancialIndicators 结果中提取关键原始指标"""
+    key_fields = [
+        "roe", "roa", "net_profit_margin", "deducted_net_profit_margin",
+        "gross_profit_margin", "operating_profit_margin",
+        "revenue_growth_yoy", "net_profit_growth_yoy",
+        "debt_to_asset_ratio", "asset_turnover", "equity_multiplier",
+        "operating_cashflow_to_revenue", "roic",
+        "pb", "pe", "eps",
+    ]
+    raw: Dict[str, Any] = {}
+    for category, metrics in indicators.items():
+        if isinstance(metrics, dict):
+            for field in key_fields:
+                if field in metrics and metrics[field] is not None:
+                    raw[field] = metrics[field]
+    return raw

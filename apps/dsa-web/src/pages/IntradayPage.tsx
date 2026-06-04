@@ -28,18 +28,23 @@ import { validateStockCode } from '../utils/validation';
 import { Card, StockSearchInput } from '../components/common';
 import { CrosshairSyncEngine } from './CrosshairSyncEngine';
 
-/** 计算成交量的 N 日简单移动平均（过滤掉不足N天的数据点） */
+/** 计算成交量的 N 日简单移动平均（滑动窗口增量算法，O(n)复杂度） */
 function calculateVolumeMA(
   volumeData: Array<{ time: any; value: number }>,
   days: number,
 ): Array<{ time: any; value: number }> {
+  if (volumeData.length < days) return [];
   const result: Array<{ time: any; value: number }> = [];
-  for (let idx = days - 1; idx < volumeData.length; idx++) {
-    let sum = 0;
-    for (let i = idx - days + 1; i <= idx; i++) {
-      sum += volumeData[i].value;
-    }
-    result.push({ time: volumeData[idx].time, value: sum / days });
+  let sum = 0;
+  // 计算第一个窗口
+  for (let i = 0; i < days; i++) {
+    sum += volumeData[i].value;
+  }
+  result.push({ time: volumeData[days - 1].time, value: sum / days });
+  // 滑动窗口：减去旧值，加上新值
+  for (let i = days; i < volumeData.length; i++) {
+    sum += volumeData[i].value - volumeData[i - days].value;
+    result.push({ time: volumeData[i].time, value: sum / days });
   }
   return result;
 }
@@ -519,11 +524,17 @@ const IntradayPage: React.FC = () => {
   const syncEngineRef = useRef(new CrosshairSyncEngine());
   const currentCrosshairTimeRef = useRef<Time | null>(null);
   const klineRawDataRef = useRef<any[]>([]);
-  const isIncrementalUpdateRef = useRef(false);
+  const lastIncrementalStockCodeRef = useRef<string | null>(null);
+  const indicatorDataAccumulatedRef = useRef<Map<string, { lines: Array<{ name: string; data: any[] }> }>>(new Map());
   const crosshairSignalRef = useRef<Record<string, string>>({});
   const crosshairSubsRef = useRef<Array<any>>([]);
   const mainTimeAnchorRef = useRef<lightweightCharts.ISeriesApi<'Line'> | null>(null);
   const volTimeAnchorRef = useRef<lightweightCharts.ISeriesApi<'Line'> | null>(null);
+  // 轮询效率优化：指纹缓存
+  const lastKlineFingerprintRef = useRef<string>('');
+  const lastIndicatorFingerprintRef = useRef<string>('');
+  const lastSnapshotJsonRef = useRef<string>('');
+  const lastFullDataJsonRef = useRef<string>('');
 
   // 指标子图容器 refs
   const absorptionContainerRef = useRef<HTMLDivElement>(null);
@@ -582,50 +593,35 @@ const IntradayPage: React.FC = () => {
     try {
       const existingKlineCount = klineRawDataRef.current.length || 0;
       const resp = await getBatchStatus(codes, requestedCode, includeSignals, existingKlineCount);
-      setHistorySnapshots(resp.snapshots);
+
+      // ── 快照去重：仅在数据变化时更新 sidebar ──
+      const snapshotJson = JSON.stringify(resp.snapshots);
+      if (snapshotJson !== lastSnapshotJsonRef.current) {
+        lastSnapshotJsonRef.current = snapshotJson;
+        setHistorySnapshots(resp.snapshots);
+      }
+
       if (resp.current_updated && resp.current_full_data && requestedCode) {
         let didIncrementalUpdate = false;
         if (chartRef.current) {
           updateChartIncrementalRef.current(resp.current_full_data, todayDateStr);
           didIncrementalUpdate = true;
         }
-        // 标记正在增量更新，阻止 useEffect 中的 renderData 全量重建
+        // 记录增量更新的股票代码，用于区分"同股票增量更新"和"跨股票切换"
         if (didIncrementalUpdate) {
-          isIncrementalUpdateRef.current = true;
+          lastIncrementalStockCodeRef.current = requestedCode;
         }
-        setIntradayData(prev => {
-          if (prev?.stock_code === requestedCode) {
-            const existingKlineTimes = new Set((prev.kline_data || []).map(k => k.timestamp || k.time || ''));
-            const newKlines = (resp.current_full_data!.kline_data || []).filter(k => {
-              const ts = k.timestamp || k.time || '';
-              return !existingKlineTimes.has(ts);
-            });
-            const mergedKlineData = [...(prev.kline_data || []), ...newKlines];
-
-            const mergedSubCharts = (resp.current_full_data!.indicator_sub_charts || []).map(newSc => {
-              const oldSc = (prev.indicator_sub_charts || []).find(osc => osc.id === newSc.id);
-              if (!oldSc) return newSc;
-              const mergedLines = newSc.lines.map(newLine => {
-                const oldLine = (oldSc.lines || []).find(ol => ol.name === newLine.name);
-                if (!oldLine || !oldLine.data || oldLine.data.length === 0) return newLine;
-                const oldTimes = new Set(oldLine.data.map(dp => dp.time));
-                const newPoints = (newLine.data || []).filter(dp => !oldTimes.has(dp.time));
-                return {
-                  ...newLine,
-                  data: [...oldLine.data, ...newPoints],
-                };
-              });
-              return { ...newSc, lines: mergedLines };
-            });
-
-            return {
-              ...resp.current_full_data!,
-              kline_data: mergedKlineData,
-              indicator_sub_charts: mergedSubCharts,
-            };
-          }
-          return prev;
-        });
+        // ── intradayData 去重：仅在数据实质变化时更新 React 状态 ──
+        const fullDataJson = JSON.stringify(resp.current_full_data);
+        if (fullDataJson !== lastFullDataJsonRef.current) {
+          lastFullDataJsonRef.current = fullDataJson;
+          setIntradayData(prev => {
+            if (prev?.stock_code === requestedCode) {
+              return { ...resp.current_full_data! };
+            }
+            return prev;
+          });
+        }
       }
       // 处理信号铃铛（从同一响应中提取）
       // 铃铛持久保留策略：
@@ -824,7 +820,7 @@ const IntradayPage: React.FC = () => {
     });
 
     // 时间锚点系列：始终覆盖 9:30-15:00，确保复盘时时间轴不收缩
-    // 注意：必须放在 CandlestickSeries 之前添加，使其渲染在下层
+    // 注意：必须放在分时白线之前添加，使其渲染在下层
     const mainAnchor = chart.addSeries(lightweightCharts.LineSeries, {
       color: '#1a1a2e',
       lineWidth: 1,
@@ -834,14 +830,12 @@ const IntradayPage: React.FC = () => {
     });
     mainTimeAnchorRef.current = mainAnchor;
 
-    const candleSeries = chart.addSeries(lightweightCharts.CandlestickSeries, {
-      upColor: '#FF4444',
-      downColor: '#44AA44',
-      borderDownColor: '#44AA44',
-      borderUpColor: '#FF4444',
-      wickDownColor: '#44AA44',
-      wickUpColor: '#FF4444',
-      priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
+    const candleSeries = chart.addSeries(lightweightCharts.LineSeries, {
+      color: '#FFFFFF',
+      lineWidth: 2,
+      priceLineVisible: false,
+      lastValueVisible: false,
+      crosshairMarkerVisible: false,
     });
 
     chartRef.current = chart;
@@ -1443,7 +1437,7 @@ const IntradayPage: React.FC = () => {
           borderVisible: false,
         },
         crosshair: {
-          mode: 1,
+          mode: 0, // Normal模式：十字线自由跟随鼠标（时间轴不吸附）。水平线由CrosshairSyncEngine锁定到分时白线值
           vertLine: { color: '#9B7DFF', width: 1, style: 2 },
           horzLine: { color: '#9B7DFF', width: 1, style: 2 },
         },
@@ -1783,25 +1777,20 @@ const IntradayPage: React.FC = () => {
         );
         candleSeriesRef.current = lineSeries as any;
       } else {
-        const newCandleSeries = chart.addSeries(lightweightCharts.CandlestickSeries, {
-          upColor: '#FF4444',
-          downColor: '#44AA44',
-          borderDownColor: '#44AA44',
-          borderUpColor: '#FF4444',
-          wickDownColor: '#44AA44',
-          wickUpColor: '#FF4444',
-          priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
+        const lineSeries = chart.addSeries(lightweightCharts.LineSeries, {
+          color: '#FFFFFF',
+          lineWidth: 2,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          crosshairMarkerVisible: false,
         });
-        newCandleSeries.setData(
+        lineSeries.setData(
           klines.map((k) => ({
             time: k.time as any,
-            open: k.open,
-            high: k.high,
-            low: k.low,
-            close: k.close,
+            value: k.close,
           })),
         );
-        candleSeriesRef.current = newCandleSeries;
+        candleSeriesRef.current = lineSeries as any;
       }
 
       chart.timeScale().fitContent();
@@ -2509,7 +2498,20 @@ const IntradayPage: React.FC = () => {
       const chart = chartRef.current;
       if (!chart) return;
 
+      // ── 1. 直接使用后端返回的全量K线数据更新 ──
       const klines = convertKlineData(data.kline_data, dateStr);
+      const prevKlineCount = klineRawDataRef.current.length;
+
+      // ── 计算 K线数据指纹：长度 + 最后一根K线的OHLCV ──
+      const lastKline = klines.length > 0 ? klines[klines.length - 1] : null;
+      const klineFingerprint = `${klines.length}|${lastKline ? `${lastKline.open},${lastKline.high},${lastKline.low},${lastKline.close},${lastKline.volume}` : 'empty'}`;
+
+      // ── 计算指标数据指纹 ──
+      const subCharts = data.indicator_sub_charts || [];
+      const indicatorFingerprint = subCharts.map((sc) =>
+        `${sc.id}:${sc.lines.map((l) => `${l.name}:${(l.data || []).length}`).join(';')}`
+      ).join('|');
+
       klineRawDataRef.current = klines;
       allSignalsRef.current = data.signals || [];
 
@@ -2520,24 +2522,22 @@ const IntradayPage: React.FC = () => {
       }
 
       const isTencent = isTencentDataRef.current;
+      const isNewKline = klines.length > prevKlineCount;
+      const isKlineChanged = klineFingerprint !== lastKlineFingerprintRef.current;
 
-      // ── 主图更新：直接 setData 全量数据，lightweight-charts 内部优化不会导致闪烁 ──
+      // ── 数据完全未变化 → 跳过所有更新 ──
+      if (!isKlineChanged) {
+        return;
+      }
+
+      // 更新K线指纹
+      lastKlineFingerprintRef.current = klineFingerprint;
+
+      // ── 主图更新 ──
       if (candleSeriesRef.current) {
-        if (isTencent) {
-          candleSeriesRef.current.setData(
-            klines.map((k) => ({ time: k.time as any, value: k.close })),
-          );
-        } else {
-          (candleSeriesRef.current as lightweightCharts.ISeriesApi<'Candlestick'>).setData(
-            klines.map((k) => ({
-              time: k.time as any,
-              open: k.open,
-              high: k.high,
-              low: k.low,
-              close: k.close,
-            })),
-          );
-        }
+        candleSeriesRef.current.setData(
+          klines.map((k) => ({ time: k.time as any, value: k.close })),
+        );
       }
 
       // ── 成交量更新 ──
@@ -2555,20 +2555,22 @@ const IntradayPage: React.FC = () => {
         );
       }
 
-      // ── 成交量MA更新（使用预热数据参与计算）──
-      const volumeValues = klines.map((k) => ({ time: k.time as any, value: k.volume }));
-      const warmupKlines = data.warmup_info?.klines;
-      let allVolumeValues = volumeValues;
-      if (warmupKlines && warmupKlines.length > 0) {
-        const warmupVolumeValues = warmupKlines.map((k) => ({ time: k.time as any, value: k.Volume }));
-        allVolumeValues = [...warmupVolumeValues, ...volumeValues];
+      // ── 成交量MA更新（滑动窗口增量，仅新增K线时重新计算）──
+      if (isNewKline && volume5MASeriesRef.current && volume10MASeriesRef.current) {
+        const volumeValues = klines.map((k) => ({ time: k.time as any, value: k.volume }));
+        const warmupKlines = data.warmup_info?.klines;
+        let allVolumeValues = volumeValues;
+        if (warmupKlines && warmupKlines.length > 0) {
+          const warmupVolumeValues = warmupKlines.map((k) => ({ time: k.time as any, value: k.Volume }));
+          allVolumeValues = [...warmupVolumeValues, ...volumeValues];
+        }
+        const allVolume5MA = calculateVolumeMA(allVolumeValues, 5);
+        const allVolume10MA = calculateVolumeMA(allVolumeValues, 10);
+        const volume5MA = warmupKlines?.length ? allVolume5MA.slice(-klines.length) : allVolume5MA;
+        const volume10MA = warmupKlines?.length ? allVolume10MA.slice(-klines.length) : allVolume10MA;
+        volume5MASeriesRef.current.setData(volume5MA);
+        volume10MASeriesRef.current.setData(volume10MA);
       }
-      const allVolume5MA = calculateVolumeMA(allVolumeValues, 5);
-      const allVolume10MA = calculateVolumeMA(allVolumeValues, 10);
-      const volume5MA = warmupKlines?.length ? allVolume5MA.slice(-klines.length) : allVolume5MA;
-      const volume10MA = warmupKlines?.length ? allVolume10MA.slice(-klines.length) : allVolume10MA;
-      if (volume5MASeriesRef.current) volume5MASeriesRef.current.setData(volume5MA);
-      if (volume10MASeriesRef.current) volume10MASeriesRef.current.setData(volume10MA);
 
       // ── 均价线更新 ──
       if (avgPriceLineRef.current) {
@@ -2581,158 +2583,168 @@ const IntradayPage: React.FC = () => {
         }
       }
 
-      // ── 时间锚点更新（使用全部klines时间点）──
-      const refPrice = klines.length > 0 ? klines[klines.length - 1].close : 0;
-      const fullDayPoints = generateFullDayTimePoints(dateStr, refPrice);
-      if (mainTimeAnchorRef.current) {
-        mainTimeAnchorRef.current.setData(fullDayPoints as any);
-      }
-      if (volTimeAnchorRef.current) {
-        volTimeAnchorRef.current.setData(fullDayPoints as any);
-      }
-
-      // ── 指标子图更新 ──
-      const subCharts = data.indicator_sub_charts || [];
-      for (const sc of subCharts) {
-        const chartInst = indicatorChartsRef.current.get(sc.id);
-        const seriesList = indicatorSeriesRef.current.get(sc.id);
-        if (!chartInst || !seriesList) continue;
-
-        if (sc.id === 'absorption') {
-          let seriesIdx = 0;
-          for (const line of sc.lines) {
-            if (!line.data || line.data.length === 0) continue;
-            const s = seriesList[seriesIdx];
-            seriesIdx++;
-            if (!s) continue;
-
-            const points = line.data
-              .filter((pt) => pt.time)
-              .map((pt) => {
-                const ms = parseTimestamp(pt.time, dateStr);
-                return {
-                  time: Math.floor(ms / 1000) as any,
-                  value: pt.value,
-                  color: pt.value >= 0 ? '#AA44FF' : '#44AA44',
-                };
-              })
-              .sort((a, b) => (a.time as number) - (b.time as number));
-            s.setData(points);
-          }
-        } else if (sc.id === 'macd') {
-          let seriesIdx = 0;
-          for (const line of sc.lines) {
-            if (!line.data || line.data.length === 0) continue;
-            const s = seriesList[seriesIdx];
-            seriesIdx++;
-            if (!s) continue;
-
-            const pts = line.data
-              .filter((pt: any) => pt.time)
-              .map((pt: any) => {
-                const ms = parseTimestamp(pt.time, dateStr);
-                return { time: Math.floor(ms / 1000) as any, value: pt.value };
-              })
-              .sort((a: any, b: any) => (a.time as number) - (b.time as number));
-
-            if (line.name === 'MACD_Bar') {
-              const barPoints = pts.map((p: any) => ({
-                ...p,
-                color: p.value >= 0 ? '#FF4444' : '#44FF44',
-              }));
-              s.setData(barPoints);
-            } else {
-              s.setData(pts);
-            }
-          }
-        } else if (sc.id === 'rsi') {
-          let seriesIdx = 0;
-          for (const line of sc.lines) {
-            if (!line.data || line.data.length === 0) continue;
-            const s = seriesList[seriesIdx];
-            seriesIdx++;
-            if (!s) continue;
-
-            const pts = line.data
-              .filter((pt: any) => pt.time)
-              .map((pt: any) => {
-                const ms = parseTimestamp(pt.time, dateStr);
-                return { time: Math.floor(ms / 1000) as any, value: pt.value };
-              })
-              .sort((a: any, b: any) => (a.time as number) - (b.time as number));
-            s.setData(pts);
-          }
-        } else if (sc.id === 'kdj') {
-          let seriesIdx = 0;
-          for (const line of sc.lines) {
-            if (!line.data || line.data.length === 0) continue;
-            const s = seriesList[seriesIdx];
-            seriesIdx++;
-            if (!s) continue;
-
-            const pts = line.data
-              .filter((pt: any) => pt.time)
-              .map((pt: any) => {
-                const ms = parseTimestamp(pt.time, dateStr);
-                return { time: Math.floor(ms / 1000) as any, value: pt.value };
-              })
-              .sort((a: any, b: any) => (a.time as number) - (b.time as number));
-            s.setData(pts);
-          }
-        } else if (sc.id === 'mfi') {
-          let seriesIdx = 0;
-          for (const line of sc.lines) {
-            if (!line.data || line.data.length === 0) continue;
-            const s = seriesList[seriesIdx];
-            seriesIdx++;
-            if (!s) continue;
-
-            const pts = line.data
-              .filter((pt: any) => pt.time)
-              .map((pt: any) => {
-                const ms = parseTimestamp(pt.time, dateStr);
-                return { time: Math.floor(ms / 1000) as any, value: pt.value };
-              })
-              .sort((a: any, b: any) => (a.time as number) - (b.time as number));
-            s.setData(pts);
-          }
-        } else {
-          let seriesIdx = 0;
-          for (const line of sc.lines) {
-            if (!line.data || line.data.length === 0) continue;
-            const s = seriesList[seriesIdx];
-            seriesIdx++;
-            if (!s) continue;
-
-            const points = line.data
-              .filter((pt) => pt.time)
-              .map((pt) => {
-                const ms = parseTimestamp(pt.time, dateStr);
-                return {
-                  time: Math.floor(ms / 1000) as any,
-                  value: pt.value,
-                };
-              })
-              .sort((a, b) => (a.time as number) - (b.time as number));
-            s.setData(points);
+      // ── 价格范围 ghostSeries 更新 ──
+      if (isNewKline) {
+        const ghostSeries = priceRangeSeriesRef.current;
+        if (ghostSeries && klines.length >= 2) {
+          const firstTime = klines[0].time;
+          const lastTime = klines[klines.length - 1].time;
+          const existingData = (ghostSeries as any).data();
+          if (existingData && existingData.length >= 2) {
+            ghostSeries.setData([
+              { time: firstTime as any, value: existingData[0].value },
+              { time: lastTime as any, value: existingData[existingData.length - 1].value || existingData[0].value },
+            ]);
           }
         }
+      }
 
-        // ── 指标子图时间锚点更新 ──
-        const subAnchor = indicatorAnchorRefs.current.get(sc.id);
-        if (subAnchor) {
-          subAnchor.setData(fullDayPoints.map((p: any) => ({ time: p.time, value: 0 })));
+      // ── 时间锚点更新（仅新增K线时需要更新）──
+      if (isNewKline) {
+        const refPrice = klines.length > 0 ? klines[klines.length - 1].close : 0;
+        const fullDayPoints = generateFullDayTimePoints(dateStr, refPrice);
+        if (mainTimeAnchorRef.current) {
+          mainTimeAnchorRef.current.setData(fullDayPoints as any);
+        }
+        if (volTimeAnchorRef.current) {
+          volTimeAnchorRef.current.setData(fullDayPoints as any);
+        }
+      }
+
+      // ── 指标子图更新（仅在新增K线或指标数据变化时执行）──
+      const isIndicatorChanged = isNewKline || indicatorFingerprint !== lastIndicatorFingerprintRef.current;
+      if (isIndicatorChanged) {
+        lastIndicatorFingerprintRef.current = indicatorFingerprint;
+
+        // 更新缓存
+        const cachedSubChartData = indicatorDataAccumulatedRef.current;
+        cachedSubChartData.clear();
+        for (const sc of subCharts) {
+          cachedSubChartData.set(sc.id, {
+            lines: sc.lines.map((line) => ({
+              name: line.name,
+              data: [...(line.data || [])],
+            })),
+          });
+        }
+
+        for (const subChart of subCharts) {
+          const chartInst = indicatorChartsRef.current.get(subChart.id);
+          const seriesList = indicatorSeriesRef.current.get(subChart.id);
+          if (!chartInst || !seriesList) continue;
+
+          const processLines = (_scId: string, lines: Array<{ name: string; data?: any[] }>) => {
+            let seriesIdx = 0;
+            for (const line of lines) {
+              if (!line.data || line.data.length === 0) continue;
+              const s = seriesList[seriesIdx];
+              seriesIdx++;
+              if (!s) continue;
+
+              const pts = line.data
+                .filter((pt: any) => pt.time)
+                .map((pt: any) => {
+                  const ms = parseTimestamp(pt.time as string, dateStr);
+                  return { time: Math.floor(ms / 1000) as any, value: pt.value };
+                })
+                .sort((a: any, b: any) => (a.time as number) - (b.time as number));
+              s.setData(pts);
+            }
+          };
+
+          if (subChart.id === 'absorption') {
+            let seriesIdx = 0;
+            for (const line of subChart.lines) {
+              if (!line.data || line.data.length === 0) continue;
+              const s = seriesList[seriesIdx];
+              seriesIdx++;
+              if (!s) continue;
+
+              const points = line.data
+                .filter((pt: any) => pt.time)
+                .map((pt: any) => {
+                  const ms = parseTimestamp(pt.time as string, dateStr);
+                  return {
+                    time: Math.floor(ms / 1000) as any,
+                    value: pt.value,
+                    color: pt.value >= 0 ? '#AA44FF' : '#44AA44',
+                  };
+                })
+                .sort((a: any, b: any) => (a.time as number) - (b.time as number));
+              s.setData(points);
+            }
+          } else if (subChart.id === 'macd') {
+            let seriesIdx = 0;
+            for (const line of subChart.lines) {
+              if (!line.data || line.data.length === 0) continue;
+              const s = seriesList[seriesIdx];
+              seriesIdx++;
+              if (!s) continue;
+
+              const pts = line.data
+                .filter((pt: any) => pt.time)
+                .map((pt: any) => {
+                  const ms = parseTimestamp(pt.time as string, dateStr);
+                  return { time: Math.floor(ms / 1000) as any, value: pt.value };
+                })
+                .sort((a: any, b: any) => (a.time as number) - (b.time as number));
+
+              if (line.name === 'MACD_Bar') {
+                const barPoints = pts.map((p: any) => ({
+                  ...p,
+                  color: p.value >= 0 ? '#FF4444' : '#44FF44',
+                }));
+                s.setData(barPoints);
+              } else {
+                s.setData(pts);
+              }
+            }
+          } else if (subChart.id === 'rsi' || subChart.id === 'kdj' || subChart.id === 'mfi') {
+            processLines(subChart.id, subChart.lines);
+          } else {
+            let seriesIdx = 0;
+            for (const line of subChart.lines) {
+              if (!line.data || line.data.length === 0) continue;
+              const s = seriesList[seriesIdx];
+              seriesIdx++;
+              if (!s) continue;
+
+              const points = line.data
+                .filter((pt: any) => pt.time)
+                .map((pt: any) => {
+                  const ms = parseTimestamp(pt.time as string, dateStr);
+                  return {
+                    time: Math.floor(ms / 1000) as any,
+                    value: pt.value,
+                  };
+                })
+                .sort((a: any, b: any) => (a.time as number) - (b.time as number));
+              s.setData(points);
+            }
+          }
+
+          // ── 指标子图时间锚点 ──
+          const refPrice = klines.length > 0 ? klines[klines.length - 1].close : 0;
+          const fullDayPoints = generateFullDayTimePoints(dateStr, refPrice);
+          const subAnchor = indicatorAnchorRefs.current.get(subChart.id);
+          if (subAnchor) {
+            subAnchor.setData(fullDayPoints.map((p: any) => ({ time: p.time, value: 0 })));
+          }
         }
       }
 
       // ── 参考线价格更新 ──
       updateRefLinePriceIncremental(data);
 
-      // ── 信号标记更新 ──
-      updateSignalMarkersIncremental(dateStr);
+      // ── 信号标记更新（仅在指标数据变化时重新计算）──
+      if (isIndicatorChanged) {
+        updateSignalMarkersIncremental(dateStr);
+      }
 
-      // ── 快照追加 ──
-      appendSnapshotIncremental(data, dateStr);
+      // ── 快照追加（仅新增K线时）──
+      if (isNewKline) {
+        appendSnapshotIncremental(data, dateStr);
+      }
     },
     [],
   );
@@ -3026,19 +3038,9 @@ const IntradayPage: React.FC = () => {
         // ═══════════════════════════════════════════════
 
         if (candleSeriesRef.current) {
-          if (isTencentDataRef.current) {
-            (candleSeriesRef.current as any).setData([
-              { time: currentKline.time as any, value: currentKline.close },
-            ]);
-          } else {
-            (candleSeriesRef.current as any).setData([{
-              time: currentKline.time as any,
-              open: currentKline.open,
-              high: currentKline.high,
-              low: currentKline.low,
-              close: currentKline.close,
-            }]);
-          }
+          (candleSeriesRef.current as any).setData([
+            { time: currentKline.time as any, value: currentKline.close },
+          ]);
         }
 
         if (volumeSeriesRef.current) {
@@ -3159,20 +3161,10 @@ const IntradayPage: React.FC = () => {
         // ═══════════════════════════════════════════════
 
         if (candleSeriesRef.current) {
-          if (isTencentDataRef.current) {
-            (candleSeriesRef.current as any).update({
-              time: currentKline.time as any,
-              value: currentKline.close,
-            });
-          } else {
-            (candleSeriesRef.current as any).update({
-              time: currentKline.time as any,
-              open: currentKline.open,
-              high: currentKline.high,
-              low: currentKline.low,
-              close: currentKline.close,
-            });
-          }
+          (candleSeriesRef.current as any).update({
+            time: currentKline.time as any,
+            value: currentKline.close,
+          });
         }
 
         if (volumeSeriesRef.current) {
@@ -3353,13 +3345,16 @@ const IntradayPage: React.FC = () => {
   // 当数据变更时重新渲染（增量更新时跳过全量重建）
   useEffect(() => {
     if (intradayData && !isReplayingRef.current) {
-      if (isIncrementalUpdateRef.current) {
-        isIncrementalUpdateRef.current = false;
+      // 增量更新时跳过全量重建，但仅限于同股票代码的场景
+      // 如果股票已切换，必须执行全量 renderData 重建
+      if (lastIncrementalStockCodeRef.current === intradayData.stock_code) {
+        lastIncrementalStockCodeRef.current = null;
         return;
       }
+      lastIncrementalStockCodeRef.current = null;
       renderData(intradayData, intradayData.date || todayDateStr);
     }
-  }, [intradayData, renderData, priceRangeEnabled]);
+  }, [intradayData, renderData]);
 
   // ── 搜索 ──
   const handleSearch = useCallback(async (overrideWarmup?: boolean, overrideCode?: string) => {
@@ -3447,16 +3442,22 @@ const IntradayPage: React.FC = () => {
         // 盘中轮询已保证缓存/DB最新，手动点击用 cache_only 避免额外API压力
         // 盘后直接走 full 链路，跳过 cache_only 的无效尝试
         const dataStrategy = isTradingTime() ? 'auto' : 'full';
-        const data = await getIntradayData(item.stock_code, dateParam, dataStrategy, warmupEnabled);
+
+        // 并行加载分时数据和更新搜索历史时间戳
+        const [data] = await Promise.all([
+          getIntradayData(item.stock_code, dateParam, dataStrategy, warmupEnabled),
+          (async () => {
+            try {
+              await updateSearchHistoryTimestamp(item.id);
+              await loadHistory();
+            } catch {
+              // 即使更新失败也不影响用户使用数据
+            }
+          })(),
+        ]);
+
         setIntradayData(data);
         setInputError(undefined);
-        // 更新搜索历史时间戳，使该纪录置顶
-        try {
-          await updateSearchHistoryTimestamp(item.id);
-          await loadHistory();
-        } catch {
-          // 即使更新失败也不影响用户使用数据
-        }
       } catch (err: any) {
         console.error('获取分时数据失败:', err);
         setInputError(err.message || '获取数据失败');

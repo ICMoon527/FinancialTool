@@ -3128,6 +3128,8 @@ class DatabaseManager:
         Returns:
             保存的记录数
         """
+        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
         with self.get_session() as session:
             count = 0
             for k in klines:
@@ -3139,38 +3141,31 @@ class DatabaseManager:
                     continue
 
                 try:
-                    # 先查找是否已有记录，避免唯一约束冲突
-                    existing = (
-                        session.query(IntradayKline1Min)
-                        .filter(
-                            IntradayKline1Min.code == code,
-                            IntradayKline1Min.date == date_obj,
-                            IntradayKline1Min.time == t,
-                        )
-                        .first()
+                    insert_stmt = sqlite_insert(IntradayKline1Min).values(
+                        code=code,
+                        date=date_obj,
+                        time=t,
+                        open=k.get("Open"),
+                        high=k.get("High"),
+                        low=k.get("Low"),
+                        close=k.get("Close"),
+                        volume=k.get("Volume"),
+                        amount=k.get("Amount"),
+                        avg_price=k.get("AvgPrice"),
                     )
-                    if existing:
-                        existing.open = k.get("Open")
-                        existing.high = k.get("High")
-                        existing.low = k.get("Low")
-                        existing.close = k.get("Close")
-                        existing.volume = k.get("Volume")
-                        existing.amount = k.get("Amount")
-                        existing.avg_price = k.get("AvgPrice")
-                    else:
-                        record = IntradayKline1Min(
-                            code=code,
-                            date=date_obj,
-                            time=t,
-                            open=k.get("Open"),
-                            high=k.get("High"),
-                            low=k.get("Low"),
-                            close=k.get("Close"),
-                            volume=k.get("Volume"),
-                            amount=k.get("Amount"),
-                            avg_price=k.get("AvgPrice"),
-                        )
-                        session.add(record)
+                    stmt = insert_stmt.on_conflict_do_update(
+                        index_elements=["code", "date", "time"],
+                        set_={
+                            "open": insert_stmt.excluded.open,
+                            "high": insert_stmt.excluded.high,
+                            "low": insert_stmt.excluded.low,
+                            "close": insert_stmt.excluded.close,
+                            "volume": insert_stmt.excluded.volume,
+                            "amount": insert_stmt.excluded.amount,
+                            "avg_price": insert_stmt.excluded.avg_price,
+                        },
+                    )
+                    session.execute(stmt)
                     count += 1
                 except Exception as e:
                     logger.warning(f"保存K线记录失败 {code} {date_obj} {t}: {e}")

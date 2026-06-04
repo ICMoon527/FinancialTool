@@ -550,10 +550,11 @@ def _build_analysis_report(
 
     details = None
     if details_data:
+        context_snapshot = report_data.get("context_snapshot")
         details = ReportDetails(
             news_content=details_data.get("news_summary") or details_data.get("news_content"),
             raw_result=details_data,
-            context_snapshot=None
+            context_snapshot=context_snapshot
         )
 
     return AnalysisReport(

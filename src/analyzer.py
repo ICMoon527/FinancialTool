@@ -222,6 +222,9 @@ class AnalysisResult:
     current_price: Optional[float] = None  # 分析时的股价
     change_pct: Optional[float] = None     # 分析时的涨跌幅(%)
 
+    # ========== 基本面结构化评分 ==========
+    fundamental_score: Optional[Dict[str, Any]] = None  # FundamentalAnalyzer 返回的结构化评分
+
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
         return {
@@ -256,6 +259,7 @@ class AnalysisResult:
             'error_message': self.error_message,
             'current_price': self.current_price,
             'change_pct': self.change_pct,
+            'fundamental_score': self.fundamental_score,
         }
 
     def get_core_conclusion(self) -> str:

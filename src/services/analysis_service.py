@@ -147,7 +147,10 @@ class AnalysisService:
                 "technical_analysis": result.technical_analysis,
                 "fundamental_analysis": result.fundamental_analysis,
                 "risk_warning": result.risk_warning,
-            }
+            },
+            "context_snapshot": {
+                "fundamental": result.fundamental_score,
+            } if result.fundamental_score else None,
         }
         
         return {

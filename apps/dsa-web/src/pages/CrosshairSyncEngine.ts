@@ -81,6 +81,11 @@ export class CrosshairSyncEngine {
           if (id === sourceId) return;
           this._setCrosshair(entry, param.time, id);
         });
+        // 同时更新源图表自身：对于主图（mode=0），使其水平线锁定到分时白线值，而非跟随鼠标Y坐标
+        const sourceEntry = this.entries.get(sourceId);
+        if (sourceEntry) {
+          this._setCrosshair(sourceEntry, param.time, sourceId);
+        }
         this.callbacks.onMove?.(param.time, sourceId);
       } else {
         this.crosshairActive = false;

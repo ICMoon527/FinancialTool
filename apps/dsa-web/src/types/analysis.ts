@@ -46,11 +46,24 @@ export interface ReportStrategy {
   takeProfit?: string;
 }
 
+/** 基本面结构化评分 */
+export interface FundamentalScore {
+  totalScore: number;
+  rating: string;
+  dimensionScores: Record<string, number>;
+  reasons: string[];
+  industry: string;
+  rawData: Record<string, number | null>;
+}
+
 /** 详情区（可折叠） */
 export interface ReportDetails {
   newsContent?: string;
   rawResult?: Record<string, unknown>;
-  contextSnapshot?: Record<string, unknown>;
+  contextSnapshot?: {
+    fundamental?: FundamentalScore;
+    [key: string]: unknown;
+  };
 }
 
 /** 完整分析报告 */
