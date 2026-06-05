@@ -31,6 +31,7 @@ from indicators.indicators.resonance_chase import ResonanceChase
 from indicators.indicators.dmi import DMI
 from indicators.indicators.macd import MACD
 from indicators.indicators.expma import EXPMA
+from indicators.indicators.tiandao import Tiandao
 from indicators.indicators.chip_distribution import ChipDistribution
 from src.storage import DatabaseManager, get_db
 from src.core.trading_calendar import get_start_date_by_trading_days, get_market_for_stock
@@ -165,7 +166,8 @@ AVAILABLE_INDICATORS = [
     'resonance_chase',
     'dmi',
     'macd',
-    'expma'
+    'expma',
+    'tiandao'
 ]
 
 # 指标计算器映射
@@ -180,7 +182,8 @@ INDICATOR_CALCULATORS = {
     'resonance_chase': ResonanceChase,
     'dmi': DMI,
     'macd': MACD,
-    'expma': EXPMA
+    'expma': EXPMA,
+    'tiandao': Tiandao
 }
 
 
@@ -459,6 +462,14 @@ class VisualizationService:
                         fast_period = int(os.getenv('EXPMA_FAST_PERIOD', '13'))
                         slow_period = int(os.getenv('EXPMA_SLOW_PERIOD', '30'))
                         calculator = EXPMA(fast_period=fast_period, slow_period=slow_period)
+                    elif indicator_type == 'tiandao':
+                        # 从环境变量读取天道指标参数
+                        n = int(os.getenv('TIANDAO_N', '25'))
+                        n1 = int(os.getenv('TIANDAO_N1', '3'))
+                        n2 = int(os.getenv('TIANDAO_N2', '6'))
+                        n3 = int(os.getenv('TIANDAO_N3', '12'))
+                        n4 = int(os.getenv('TIANDAO_N4', '24'))
+                        calculator = Tiandao(n=n, n1=n1, n2=n2, n3=n3, n4=n4)
                     else:
                         calculator = calculator_class()
                     # 如果是主力成本指标且有资金流向数据，传递资金流向数据

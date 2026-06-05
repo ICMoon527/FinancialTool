@@ -654,13 +654,13 @@ const KlineChart: React.FC<{
             <div className="flex items-center px-1">
               <div className="text-sm font-medium text-white">主力进出</div>
               <div className="flex items-center gap-2 ml-3">
-                <div className="flex items-center gap-1">
-                  <span className="w-3 h-3 rounded-sm" style={{ background: '#AA44FF' }} />
-                  <span className="text-[10px] text-muted">吸筹</span>
+                <div className="flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#AA44FF' }} />
+                  <span className="text-xs text-white">吸筹</span>
                 </div>
-                <div className="flex items-center gap-1">
-                  <span className="w-3 h-3 rounded-sm" style={{ background: '#44AA44' }} />
-                  <span className="text-[10px] text-muted">出货</span>
+                <div className="flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#44AA44' }} />
+                  <span className="text-xs text-white">出货</span>
                 </div>
               </div>
             </div>

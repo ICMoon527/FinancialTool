@@ -198,6 +198,13 @@ class Config:
     # 是否保存分析上下文快照（用于历史回溯）
     save_context_snapshot: bool = True
 
+    # === 天道指标配置 ===
+    tiandao_n: int = 25       # XMA/EMA 周期
+    tiandao_n1: int = 3       # BBI 均线周期1
+    tiandao_n2: int = 6       # BBI 均线周期2
+    tiandao_n3: int = 12      # BBI 均线周期3
+    tiandao_n4: int = 24      # BBI 均线周期4
+
     # === 回测配置 ===
     backtest_enabled: bool = True
     backtest_eval_window_days: int = 10
@@ -626,7 +633,13 @@ class Config:
             # - tushare: Tushare Pro，需要2000积分，数据全面
             realtime_source_priority=cls._resolve_realtime_source_priority(),
             realtime_cache_ttl=int(os.getenv('REALTIME_CACHE_TTL', '600')),
-            circuit_breaker_cooldown=int(os.getenv('CIRCUIT_BREAKER_COOLDOWN', '300'))
+            circuit_breaker_cooldown=int(os.getenv('CIRCUIT_BREAKER_COOLDOWN', '300')),
+            # 天道指标配置
+            tiandao_n=int(os.getenv('TIANDAO_N', '25')),
+            tiandao_n1=int(os.getenv('TIANDAO_N1', '3')),
+            tiandao_n2=int(os.getenv('TIANDAO_N2', '6')),
+            tiandao_n3=int(os.getenv('TIANDAO_N3', '12')),
+            tiandao_n4=int(os.getenv('TIANDAO_N4', '24')),
         )
     
     @classmethod

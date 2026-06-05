@@ -38,6 +38,7 @@ const INDICATOR_OPTIONS = [
   { id: 'strong_detonation', name: '强势起爆', description: '强势起爆指标，识别强势起爆阶段', color: '#AA44FF' },
   { id: 'resonance_chase', name: '共振追涨', description: '共振追涨指标，识别共振追涨机会', color: '#AA44FF' },
   { id: 'dmi', name: 'DMI', description: '方向移动指数，显示趋势方向和强度', color: '#44AA44' },
+  { id: 'tiandao', name: '天道', description: '天道做T指标 (JGZ四线版)', color: '#FFD700' },
 ];
 
 // 子图高度
@@ -141,6 +142,14 @@ const VisualizationPage: React.FC = () => {
   const expmaSlowSeriesRef = useRef<any>(null);
   // 存储 EXPMA 数据用于十字线值查找
   const expmaDataRef = useRef<any>(null);
+  
+  // 天道指标系列引用
+  const tiandaoBbiSeriesRef = useRef<any>(null);
+  const tiandaoJinzuanSeriesRef = useRef<any>(null);
+  const tiandaoJinniuSeriesRef = useRef<any>(null);
+  const tiandaoJinniu2SeriesRef = useRef<any>(null);
+  // 存储天道数据用于十字线值查找
+  const tiandaoDataRef = useRef<any>(null);
   
   const klineDataRef = useRef<any>(null);
   const latestDateRef = useRef<any>(null);
@@ -1098,6 +1107,124 @@ const VisualizationPage: React.FC = () => {
     }
   }, [selectedIndicators, visualizationData, refreshKey]);
 
+  // 4. 更新天道系列（主图叠加）
+  useEffect(() => {
+    if (!mainChartRef.current || !visualizationData) return;
+
+    try {
+      // 清理旧的天道系列
+      if (tiandaoBbiSeriesRef.current) {
+        mainChartRef.current.removeSeries(tiandaoBbiSeriesRef.current);
+        tiandaoBbiSeriesRef.current = null;
+      }
+      if (tiandaoJinzuanSeriesRef.current) {
+        mainChartRef.current.removeSeries(tiandaoJinzuanSeriesRef.current);
+        tiandaoJinzuanSeriesRef.current = null;
+      }
+      if (tiandaoJinniuSeriesRef.current) {
+        mainChartRef.current.removeSeries(tiandaoJinniuSeriesRef.current);
+        tiandaoJinniuSeriesRef.current = null;
+      }
+      if (tiandaoJinniu2SeriesRef.current) {
+        mainChartRef.current.removeSeries(tiandaoJinniu2SeriesRef.current);
+        tiandaoJinniu2SeriesRef.current = null;
+      }
+
+      const isTiandaoSelected = selectedIndicators.includes('tiandao');
+      const tiandaoIndicator = visualizationData.indicators.find(
+        (ind: any) => ind.indicator_type === 'tiandao'
+      );
+
+      // 保存天道数据到 ref
+      tiandaoDataRef.current = tiandaoIndicator;
+
+      if (isTiandaoSelected && tiandaoIndicator && tiandaoIndicator.data && tiandaoIndicator.data.length > 0) {
+        // td_jinzuan 金钻趋势（金色细线，核心趋势线）
+        const jinzuanData = tiandaoIndicator.data
+          .map((item: any) => ({
+            time: item.date,
+            value: item.td_jinzuan != null ? Number(item.td_jinzuan.toFixed(2)) : null,
+          }))
+          .filter((d: any) => d.value !== null && d.value !== undefined);
+
+        if (jinzuanData.length > 0) {
+          const series = mainChartRef.current!.addSeries(lightweightCharts.LineSeries, {
+            color: '#FFD700',
+            lineWidth: 1,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+          });
+          series.setData(jinzuanData);
+          tiandaoJinzuanSeriesRef.current = series;
+        }
+
+        // td_jinniu 金牛（红色细线，通道上轨）
+        const jinniuData = tiandaoIndicator.data
+          .map((item: any) => ({
+            time: item.date,
+            value: item.td_jinniu != null ? Number(item.td_jinniu.toFixed(2)) : null,
+          }))
+          .filter((d: any) => d.value !== null && d.value !== undefined);
+
+        if (jinniuData.length > 0) {
+          const series = mainChartRef.current!.addSeries(lightweightCharts.LineSeries, {
+            color: '#FF4444',
+            lineWidth: 1,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+          });
+          series.setData(jinniuData);
+          tiandaoJinniuSeriesRef.current = series;
+        }
+
+        // td_jinniu2 金牛2（绿色细线，慢速跟随）
+        const jinniu2Data = tiandaoIndicator.data
+          .map((item: any) => ({
+            time: item.date,
+            value: item.td_jinniu2 != null ? Number(item.td_jinniu2.toFixed(2)) : null,
+          }))
+          .filter((d: any) => d.value !== null && d.value !== undefined);
+
+        if (jinniu2Data.length > 0) {
+          const series = mainChartRef.current!.addSeries(lightweightCharts.LineSeries, {
+            color: '#00FF00',
+            lineWidth: 1,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+          });
+          series.setData(jinniu2Data);
+          tiandaoJinniu2SeriesRef.current = series;
+        }
+
+        // td_bbi BBI 线
+        const bbiData = tiandaoIndicator.data
+          .map((item: any) => ({
+            time: item.date,
+            value: item.td_bbi != null ? Number(item.td_bbi.toFixed(2)) : null,
+          }))
+          .filter((d: any) => d.value !== null && d.value !== undefined);
+
+        if (bbiData.length > 0) {
+          const series = mainChartRef.current!.addSeries(lightweightCharts.LineSeries, {
+            color: '#FFFFFF',
+            lineWidth: 1,
+            lineStyle: 2,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+          });
+          series.setData(bbiData);
+          tiandaoBbiSeriesRef.current = series;
+        }
+      }
+    } catch (error) {
+      console.error('Error updating Tiandao:', error);
+    }
+  }, [selectedIndicators, visualizationData, refreshKey]);
+
   // 更新子图数据
   useEffect(() => {
     // 清理旧的子图
@@ -1170,7 +1297,7 @@ const VisualizationPage: React.FC = () => {
     const createdCharts: Array<{ id: string; chart: any }> = [];
     
     selectedIndicators.forEach(indicatorId => {
-      if (indicatorId === 'main_trading' || indicatorId === 'expma') return;
+      if (indicatorId === 'main_trading' || indicatorId === 'expma' || indicatorId === 'tiandao') return;
       
       // 成交量不需要从指标数据中获取，它直接使用K线数据
       if (indicatorId !== 'volume') {
@@ -2686,6 +2813,27 @@ const VisualizationPage: React.FC = () => {
                         )}
                       </>
                     )}
+                  {selectedIndicators.includes('tiandao') && visualizationData && (
+                    <>
+                      <h3 className="text-sm font-medium text-white">天道做T</h3>
+                      <div className="flex items-center gap-2">
+                        <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#FF4444' }} />
+                        <span className="text-xs text-white">金牛</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#FFD700' }} />
+                        <span className="text-xs text-white">金钻趋势</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#00FF00' }} />
+                        <span className="text-xs text-white">金牛2</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#FFFFFF' }} />
+                        <span className="text-xs text-white">BBI</span>
+                      </div>
+                    </>
+                  )}
                   </div>
                   <div 
                     ref={mainChartContainerRef} 
@@ -2731,7 +2879,7 @@ const VisualizationPage: React.FC = () => {
 
               {/* 指标子图 - 只在有数据时显示（跳过主力操盘和EXPMA，它们在主图显示） */}
               {visualizationData && selectedIndicators.map(indicatorId => {
-                if (indicatorId === 'main_trading' || indicatorId === 'expma') return null;
+                if (indicatorId === 'main_trading' || indicatorId === 'expma' || indicatorId === 'tiandao') return null;
                 
                 const indicatorData = indicatorId !== 'volume' 
                   ? visualizationData.indicators.find(ind => ind.indicator_type === indicatorId)

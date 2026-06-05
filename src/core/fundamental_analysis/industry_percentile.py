@@ -16,11 +16,13 @@
     percentile_score = score_by_percentile(value=18.5, metric="roe", industry=IndustryType.CONSUMER, max_score=6.0)
 """
 
-import json
+import json  # 用于 _save_percentiles 中 yaml 输出排序
 import logging
 import time
 from pathlib import Path
 from typing import Dict, Optional, Tuple
+
+import yaml
 
 from src.core.fundamental_analysis.industry_config import IndustryType
 
@@ -28,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 # 项目根目录
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
-_PERCENTILE_CACHE_PATH = _PROJECT_ROOT / "config" / "industry_percentiles.json"
+_PERCENTILE_CACHE_PATH = _PROJECT_ROOT / "config" / "industry_percentiles.yaml"
 
 # ============================================================
 # 比率型指标定义
@@ -269,7 +271,7 @@ def _load_percentiles() -> Dict[str, Dict[str, Tuple[float, float, float]]]:
     加载行业分位数配置
 
     流程：
-    1. 优先从 JSON 缓存文件加载（用户刷新后的数据）
+    1. 优先从 YAML 缓存文件加载（用户刷新后的数据）
     2. 缓存不存在时生成默认配置并写入缓存文件
     """
     global _percentiles_cache
@@ -279,18 +281,22 @@ def _load_percentiles() -> Dict[str, Dict[str, Tuple[float, float, float]]]:
     if _PERCENTILE_CACHE_PATH.exists():
         try:
             with open(_PERCENTILE_CACHE_PATH, "r", encoding="utf-8") as f:
-                raw = json.load(f)
-            # 解析 JSON 中的 tuple 表示（以 list 存储）
+                raw = yaml.safe_load(f)
+            # 解析 YAML 内容，只提取 3 元素的分位数（跳过 pe_range）
             result: Dict[str, Dict[str, Tuple[float, float, float]]] = {}
             for industry, metrics in raw.items():
+                if not isinstance(metrics, dict):
+                    continue
                 result[industry] = {}
                 for metric, values in metrics.items():
+                    if metric == "pe_range":
+                        continue  # pe_range 由 industry_config.py 读取
                     if isinstance(values, list) and len(values) == 3:
                         result[industry][metric] = (float(values[0]), float(values[1]), float(values[2]))
             _percentiles_cache = result
             logger.info(f"已从缓存加载 {len(result)} 个行业的百分位阈值")
             return result
-        except (json.JSONDecodeError, ValueError, KeyError) as e:
+        except Exception as e:
             logger.warning(f"加载百分位缓存失败: {e}，使用默认值")
 
     defaults = _default_percentiles()
@@ -301,16 +307,16 @@ def _load_percentiles() -> Dict[str, Dict[str, Tuple[float, float, float]]]:
 
 
 def _save_percentiles(data: Dict[str, Dict[str, Tuple[float, float, float]]]) -> None:
-    """保存分位数数据到 JSON 缓存文件"""
+    """保存分位数数据到 YAML 缓存文件"""
     try:
         _PERCENTILE_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
         serializable = {}
-        for industry, metrics in data.items():
+        for industry, metrics in sorted(data.items()):
             serializable[industry] = {}
-            for metric, values in metrics.items():
-                serializable[industry][metric] = list(values)
+            for metric, values in sorted(metrics.items()):
+                serializable[industry][metric] = [float(v) for v in values]
         with open(_PERCENTILE_CACHE_PATH, "w", encoding="utf-8") as f:
-            json.dump(serializable, f, ensure_ascii=False, indent=2)
+            yaml.dump(serializable, f, allow_unicode=True, default_flow_style=None, sort_keys=False)
         logger.info(f"行业百分位阈值已保存到: {_PERCENTILE_CACHE_PATH}")
     except OSError as e:
         logger.warning(f"保存百分位缓存失败: {e}")

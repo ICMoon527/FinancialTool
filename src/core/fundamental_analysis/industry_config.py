@@ -8,7 +8,7 @@
 1. 定义行业分类体系（8 大类别 + 特殊子类）
 2. 将数据库中的行业标签映射到统一分类
 3. 为每个行业提供营运效率评分阈值模板
-4. 提供行业合理 PE 区间配置（支持外部 YAML 文件自定义）
+4. 提供行业合理 PE 区间配置（从 industry_percentiles.yaml 读取）
 """
 
 import logging
@@ -16,6 +16,8 @@ import os
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from enum import Enum
+
+import yaml
 
 logger = logging.getLogger(__name__)
 
@@ -374,10 +376,10 @@ def get_industry_thresholds(industry_type: IndustryType) -> Dict[str, Tuple[floa
 
 
 # ============================================================
-# 行业合理 PE 区间配置（支持外部 YAML 文件自定义）
+# 行业合理 PE 区间配置（从 industry_percentiles.yaml 读取）
 # ============================================================
 
-# 默认 PE 区间（当 YAML 配置文件不存在或格式异常时使用）
+# 默认 PE 区间（当 YAML 中 pe_range 缺失时使用）
 _DEFAULT_PE_RANGES: Dict[IndustryType, Tuple[float, float]] = {
     IndustryType.CONSUMER: (15, 40),
     IndustryType.PHARMA: (20, 50),
@@ -390,95 +392,21 @@ _DEFAULT_PE_RANGES: Dict[IndustryType, Tuple[float, float]] = {
     IndustryType.UNKNOWN: (10, 30),
 }
 
-# 项目根目录（向上找到包含 config/ 目录的位置）
+# 项目根目录
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
-# YAML 配置文件路径
-INDUSTRY_PE_CONFIG_PATH = _PROJECT_ROOT / "config" / "industry_pe_config.yaml"
+# YAML 配置文件路径（与 industry_percentile.py 共用）
+_PERCENTILE_YAML_PATH = _PROJECT_ROOT / "config" / "industry_percentiles.yaml"
 
 # 缓存加载结果，避免频繁读文件
 _pe_ranges_cache: Optional[Dict[IndustryType, Tuple[float, float]]] = None
 
 
-def _generate_default_pe_config() -> None:
-    """
-    在 config 目录下生成默认的行业 PE 配置文件
-
-    当配置文件不存在时自动创建，用户可直接编辑该文件调整 PE 区间。
-    """
-    content = """# ============================================================
-# 行业估值评分参考配置
-# ============================================================
-# 说明：
-#   本文件用于基本面评分中的"估值合理性"维度评分。
-#   评分逻辑：将股票当前 PE（市盈率）与行业合理 PE 区间比较，
-#   PE 偏离合理区间越多，则扣分越多。
-#
-# 更新建议：
-#   - 每季度根据市场整体估值水平调整一次
-#   - 牛市可适当上调区间上限，熊市可适当下调
-#   - 参考数据来源：中证指数官网、同花顺行业板块估值
-#
-# 格式说明：
-#   pe_ranges 下的每个行业对应一个 [下限PE, 上限PE] 区间。
-#   当 PE < 下限PE → 偏低估（可能加分或适中）
-#   当 下限PE ≤ PE ≤ 上限PE → 合理估值（满分）
-#   当 PE > 上限PE → 偏高估（扣分）
-# ============================================================
-
-pe_ranges:
-  # 消费/品牌（白酒、食品饮料、家电、服装等）
-  # 品牌溢价和护城河支持较高 PE
-  消费: [15, 40]
-
-  # 医药生物（化学制药、中药、医疗器械等）
-  # 增长确定性强，PE 容忍度较高
-  医药: [20, 50]
-
-  # TMT/科技（电子、计算机、半导体等）
-  # 高增长预期驱动高估值
-  科技: [20, 60]
-
-  # 制造/工业（机械设备、电力设备、军工等）
-  # 传统制造业 PE 偏低
-  制造: [10, 30]
-
-  # 资源/周期（煤炭、钢铁、有色、化工等）
-  # 强周期属性，PE 在景气高点反而低
-  资源: [8, 25]
-
-  # 金融（银行、证券、保险等）
-  # 低估值板块
-  金融: [5, 15]
-
-  # 地产/基建（房地产开发、建筑装饰等）
-  # 低估值板块，受政策影响大
-  地产: [5, 15]
-
-  # 公用事业（电力、燃气、水务等）
-  # 稳定低增长，PE 偏低
-  公用事业: [10, 25]
-
-  # 无法识别的行业
-  # 保守取中间值
-  未知: [10, 30]
-"""
-    try:
-        INDUSTRY_PE_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        INDUSTRY_PE_CONFIG_PATH.write_text(content, encoding="utf-8")
-        logger.info(f"已创建默认行业PE配置文件: {INDUSTRY_PE_CONFIG_PATH}")
-    except OSError as e:
-        logger.warning(f"创建默认行业PE配置文件失败: {e}")
-
-
 def load_pe_ranges() -> Dict[IndustryType, Tuple[float, float]]:
     """
-    从 YAML 配置文件加载行业 PE 区间
+    从 industry_percentiles.yaml 加载行业 PE 区间
 
-    流程：
-    1. 如果文件不存在，自动创建默认配置
-    2. 从 YAML 中读取 pe_ranges 映射
-    3. 将中文行业名映射为 IndustryType 枚举键
-    4. 解析失败的行业回退到默认值
+    优先读取 YAML 中每个行业的 pe_range 字段，
+    如果不存在或解析失败则回退到默认值。
 
     Returns:
         行业类型到 PE 区间 [下限, 上限] 的映射
@@ -487,40 +415,28 @@ def load_pe_ranges() -> Dict[IndustryType, Tuple[float, float]]:
     if _pe_ranges_cache is not None:
         return _pe_ranges_cache
 
-    # 文件不存在时自动生成默认配置
-    if not INDUSTRY_PE_CONFIG_PATH.exists():
-        _generate_default_pe_config()
-
-    # 从 YAML 加载
-    try:
-        import yaml
-        with open(INDUSTRY_PE_CONFIG_PATH, "r", encoding="utf-8") as f:
-            raw = yaml.safe_load(f)
-    except Exception as e:
-        logger.warning(f"加载行业PE配置文件失败: {e}，使用默认值")
-        _pe_ranges_cache = dict(_DEFAULT_PE_RANGES)
-        return _pe_ranges_cache
-
     # 构建中文名 -> IndustryType 的映射
     name_to_type = {t.value: t for t in IndustryType}
 
-    # 解析 YAML 内容
+    # 从 YAML 加载
     result: Dict[IndustryType, Tuple[float, float]] = {}
-    raw_ranges = raw.get("pe_ranges", {}) if isinstance(raw, dict) else {}
-
-    for name, range_list in raw_ranges.items():
-        industry_type = name_to_type.get(name)
-        if industry_type is None:
-            logger.debug(f"未知行业名: {name}，跳过")
-            continue
+    if _PERCENTILE_YAML_PATH.exists():
         try:
-            low, high = float(range_list[0]), float(range_list[1])
-            if low <= 0 or high <= 0 or low >= high:
-                logger.warning(f"行业 {name} 的PE区间不合法 [{low}, {high}]，使用默认值")
-                continue
-            result[industry_type] = (low, high)
-        except (TypeError, ValueError, IndexError) as e:
-            logger.warning(f"解析行业 {name} 的PE区间失败: {e}，使用默认值")
+            with open(_PERCENTILE_YAML_PATH, "r", encoding="utf-8") as f:
+                raw = yaml.safe_load(f)
+            for name, industry_data in raw.items():
+                industry_type = name_to_type.get(name)
+                if industry_type is None or not isinstance(industry_data, dict):
+                    continue
+                pe_range = industry_data.get("pe_range")
+                if pe_range is not None and len(pe_range) == 2:
+                    low, high = float(pe_range[0]), float(pe_range[1])
+                    if low > 0 and high > 0 and low < high:
+                        result[industry_type] = (low, high)
+                        continue
+                logger.debug(f"行业 {name} 的 pe_range 不合法或不存在，使用默认值")
+        except Exception as e:
+            logger.warning(f"加载行业 PE 区间失败: {e}，使用默认值")
 
     # 未配置的行业使用默认值
     for t in IndustryType:
@@ -528,7 +444,7 @@ def load_pe_ranges() -> Dict[IndustryType, Tuple[float, float]]:
             result[t] = _DEFAULT_PE_RANGES.get(t, (10, 30))
 
     _pe_ranges_cache = result
-    logger.debug(f"已加载 {len(result)} 个行业的PE区间配置")
+    logger.debug(f"已从 JSON 加载 {len(result)} 个行业的 PE 区间配置")
     return result
 
 
@@ -548,9 +464,9 @@ def get_industry_pe_range(industry_type: IndustryType) -> Tuple[float, float]:
 
 def reload_pe_config() -> None:
     """
-    重新加载行业 PE 配置文件
+    重新加载行业 PE 配置
 
-    调用此函数可清除缓存，强制重新从 YAML 读取配置。
+    清除缓存，强制重新从 YAML 读取配置。
     适用于用户在运行时修改了配置文件后需要立即生效的场景。
     """
     global _pe_ranges_cache

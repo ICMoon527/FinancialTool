@@ -28,7 +28,6 @@ from src.core.fundamental_analysis.industry_config import (
     get_industry_pe_range,
     load_pe_ranges,
     reload_pe_config,
-    INDUSTRY_PE_CONFIG_PATH,
 )
 from src.core.fundamental_analysis.industry_percentile import (
     score_by_percentile,
@@ -53,7 +52,6 @@ __all__ = [
     "get_industry_pe_range",
     "load_pe_ranges",
     "reload_pe_config",
-    "INDUSTRY_PE_CONFIG_PATH",
     "score_by_percentile",
     "get_percentile",
     "get_percentile_info",

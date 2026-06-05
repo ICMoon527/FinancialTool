@@ -1,0 +1,253 @@
+# ============================================================
+# 行业分位数阈值 & 合理 PE 区间配置
+# ============================================================
+#
+# 评分系统中所有比率型指标的行业基准阈值，用户可手动更新。
+#
+# 【分位数格式】
+#   每个指标是一个 [P25, P50, P75] 数组：
+#     P25 - 第 25 百分位（行业中下分界线）
+#     P50 - 第 50 百分位（行业中位数）
+#     P75 - 第 75 百分位（行业中上分界线）
+#
+#   评分逻辑（以 higher_better=True 为例）：
+#     值 >= P75 → 满分
+#     P50 <= 值 < P75 → 80% 分
+#     P25 <= 值 < P50 → 50% 分
+#     值 < P25 → 20% 分
+#   higher_better=False 的指标方向相反。
+#
+# 【pe_range 格式】
+#   [下限PE, 上限PE] - 该行业合理 PE 估值区间
+#   用于"估值合理性"维度评分，取区间中值为行业平均 PE。
+#   建议每季度根据市场整体估值水平调整一次。
+#   参考数据来源：中证指数官网、同花顺行业板块估值
+#
+# 更新方式：直接修改本文件中的数值后保存即可，
+# 下次评分时自动加载最新配置。
+# ============================================================
+
+# ------------------------------------------------------------------
+# 消费/品牌（白酒、食品饮料、家电、服装等）
+# 品牌溢价和护城河支持较高 PE
+# ------------------------------------------------------------------
+消费:
+  roe: [6.0, 12.0, 19.0]
+  roa: [3.0, 7.0, 12.0]
+  net_profit_margin: [4.0, 10.0, 17.0]
+  deducted_net_profit_margin: [3.0, 8.0, 15.0]
+  gross_profit_margin: [18.0, 30.0, 45.0]
+  operating_profit_margin: [4.0, 10.0, 18.0]
+  revenue_growth_yoy: [4.0, 10.0, 18.0]
+  net_profit_growth_yoy: [4.0, 10.0, 18.0]
+  debt_to_asset_ratio: [20.0, 38.0, 55.0]
+  asset_turnover: [0.4, 0.8, 1.2]
+  equity_multiplier: [1.3, 1.8, 2.5]
+  operating_cashflow_to_revenue: [5.0, 12.0, 20.0]
+  roic: [5.0, 10.0, 16.0]
+  pb: [1.5, 3.0, 6.0]
+  pe: [12.0, 22.0, 38.0]
+  receivables_days: [15.0, 30.0, 60.0]
+  inventory_days: [60.0, 90.0, 180.0]
+  payables_days: [15.0, 30.0, 60.0]
+  pe_range: [12.0, 28.0]
+
+# ------------------------------------------------------------------
+# 医药生物（化学制药、中药、医疗器械等）
+# 增长确定性强，PE 容忍度较高
+# ------------------------------------------------------------------
+医药:
+  roe: [5.0, 10.0, 16.0]
+  roa: [2.5, 6.0, 10.0]
+  net_profit_margin: [4.0, 10.0, 18.0]
+  deducted_net_profit_margin: [3.0, 8.0, 16.0]
+  gross_profit_margin: [25.0, 45.0, 60.0]
+  operating_profit_margin: [4.0, 10.0, 19.0]
+  revenue_growth_yoy: [4.0, 10.0, 18.0]
+  net_profit_growth_yoy: [4.0, 12.0, 22.0]
+  debt_to_asset_ratio: [15.0, 32.0, 48.0]
+  asset_turnover: [0.35, 0.6, 0.9]
+  equity_multiplier: [1.2, 1.5, 2.2]
+  operating_cashflow_to_revenue: [5.0, 12.0, 20.0]
+  roic: [4.0, 9.0, 15.0]
+  pb: [2.0, 4.0, 8.0]
+  pe: [18.0, 30.0, 55.0]
+  receivables_days: [30.0, 60.0, 90.0]
+  inventory_days: [60.0, 90.0, 180.0]
+  payables_days: [15.0, 30.0, 60.0]
+  pe_range: [15.0, 35.0]
+
+# ------------------------------------------------------------------
+# TMT/科技（电子、计算机、半导体等）
+# 高增长预期驱动高估值
+# ------------------------------------------------------------------
+科技:
+  roe: [4.0, 9.0, 15.0]
+  roa: [2.0, 5.0, 10.0]
+  net_profit_margin: [3.0, 8.0, 15.0]
+  deducted_net_profit_margin: [2.0, 6.0, 13.0]
+  gross_profit_margin: [18.0, 32.0, 48.0]
+  operating_profit_margin: [3.0, 8.0, 15.0]
+  revenue_growth_yoy: [8.0, 18.0, 30.0]
+  net_profit_growth_yoy: [10.0, 20.0, 35.0]
+  debt_to_asset_ratio: [15.0, 30.0, 50.0]
+  asset_turnover: [0.3, 0.55, 0.85]
+  equity_multiplier: [1.2, 1.5, 2.5]
+  operating_cashflow_to_revenue: [3.0, 8.0, 16.0]
+  roic: [3.0, 8.0, 14.0]
+  pb: [2.0, 4.5, 9.0]
+  pe: [18.0, 40.0, 70.0]
+  receivables_days: [30.0, 60.0, 120.0]
+  inventory_days: [45.0, 90.0, 180.0]
+  payables_days: [15.0, 30.0, 60.0]
+  pe_range: [20.0, 50.0]
+
+# ------------------------------------------------------------------
+# 制造/工业（机械设备、电力设备、军工等）
+# 传统制造业 PE 偏低
+# ------------------------------------------------------------------
+制造:
+  roe: [4.5, 9.0, 15.0]
+  roa: [2.0, 5.0, 8.5]
+  net_profit_margin: [3.0, 7.0, 13.0]
+  deducted_net_profit_margin: [2.0, 6.0, 12.0]
+  gross_profit_margin: [14.0, 24.0, 35.0]
+  operating_profit_margin: [3.0, 7.0, 13.0]
+  revenue_growth_yoy: [5.0, 12.0, 20.0]
+  net_profit_growth_yoy: [5.0, 12.0, 22.0]
+  debt_to_asset_ratio: [25.0, 45.0, 60.0]
+  asset_turnover: [0.35, 0.6, 0.9]
+  equity_multiplier: [1.4, 2.0, 3.0]
+  operating_cashflow_to_revenue: [3.0, 8.0, 15.0]
+  roic: [3.0, 8.0, 14.0]
+  pb: [1.2, 2.5, 5.0]
+  pe: [10.0, 22.0, 40.0]
+  receivables_days: [30.0, 60.0, 120.0]
+  inventory_days: [45.0, 90.0, 180.0]
+  payables_days: [15.0, 30.0, 60.0]
+  pe_range: [10.0, 25.0]
+
+# ------------------------------------------------------------------
+# 资源/周期（煤炭、钢铁、有色、化工等）
+# 强周期属性，PE 在景气高点反而低
+# ------------------------------------------------------------------
+资源:
+  roe: [3.5, 8.5, 15.0]
+  roa: [2.0, 4.5, 8.5]
+  net_profit_margin: [2.5, 6.5, 12.5]
+  deducted_net_profit_margin: [2.0, 5.5, 11.0]
+  gross_profit_margin: [10.0, 20.0, 32.0]
+  operating_profit_margin: [2.5, 6.5, 12.5]
+  revenue_growth_yoy: [0.0, 8.0, 18.0]
+  net_profit_growth_yoy: [0.0, 10.0, 25.0]
+  debt_to_asset_ratio: [25.0, 45.0, 62.0]
+  asset_turnover: [0.35, 0.65, 1.0]
+  equity_multiplier: [1.5, 2.2, 3.2]
+  operating_cashflow_to_revenue: [3.0, 8.0, 16.0]
+  roic: [2.5, 6.5, 12.5]
+  pb: [0.8, 1.5, 3.0]
+  pe: [8.0, 18.0, 35.0]
+  receivables_days: [15.0, 30.0, 60.0]
+  inventory_days: [30.0, 60.0, 120.0]
+  payables_days: [15.0, 30.0, 45.0]
+  pe_range: [8.0, 20.0]
+
+# ------------------------------------------------------------------
+# 金融（银行、证券、保险等）
+# 低估值板块
+# ------------------------------------------------------------------
+金融:
+  roe: [5.0, 10.0, 14.0]
+  roa: [0.5, 1.0, 1.5]
+  net_profit_margin: [10.0, 20.0, 35.0]
+  deducted_net_profit_margin: [8.0, 18.0, 32.0]
+  gross_profit_margin: [30.0, 50.0, 70.0]
+  operating_profit_margin: [15.0, 30.0, 45.0]
+  revenue_growth_yoy: [0.0, 5.0, 12.0]
+  net_profit_growth_yoy: [0.0, 5.0, 15.0]
+  debt_to_asset_ratio: [70.0, 85.0, 92.0]
+  asset_turnover: [0.02, 0.04, 0.06]
+  equity_multiplier: [5.0, 10.0, 15.0]
+  operating_cashflow_to_revenue: [5.0, 15.0, 30.0]
+  roic: [0.5, 1.0, 1.8]
+  pb: [0.5, 1.0, 1.5]
+  pe: [5.0, 10.0, 18.0]
+  receivables_days: [30.0, 60.0, 120.0]
+  inventory_days: [45.0, 90.0, 180.0]
+  payables_days: [15.0, 30.0, 60.0]
+  pe_range: [5.0, 12.0]
+
+# ------------------------------------------------------------------
+# 地产/基建（房地产开发、建筑装饰等）
+# 低估值板块，受政策影响大
+# ------------------------------------------------------------------
+地产:
+  roe: [3.0, 8.0, 14.0]
+  roa: [1.0, 2.5, 5.0]
+  net_profit_margin: [5.0, 10.0, 18.0]
+  deducted_net_profit_margin: [3.0, 8.0, 15.0]
+  gross_profit_margin: [20.0, 30.0, 40.0]
+  operating_profit_margin: [5.0, 10.0, 18.0]
+  revenue_growth_yoy: [0.0, 5.0, 15.0]
+  net_profit_growth_yoy: [0.0, 5.0, 15.0]
+  debt_to_asset_ratio: [50.0, 70.0, 82.0]
+  asset_turnover: [0.15, 0.25, 0.35]
+  equity_multiplier: [2.5, 4.0, 6.0]
+  operating_cashflow_to_revenue: [2.0, 8.0, 18.0]
+  roic: [2.0, 5.0, 10.0]
+  pb: [0.5, 1.0, 2.0]
+  pe: [5.0, 12.0, 25.0]
+  receivables_days: [30.0, 60.0, 120.0]
+  inventory_days: [45.0, 90.0, 180.0]
+  payables_days: [15.0, 30.0, 60.0]
+  pe_range: [5.0, 15.0]
+
+# ------------------------------------------------------------------
+# 公用事业（电力、燃气、水务等）
+# 稳定低增长，PE 偏低
+# ------------------------------------------------------------------
+公用事业:
+  roe: [4.5, 7.5, 11.0]
+  roa: [2.0, 4.0, 7.0]
+  net_profit_margin: [5.0, 10.0, 18.0]
+  deducted_net_profit_margin: [4.0, 8.0, 15.0]
+  gross_profit_margin: [15.0, 25.0, 38.0]
+  operating_profit_margin: [5.0, 10.0, 18.0]
+  revenue_growth_yoy: [0.0, 5.0, 12.0]
+  net_profit_growth_yoy: [0.0, 5.0, 15.0]
+  debt_to_asset_ratio: [30.0, 50.0, 65.0]
+  asset_turnover: [0.2, 0.35, 0.55]
+  equity_multiplier: [1.5, 2.5, 3.5]
+  operating_cashflow_to_revenue: [8.0, 15.0, 25.0]
+  roic: [3.0, 6.0, 10.0]
+  pb: [0.8, 1.5, 2.5]
+  pe: [10.0, 20.0, 35.0]
+  receivables_days: [30.0, 60.0, 90.0]
+  inventory_days: [30.0, 60.0, 120.0]
+  payables_days: [15.0, 30.0, 60.0]
+  pe_range: [10.0, 25.0]
+
+# ------------------------------------------------------------------
+# 无法识别的行业
+# 保守取中间值
+# ------------------------------------------------------------------
+未知:
+  roe: [4.5, 9.0, 15.0]
+  roa: [2.0, 5.0, 9.0]
+  net_profit_margin: [3.0, 8.0, 15.0]
+  deducted_net_profit_margin: [2.0, 7.0, 13.0]
+  gross_profit_margin: [15.0, 28.0, 42.0]
+  operating_profit_margin: [3.0, 8.0, 15.0]
+  revenue_growth_yoy: [0.0, 8.0, 18.0]
+  net_profit_growth_yoy: [0.0, 10.0, 20.0]
+  debt_to_asset_ratio: [20.0, 40.0, 60.0]
+  asset_turnover: [0.25, 0.5, 0.85]
+  equity_multiplier: [1.3, 2.0, 3.0]
+  operating_cashflow_to_revenue: [3.0, 8.0, 16.0]
+  roic: [3.0, 7.0, 12.0]
+  pb: [1.0, 2.5, 6.0]
+  pe: [10.0, 22.0, 45.0]
+  receivables_days: [30.0, 60.0, 120.0]
+  inventory_days: [45.0, 90.0, 180.0]
+  payables_days: [15.0, 30.0, 60.0]
+  pe_range: [10.0, 25.0]

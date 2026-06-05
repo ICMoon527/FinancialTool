@@ -28,6 +28,7 @@ from .turnover_heat import TurnoverHeat
 from .band_bull_bear import BandBullBear
 from .macdfs import MACDFS
 from .market_escape_top import MarketEscapeTop
+from .tiandao import Tiandao
 
 __all__ = [
     "BankerControl", 
@@ -59,5 +60,6 @@ __all__ = [
     "TurnoverHeat",
     "BandBullBear",
     "MACDFS",
-    "MarketEscapeTop"
+    "MarketEscapeTop",
+    "Tiandao"
 ]
