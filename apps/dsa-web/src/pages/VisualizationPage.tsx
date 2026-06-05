@@ -39,6 +39,7 @@ const INDICATOR_OPTIONS = [
   { id: 'resonance_chase', name: '共振追涨', description: '共振追涨指标，识别共振追涨机会', color: '#AA44FF' },
   { id: 'dmi', name: 'DMI', description: '方向移动指数，显示趋势方向和强度', color: '#44AA44' },
   { id: 'tiandao', name: '天道', description: '天道做T指标 (JGZ四线版)', color: '#FFD700' },
+  { id: 'bollinger', name: '布林带', description: '布林带指标 (上轨/中轨/下轨)', color: '#FF8C00' },
 ];
 
 // 子图高度
@@ -115,6 +116,9 @@ const VisualizationPage: React.FC = () => {
     macdSignal?: string;
     expmaFast?: number;
     expmaSlow?: number;
+    bollingerUpper?: number;
+    bollingerMiddle?: number;
+    bollingerLower?: number;
   }>({});
 
   useEffect(() => {
@@ -150,6 +154,13 @@ const VisualizationPage: React.FC = () => {
   const tiandaoJinniu2SeriesRef = useRef<any>(null);
   // 存储天道数据用于十字线值查找
   const tiandaoDataRef = useRef<any>(null);
+  
+  // 布林带系列引用
+  const bollingerUpperSeriesRef = useRef<any>(null);
+  const bollingerMiddleSeriesRef = useRef<any>(null);
+  const bollingerLowerSeriesRef = useRef<any>(null);
+  // 存储布林带数据
+  const bollingerDataRef = useRef<any>(null);
   
   const klineDataRef = useRef<any>(null);
   const latestDateRef = useRef<any>(null);
@@ -738,6 +749,17 @@ const VisualizationPage: React.FC = () => {
               }
             });
             
+            // 获取布林带光标值
+            let bollingerUpper: number | undefined;
+            let bollingerMiddle: number | undefined;
+            let bollingerLower: number | undefined;
+            const bollingerPoint = bollingerDataRef.current?.data?.find((item: any) => item.date === param.time);
+            if (bollingerPoint) {
+              bollingerUpper = bollingerPoint.bollinger_upper;
+              bollingerMiddle = bollingerPoint.bollinger_middle;
+              bollingerLower = bollingerPoint.bollinger_lower;
+            }
+
             // 更新光标值，包括所有子图指标
             if (!mainTradingDataRef.current || !klineDataRef.current) {
               setCursorValues({
@@ -755,6 +777,9 @@ const VisualizationPage: React.FC = () => {
                 turnoverRatio: indicatorValues.turnoverRatio,
                 expmaFast: indicatorValues.expmaFast,
                 expmaSlow: indicatorValues.expmaSlow,
+                bollingerUpper,
+                bollingerMiddle,
+                bollingerLower,
               });
             } else {
               const dataPoint = mainTradingDataRef.current.data.find((item: any) => item.date === param.time);
@@ -822,6 +847,9 @@ const VisualizationPage: React.FC = () => {
                   macdSignal: indicatorValues.macdSignal,
                   expmaFast: indicatorValues.expmaFast,
                   expmaSlow: indicatorValues.expmaSlow,
+                  bollingerUpper,
+                  bollingerMiddle,
+                  bollingerLower,
                 });
               } else {
                 const klinePoint = klineDataRef.current.find((item: any) => item.time === param.time);
@@ -844,6 +872,9 @@ const VisualizationPage: React.FC = () => {
                   macdSignal: indicatorValues.macdSignal,
                   expmaFast: indicatorValues.expmaFast,
                   expmaSlow: indicatorValues.expmaSlow,
+                  bollingerUpper,
+                  bollingerMiddle,
+                  bollingerLower,
                 });
               }
             }
@@ -1225,6 +1256,100 @@ const VisualizationPage: React.FC = () => {
     }
   }, [selectedIndicators, visualizationData, refreshKey]);
 
+  // 5. 更新布林带系列（主图叠加）
+  useEffect(() => {
+    if (!mainChartRef.current || !visualizationData) return;
+
+    try {
+      // 清理旧的布林带系列
+      if (bollingerUpperSeriesRef.current) {
+        mainChartRef.current.removeSeries(bollingerUpperSeriesRef.current);
+        bollingerUpperSeriesRef.current = null;
+      }
+      if (bollingerMiddleSeriesRef.current) {
+        mainChartRef.current.removeSeries(bollingerMiddleSeriesRef.current);
+        bollingerMiddleSeriesRef.current = null;
+      }
+      if (bollingerLowerSeriesRef.current) {
+        mainChartRef.current.removeSeries(bollingerLowerSeriesRef.current);
+        bollingerLowerSeriesRef.current = null;
+      }
+
+      const isBollingerSelected = selectedIndicators.includes('bollinger');
+      const bollingerIndicator = visualizationData.indicators.find(
+        (ind: any) => ind.indicator_type === 'bollinger'
+      );
+
+      // 保存布林带数据到 ref
+      bollingerDataRef.current = bollingerIndicator;
+
+      if (isBollingerSelected && bollingerIndicator && bollingerIndicator.data && bollingerIndicator.data.length > 0) {
+        // 上轨（橙色实线）
+        const upperData = bollingerIndicator.data
+          .map((item: any) => ({
+            time: item.date,
+            value: item.bollinger_upper != null ? Number(item.bollinger_upper.toFixed(2)) : null,
+          }))
+          .filter((d: any) => d.value !== null && d.value !== undefined);
+
+        if (upperData.length > 0) {
+          const series = mainChartRef.current!.addSeries(lightweightCharts.LineSeries, {
+            color: '#FF8C00',
+            lineWidth: 1,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+          });
+          series.setData(upperData);
+          bollingerUpperSeriesRef.current = series;
+        }
+
+        // 中轨（白色虚线）
+        const middleData = bollingerIndicator.data
+          .map((item: any) => ({
+            time: item.date,
+            value: item.bollinger_middle != null ? Number(item.bollinger_middle.toFixed(2)) : null,
+          }))
+          .filter((d: any) => d.value !== null && d.value !== undefined);
+
+        if (middleData.length > 0) {
+          const series = mainChartRef.current!.addSeries(lightweightCharts.LineSeries, {
+            color: '#FFFFFF',
+            lineWidth: 1,
+            lineStyle: 2,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+          });
+          series.setData(middleData);
+          bollingerMiddleSeriesRef.current = series;
+        }
+
+        // 下轨（橙色实线）
+        const lowerData = bollingerIndicator.data
+          .map((item: any) => ({
+            time: item.date,
+            value: item.bollinger_lower != null ? Number(item.bollinger_lower.toFixed(2)) : null,
+          }))
+          .filter((d: any) => d.value !== null && d.value !== undefined);
+
+        if (lowerData.length > 0) {
+          const series = mainChartRef.current!.addSeries(lightweightCharts.LineSeries, {
+            color: '#FF8C00',
+            lineWidth: 1,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+          });
+          series.setData(lowerData);
+          bollingerLowerSeriesRef.current = series;
+        }
+      }
+    } catch (error) {
+      console.error('Error updating Bollinger:', error);
+    }
+  }, [selectedIndicators, visualizationData, refreshKey]);
+
   // 更新子图数据
   useEffect(() => {
     // 清理旧的子图
@@ -1297,7 +1422,7 @@ const VisualizationPage: React.FC = () => {
     const createdCharts: Array<{ id: string; chart: any }> = [];
     
     selectedIndicators.forEach(indicatorId => {
-      if (indicatorId === 'main_trading' || indicatorId === 'expma' || indicatorId === 'tiandao') return;
+      if (indicatorId === 'main_trading' || indicatorId === 'expma' || indicatorId === 'tiandao' || indicatorId === 'bollinger') return;
       
       // 成交量不需要从指标数据中获取，它直接使用K线数据
       if (indicatorId !== 'volume') {
@@ -2779,6 +2904,29 @@ const VisualizationPage: React.FC = () => {
                         )}
                       </>
                     )}
+                    {selectedIndicators.includes('bollinger') && (
+                      <>
+                        <h3 className="text-sm font-medium text-white">布林带</h3>
+                        {(cursorValues.bollingerUpper !== undefined && cursorValues.bollingerUpper !== null && !isNaN(cursorValues.bollingerUpper)) && (
+                          <div className="flex items-center gap-2">
+                            <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#FF8C00' }} />
+                            <span className="text-xs text-white">上轨: <span className="font-mono">{cursorValues.bollingerUpper.toFixed(2)}</span></span>
+                          </div>
+                        )}
+                        {(cursorValues.bollingerMiddle !== undefined && cursorValues.bollingerMiddle !== null && !isNaN(cursorValues.bollingerMiddle)) && (
+                          <div className="flex items-center gap-2">
+                            <div className="w-2 h-2 rounded-full border border-white" style={{ backgroundColor: 'transparent' }} />
+                            <span className="text-xs text-white">中轨: <span className="font-mono">{cursorValues.bollingerMiddle.toFixed(2)}</span></span>
+                          </div>
+                        )}
+                        {(cursorValues.bollingerLower !== undefined && cursorValues.bollingerLower !== null && !isNaN(cursorValues.bollingerLower)) && (
+                          <div className="flex items-center gap-2">
+                            <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#FF8C00' }} />
+                            <span className="text-xs text-white">下轨: <span className="font-mono">{cursorValues.bollingerLower.toFixed(2)}</span></span>
+                          </div>
+                        )}
+                      </>
+                    )}
                     {selectedIndicators.includes('expma') && (
                       <>
                         <h3 className="text-sm font-medium text-white">EXPMA</h3>
@@ -2879,7 +3027,7 @@ const VisualizationPage: React.FC = () => {
 
               {/* 指标子图 - 只在有数据时显示（跳过主力操盘和EXPMA，它们在主图显示） */}
               {visualizationData && selectedIndicators.map(indicatorId => {
-                if (indicatorId === 'main_trading' || indicatorId === 'expma' || indicatorId === 'tiandao') return null;
+                if (indicatorId === 'main_trading' || indicatorId === 'expma' || indicatorId === 'tiandao' || indicatorId === 'bollinger') return null;
                 
                 const indicatorData = indicatorId !== 'volume' 
                   ? visualizationData.indicators.find(ind => ind.indicator_type === indicatorId)

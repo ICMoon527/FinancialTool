@@ -31,6 +31,7 @@ from indicators.indicators.resonance_chase import ResonanceChase
 from indicators.indicators.dmi import DMI
 from indicators.indicators.macd import MACD
 from indicators.indicators.expma import EXPMA
+from indicators.indicators.bollinger import Bollinger
 from indicators.indicators.tiandao import Tiandao
 from indicators.indicators.chip_distribution import ChipDistribution
 from src.storage import DatabaseManager, get_db
@@ -167,7 +168,8 @@ AVAILABLE_INDICATORS = [
     'dmi',
     'macd',
     'expma',
-    'tiandao'
+    'tiandao',
+    'bollinger'
 ]
 
 # 指标计算器映射
@@ -183,7 +185,8 @@ INDICATOR_CALCULATORS = {
     'dmi': DMI,
     'macd': MACD,
     'expma': EXPMA,
-    'tiandao': Tiandao
+    'tiandao': Tiandao,
+    'bollinger': Bollinger
 }
 
 
@@ -470,6 +473,11 @@ class VisualizationService:
                         n3 = int(os.getenv('TIANDAO_N3', '12'))
                         n4 = int(os.getenv('TIANDAO_N4', '24'))
                         calculator = Tiandao(n=n, n1=n1, n2=n2, n3=n3, n4=n4)
+                    elif indicator_type == 'bollinger':
+                        # 从环境变量读取布林带参数
+                        n = int(os.getenv('BOLLINGER_N', '20'))
+                        k = float(os.getenv('BOLLINGER_K', '2.0'))
+                        calculator = Bollinger(n=n, k=k)
                     else:
                         calculator = calculator_class()
                     # 如果是主力成本指标且有资金流向数据，传递资金流向数据
