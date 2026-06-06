@@ -56,7 +56,6 @@ FinancialTool/
 ├── main.py                    # 主调度入口（分析管线 + 定时任务 + Web 服务）
 ├── server.py                  # FastAPI 服务入口
 ├── webui.py                   # WebUI 启动脚本
-├── watchdog_main.py           # 盘中实时监控入口
 ├── api/                       # FastAPI API 层
 │   ├── middlewares/           # 认证、错误处理中间件
 │   └── v1/
