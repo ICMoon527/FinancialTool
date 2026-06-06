@@ -87,9 +87,6 @@ class Trie:
 # 过滤规则
 # ---------------------------------------------------------------------------
 
-# ST 股票名称关键词
-_ST_KEYWORDS = ("ST", "*ST", "SST", "S*ST")
-
 # 需过滤的股票代码前缀
 _BLOCKED_CODE_PREFIXES: Tuple[str, ...] = (
     # 北交所
@@ -110,13 +107,7 @@ _BLOCKED_CODE_PREFIXES: Tuple[str, ...] = (
 
 def _is_valid_stock(name: str, code: str, _market: str) -> bool:
     """判断股票是否应该包含在搜索索引中"""
-    # 过滤 ST 股票
-    name_upper = name.upper()
-    for kw in _ST_KEYWORDS:
-        if kw in name_upper:
-            return False
-
-    # 过滤特定板块
+    # 过滤特定板块（北交所、科创板、创业板）
     for prefix in _BLOCKED_CODE_PREFIXES:
         if code.startswith(prefix):
             return False
@@ -234,10 +225,13 @@ class StockSearchIndex:
         """为单只股票生成所有索引字段"""
         from itertools import product
 
-        name_lower = name.lower()
+        # 去除名称中的空格，避免拼音生成异常（如 "生 意 宝"）
+        name_clean = name.replace(' ', '')
+        name_lower = name_clean.lower()
 
-        # 使用 heteronym=True 获取所有读音
-        all_py = pinyin(name, style=Style.TONE3, heteronym=True)
+        # 仅提取中文字符生成拼音，避免非中文前缀（如 *ST）污染拼音索引
+        chinese_chars = ''.join(re.findall(r'[\u4e00-\u9fff]+', name_clean))
+        all_py = pinyin(chinese_chars, style=Style.TONE3, heteronym=True) if chinese_chars else []
         # all_py: [['zha3ng', 'cha2ng'], ['dia4n'], ['ke1'], ['ji4']]
 
         # 主读音（每字第一个）
@@ -265,11 +259,11 @@ class StockSearchIndex:
 
         # 2-gram 切分
         trigrams: Set[str] = set()
-        for i in range(len(name) - 1):
-            trigrams.add(name[i : i + 2])
+        for i in range(len(name_clean) - 1):
+            trigrams.add(name_clean[i : i + 2])
         # 单字股名也加入
-        if len(name) == 1:
-            trigrams.add(name)
+        if len(name_clean) == 1:
+            trigrams.add(name_clean)
 
         return StockIndexEntry(
             code=code,
@@ -327,7 +321,7 @@ class StockSearchIndex:
         if not query:
             return []
 
-        limit = max(1, min(limit, 100))
+        limit = max(1, min(limit, 200))
 
         # 识别查询类型
         has_chinese = bool(re.search(r"[\u4e00-\u9fff]", query))
@@ -354,6 +348,14 @@ class StockSearchIndex:
                 self._search_by_name(query, matches)
             if is_lower_ascii or (query.isascii() and not query.isdigit()):
                 self._search_by_pinyin(query, matches)
+
+        # 特殊处理 * 前缀查询（ST 股票搜索）
+        if query.startswith('*'):
+            self._search_st_stocks(query, matches)
+
+        # 对非 * 查询，如果查询以 ST 前缀开头，同时尝试 ST 拼音匹配
+        if not query.startswith('*') and query.isascii() and query.strip():
+            self._search_st_pinyin(query, matches)
 
         # 排序：按得分降序，同分按代码升序
         sorted_indices = sorted(
@@ -476,6 +478,95 @@ class StockSearchIndex:
                     self._set_match(
                         matches, idx, 40, "pinyin_first_char_prefix", segments
                     )
+
+    # ------------------------------------------------------------------
+    # ST 股票特殊搜索
+    # ------------------------------------------------------------------
+
+    def _search_st_stocks(self, query: str, matches: Dict) -> None:
+        """处理 * 前缀查询（ST 股票搜索）
+
+        支持：
+        - *s / *st → 按名称前缀匹配 *ST 开头的股票
+        - *stbs → 剥离 ST 前缀后拼音匹配（*ST宝实 = bs）
+        """
+        # 去掉 * 后的部分
+        pinyin_part = query[1:].lower()
+
+        # 模式1：按名称前缀匹配（将 * 后的字母转为大写）
+        upper_query = '*' + query[1:].upper()
+        name_indices = self._name_trie.search_prefix(upper_query)
+        for idx in name_indices:
+            entry = self._entries[idx]
+            score = 85 + len(query)
+            segments = [{"field": "name", "start": 0, "end": len(entry.name)}]
+            self._set_match(matches, idx, score, "name_prefix", segments)
+
+        # 模式2：去掉 * 后的部分直接做拼音搜索
+        if pinyin_part:
+            self._search_by_pinyin(pinyin_part, matches)
+
+        # 模式3：剥离 *ST/SST/S*ST/ST 前缀后，用剩余拼音匹配 ST 股票
+        st_prefixes = ['s*st', 'sst', 'st']
+        stripped = pinyin_part
+        used_prefix = None
+        for prefix in st_prefixes:
+            if pinyin_part.startswith(prefix) and len(pinyin_part) > len(prefix):
+                stripped = pinyin_part[len(prefix):]
+                used_prefix = prefix
+                break
+
+        if used_prefix is not None and stripped:
+            for idx in self._sorted_by_code:
+                if idx in matches:
+                    continue
+                entry = self._entries[idx]
+                # * 前缀查询，只匹配名称以 * 开头的 ST 股票
+                if not entry.name.startswith('*'):
+                    continue
+                if entry.pinyin_initials.startswith(stripped):
+                    score = 55 + len(stripped)
+                    segments = [{"field": "name", "start": 0, "end": len(entry.name)}]
+                    self._set_match(matches, idx, score, "pinyin_initials", segments)
+
+    def _search_st_pinyin(self, query: str, matches: Dict) -> None:
+        """对不含 * 的查询，尝试剥离 ST 前缀后按拼音匹配 ST 股票
+
+        如 stjl → 剥离 st，匹配 ST京蓝(jl)
+        仅当查询以 ST 前缀开头时触发，使用较低分避免干扰正常拼音结果。
+        """
+        query_lower = query.lower()
+        st_prefixes = ['s*st', 'sst', 'st']
+        st_patterns = ['*st', 'st', 'sst', 's*st']
+
+        for prefix in st_prefixes:
+            if query_lower.startswith(prefix) and len(query_lower) > len(prefix):
+                pinyin_part = query_lower[len(prefix):]
+                for idx in self._sorted_by_code:
+                    if idx in matches:
+                        continue
+                    entry = self._entries[idx]
+                    name_lower = entry.name.lower()
+                    if not any(name_lower.startswith(p) for p in st_patterns):
+                        continue
+                    if entry.pinyin_initials.startswith(pinyin_part):
+                        score = 45 + len(pinyin_part)  # 低于拼音简拼(50+)
+                        segments = [{"field": "name", "start": 0, "end": len(entry.name)}]
+                        self._set_match(matches, idx, score, "pinyin_initials", segments)
+                break
+
+        # 若查询恰好是 st/sst 等纯 ST 前缀（无后续拼音），返回所有 ST 股票
+        if query_lower in ('st', 'sst', 's*st', '*st'):
+            for idx in self._sorted_by_code:
+                if idx in matches:
+                    continue
+                entry = self._entries[idx]
+                name_lower = entry.name.lower()
+                if any(name_lower.startswith(p) for p in st_patterns):
+                    # 以名称前缀匹配 ST 股票，得分略低于拼音全拼(60+)
+                    score = 58 + len(query_lower)
+                    segments = [{"field": "name", "start": 0, "end": len(entry.name)}]
+                    self._set_match(matches, idx, score, "name_prefix", segments)
 
     @staticmethod
     def _set_match(
