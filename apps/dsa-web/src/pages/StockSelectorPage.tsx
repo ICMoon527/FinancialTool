@@ -9,6 +9,7 @@ import type {
   StrategyMatchInfo,
   ScreenProgressStatus,
 } from '../types/stockSelector';
+import { getCachedStockSelector, setCachedStockSelector } from '../cache/stockSelectorCache';
 
 const strategyTypeBadge = (type: string) => {
   switch (type) {
@@ -423,6 +424,47 @@ const StockSelectorPage: React.FC = () => {
     };
     initPage();
   }, [fetchStrategies]);
+
+  // 从缓存恢复选股页面状态（切换页面后返回时快速恢复）
+  useEffect(() => {
+    const cached = getCachedStockSelector();
+    if (cached) {
+      console.log('[选股缓存] 从缓存恢复数据: 候选数', cached.candidates.length, '选中标的', cached.selectedStock?.stock_code);
+      if (cached.candidates.length > 0) {
+        setCandidates(cached.candidates);
+        localStorage.setItem('stockSelector_candidates', JSON.stringify(cached.candidates));
+      }
+      if (cached.selectedStock) {
+        setSelectedStock(cached.selectedStock);
+      }
+      if (cached.strategies.length > 0) {
+        setStrategies(cached.strategies);
+      }
+      if (cached.selectedStrategyIds.length > 0) {
+        setSelectedStrategyIds(cached.selectedStrategyIds);
+      }
+      if (cached.stockCodes) {
+        setStockCodes(cached.stockCodes);
+      }
+      setStrategyTypeFilter(cached.strategyTypeFilter);
+      setUpdateData(cached.updateData);
+      setUpdateRealtime(cached.updateRealtime);
+    }
+  }, []);
+
+  // 关键状态变更时自动保存到缓存
+  useEffect(() => {
+    setCachedStockSelector({
+      selectedStock,
+      candidates,
+      strategies,
+      selectedStrategyIds,
+      stockCodes,
+      strategyTypeFilter,
+      updateData,
+      updateRealtime,
+    });
+  }, [selectedStock, candidates, strategies, selectedStrategyIds, stockCodes, strategyTypeFilter, updateData, updateRealtime]);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {

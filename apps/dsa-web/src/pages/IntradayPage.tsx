@@ -311,6 +311,7 @@ const IntradayPage: React.FC = () => {
   const [crosshairKdjKValue, setCrosshairKdjKValue] = useState<number | null>(null);
   const [crosshairKdjDValue, setCrosshairKdjDValue] = useState<number | null>(null);
   const [crosshairKdjJValue, setCrosshairKdjJValue] = useState<number | null>(null);
+  const [crosshairMfiValue, setCrosshairMfiValue] = useState<number | null>(null);
   const [crosshairDeviationPct, setCrosshairDeviationPct] = useState<number | null>(null);
   const [crosshairMa5DevPct, setCrosshairMa5DevPct] = useState<number | null>(null);
   const [warmupEnabled, setWarmupEnabled] = useState(true);
@@ -1230,6 +1231,7 @@ const IntradayPage: React.FC = () => {
     setCrosshairKdjKValue(isNaN(lastK) ? null : lastK);
     setCrosshairKdjDValue(isNaN(lastD) ? null : lastD);
     setCrosshairKdjJValue(isNaN(lastJ) ? null : lastJ);
+    setCrosshairMfiValue(isNaN(lastMfi) ? null : lastMfi);
 
     // 累计到当前时间点的MACD柱高度和 / 柱高度差：使用后端metadata（与策略算法一致）
     const meta = macdMetadataRef.current;
@@ -1839,6 +1841,7 @@ const IntradayPage: React.FC = () => {
           setCrosshairKdjKValue(null);
           setCrosshairKdjDValue(null);
           setCrosshairKdjJValue(null);
+          setCrosshairMfiValue(null);
           setCrosshairDeviationPct(null);
           setCrosshairMa5DevPct(null);
         },
@@ -1969,8 +1972,8 @@ const IntradayPage: React.FC = () => {
         });
         const OVERSOLD = -2.5;
         const OVERBOUGHT = 2.5;
-        const RSI_OVERSOLD = 20;
-        const RSI_OVERBOUGHT = 65;
+        const RSI_OVERSOLD = data.rsi_oversold ?? 20;
+        const RSI_OVERBOUGHT = data.rsi_overbought ?? 65;
         const MFI_OVERSOLD = 20;
         const MFI_OVERBOUGHT = 80;
         const raw = Array.from(map.entries())
@@ -2892,8 +2895,8 @@ const IntradayPage: React.FC = () => {
       });
       const OVERSOLD = -2.5;
       const OVERBOUGHT = 2.5;
-      const RSI_OVERSOLD = 20;
-      const RSI_OVERBOUGHT = 65;
+      const RSI_OVERSOLD = data.rsi_oversold ?? 20;
+      const RSI_OVERBOUGHT = data.rsi_overbought ?? 65;
       const MFI_OVERSOLD = 20;
       const MFI_OVERBOUGHT = 80;
       const raw = Array.from(map.entries())
@@ -4518,73 +4521,117 @@ const IntradayPage: React.FC = () => {
 
             {/* 主K线图 */}
             <Card variant="default" padding="none" className="mb-2">
-              <div style={{ position: 'relative' }}>
-                <div ref={chartContainerRef} style={{ width: '100%', height: CHART_HEIGHT }} />
-                {(() => {
-                  const devPct = isCrosshairActive
-                    ? crosshairDeviationPct
-                    : (intradayData?.indicator_sub_charts
-                        ?.find((sc: any) => sc.id === 'avg_price_deviation')
-                        ?.lines?.find((l: any) => l.name === 'deviation_pct')
-                        ?.data?.slice(-1)[0]?.value ?? null);
-                  if (devPct == null) return null;
-                  const isOversold = devPct <= -2.5;
-                  const isOverbought = devPct >= 2.5;
-                  const textColor = isOverbought ? '#FF4444' : isOversold ? '#44FF44' : '#d1d4dc';
-                  return (
-                    <div
-                      style={{
-                        position: 'absolute',
-                        top: 8,
-                        left: 12,
-                        zIndex: 10,
-                        fontSize: 12,
-                        fontFamily: 'monospace',
-                        fontWeight: 600,
-                        color: textColor,
-                        backgroundColor: 'rgba(26,26,46,0.85)',
-                        padding: '2px 8px',
-                        borderRadius: 4,
-                        pointerEvents: 'none',
-                      }}
-                    >
-                      均价偏离 {devPct >= 0 ? '+' : ''}{devPct.toFixed(2)}%
+              {/* ── 标题栏：分时走势 → 均价偏离 → MA5乖离 → MFI → RSI → KDJ ── */}
+              <div className="flex items-center justify-between px-3 pt-2 pb-1">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-medium text-muted">分时走势</span>
+                  {(() => {
+                    // 均价偏离
+                    const devPct = isCrosshairActive
+                      ? crosshairDeviationPct
+                      : (intradayData?.indicator_sub_charts
+                          ?.find((sc: any) => sc.id === 'avg_price_deviation')
+                          ?.lines?.find((l: any) => l.name === 'deviation_pct')
+                          ?.data?.slice(-1)[0]?.value ?? null);
+                    if (devPct == null) return null;
+                    const isOversold = devPct <= -2.5;
+                    const isOverbought = devPct >= 2.5;
+                    const textColor = isOverbought ? '#44FF44' : isOversold ? '#FF4444' : '#d1d4dc';
+                    return (
+                      <span className="text-[10px] font-mono font-medium px-1.5 py-px rounded"
+                        style={{ color: textColor, backgroundColor: 'rgba(26,26,46,0.85)' }}>
+                        均价偏离 {devPct >= 0 ? '+' : ''}{devPct.toFixed(2)}%
+                      </span>
+                    );
+                  })()}
+                  {(() => {
+                    // MA5乖离
+                    const ma5DevPct = isCrosshairActive
+                      ? crosshairMa5DevPct
+                      : (intradayData?.indicator_sub_charts
+                          ?.find((sc: any) => sc.id === 'ma5_deviation')
+                          ?.lines?.find((l: any) => l.name === 'ma5_dev_pct')
+                          ?.data?.slice(-1)[0]?.value ?? null);
+                    if (ma5DevPct == null) return null;
+                    const ma5DevAbs = Math.abs(ma5DevPct);
+                    const ma5textColor =
+                      ma5DevAbs > 7.5 ? '#FF4444' : ma5DevAbs >= 5 ? '#FFAA00' : '#d1d4dc';
+                    return (
+                      <span className="text-[10px] font-mono font-medium px-1.5 py-px rounded"
+                        style={{ color: ma5textColor, backgroundColor: 'rgba(26,26,46,0.85)' }}>
+                        MA5乖离 {ma5DevPct >= 0 ? '+' : ''}{ma5DevPct.toFixed(2)}%
+                      </span>
+                    );
+                  })()}
+                  {(() => {
+                    // MFI
+                    const mfiSc = intradayData?.indicator_sub_charts?.find((sc: any) => sc.id === 'mfi');
+                    const ln = mfiSc?.lines?.find((l: any) => l.name === 'mfi_value');
+                    const d = ln?.data || [];
+                    const mfi = isCrosshairActive && crosshairMfiValue !== null
+                      ? crosshairMfiValue
+                      : (d.length > 0 ? d[d.length - 1].value : null);
+                    if (mfi == null) return null;
+                    const mfiObVal = intradayData?.mfi_overbought ?? 80;
+                    const mfiOsVal = intradayData?.mfi_oversold ?? 20;
+                    const mfiOb = mfi >= mfiObVal;
+                    const mfiOs = mfi <= mfiOsVal;
+                    const mfiColor = mfiOb ? '#44FF44' : mfiOs ? '#FF4444' : '#d1d4dc';
+                    return (
+                      <span className="text-[10px] font-mono font-medium px-1.5 py-px rounded"
+                        style={{ color: mfiColor, backgroundColor: 'rgba(26,26,46,0.85)' }}>
+                        MFI {mfi.toFixed(1)}{mfiOb ? ' 超买' : mfiOs ? ' 超卖' : ''}
+                      </span>
+                    );
+                  })()}
+                  {(() => {
+                    // RSI
+                    const rsiSc = intradayData?.indicator_sub_charts?.find((sc: any) => sc.id === 'rsi');
+                    const ln = rsiSc?.lines?.find((l: any) => l.name === 'RSI');
+                    const d = ln?.data || [];
+                    const rsi = isCrosshairActive && crosshairRsiValue !== null
+                      ? crosshairRsiValue
+                      : (d.length > 0 ? d[d.length - 1].value : null);
+                    if (rsi == null) return null;
+                    const rsiOb = rsi >= (intradayData?.rsi_overbought ?? 65);
+                    const rsiOs = rsi <= (intradayData?.rsi_oversold ?? 20);
+                    const rsiColor = rsiOb ? '#44FF44' : rsiOs ? '#FF4444' : '#d1d4dc';
+                    return (
+                      <span className="text-[10px] font-mono font-medium px-1.5 py-px rounded"
+                        style={{ color: rsiColor, backgroundColor: 'rgba(26,26,46,0.85)' }}>
+                        RSI {rsi.toFixed(1)}{rsiOb ? ' 超买' : rsiOs ? ' 超卖' : ''}
+                      </span>
+                    );
+                  })()}
+                  {(() => {
+                    // KDJ
+                    const kdjSc = intradayData?.indicator_sub_charts?.find((sc: any) => sc.id === 'kdj');
+                    const getKdjVal = (name: string) => {
+                      const ln = kdjSc?.lines?.find((l: any) => l.name === name);
+                      const d = ln?.data || [];
+                      return d.length > 0 ? d[d.length - 1].value : null;
+                    };
+                    const k = isCrosshairActive && crosshairKdjKValue !== null
+                      ? crosshairKdjKValue : getKdjVal('K');
+                    const kd = isCrosshairActive && crosshairKdjDValue !== null
+                      ? crosshairKdjDValue : getKdjVal('D');
+                    const kj = isCrosshairActive && crosshairKdjJValue !== null
+                      ? crosshairKdjJValue : getKdjVal('J');
+                    if (k == null) return null;
+                    const kdjOb = k > 80 && kd != null && kd > 80 && kj != null && kj > 80;
+                    const kdjOs = k < 20 && kd != null && kd < 20 && kj != null && kj < 20;
+                    const kdjColor = kdjOb ? '#44FF44' : kdjOs ? '#FF4444' : '#d1d4dc';
+                    return (
+                      <span className="text-[10px] font-mono font-medium px-1.5 py-px rounded"
+                        style={{ color: kdjColor, backgroundColor: 'rgba(26,26,46,0.85)' }}>
+                        KDJ {k.toFixed(1)}/{kd?.toFixed(1)}/{kj?.toFixed(1)}{kdjOb ? ' 超买' : kdjOs ? ' 超卖' : ''}
+                          </span>
+                        );
+                      })()}
                     </div>
-                  );
-                })()}
-                {/* MA5乖离率浮动标签 */}
-                {(() => {
-                  const ma5DevPct = isCrosshairActive
-                    ? crosshairMa5DevPct
-                    : (intradayData?.indicator_sub_charts
-                        ?.find((sc: any) => sc.id === 'ma5_deviation')
-                        ?.lines?.find((l: any) => l.name === 'ma5_dev_pct')
-                        ?.data?.slice(-1)[0]?.value ?? null);
-                  if (ma5DevPct == null) return null;
-                  const ma5DevAbs = Math.abs(ma5DevPct);
-                  const ma5textColor =
-                    ma5DevAbs > 7.5 ? '#FF4444' : ma5DevAbs >= 5 ? '#FFAA00' : '#44FF44';
-                  return (
-                    <div
-                      style={{
-                        position: 'absolute',
-                        top: 8,
-                        left: 160,
-                        zIndex: 10,
-                        fontSize: 12,
-                        fontFamily: 'monospace',
-                        fontWeight: 600,
-                        color: ma5textColor,
-                        backgroundColor: 'rgba(26,26,46,0.85)',
-                        padding: '2px 8px',
-                        borderRadius: 4,
-                        pointerEvents: 'none',
-                      }}
-                    >
-                      MA5乖离 {ma5DevPct >= 0 ? '+' : ''}{ma5DevPct.toFixed(2)}%
-                    </div>
-                  );
-                })()}
+                  </div>
+                  <div style={{ position: 'relative' }}>
+                    <div ref={chartContainerRef} style={{ width: '100%', height: CHART_HEIGHT }} />
               </div>
             </Card>
 
@@ -4638,16 +4685,42 @@ const IntradayPage: React.FC = () => {
                                   return rsiData.length > 0 ? rsiData[rsiData.length - 1].value : null;
                                 })();
                             if (displayRsi == null) return null;
+                            const isRsiOb = displayRsi >= rsiOb;
+                            const isRsiOs = displayRsi <= rsiOs;
                             return (
                               <span
                                 className="text-[10px] font-mono font-medium px-1.5 py-px rounded"
                                 style={{
-                                  color: displayRsi >= rsiOb ? '#FF4444' : displayRsi <= rsiOs ? '#44FF44' : '#888888',
-                                  backgroundColor: displayRsi >= rsiOb ? 'rgba(255,68,68,0.1)'
-                                    : displayRsi <= rsiOs ? 'rgba(68,255,68,0.1)' : 'rgba(136,136,136,0.1)',
+                                  color: isRsiOb ? '#44FF44' : isRsiOs ? '#FF4444' : '#888888',
+                                  backgroundColor: isRsiOb ? 'rgba(68,255,68,0.1)'
+                                    : isRsiOs ? 'rgba(255,68,68,0.1)' : 'rgba(136,136,136,0.1)',
                                 }}
                               >
-                                RSI {displayRsi.toFixed(1)}
+                                RSI {displayRsi.toFixed(1)}{isRsiOb ? ' 超买' : isRsiOs ? ' 超卖' : ''}
+                              </span>
+                            );
+                          })()}
+                          {sc.id === 'mfi' && (() => {
+                            const mfiObVal = intradayData?.mfi_overbought ?? 80;
+                            const mfiOsVal = intradayData?.mfi_oversold ?? 20;
+                            const mfiLine = sc.lines.find((l: any) => l.name === 'mfi_value');
+                            const mfiData = mfiLine?.data || [];
+                            const displayMfi = isCrosshairActive && crosshairMfiValue !== null
+                              ? crosshairMfiValue
+                              : (mfiData.length > 0 ? mfiData[mfiData.length - 1].value : null);
+                            if (displayMfi == null) return null;
+                            const mfiOb = displayMfi >= mfiObVal;
+                            const mfiOs = displayMfi <= mfiOsVal;
+                            return (
+                              <span
+                                className="text-[10px] font-mono font-medium px-1.5 py-px rounded"
+                                style={{
+                                  color: mfiOb ? '#44FF44' : mfiOs ? '#FF4444' : '#888888',
+                                  backgroundColor: mfiOb ? 'rgba(68,255,68,0.1)'
+                                    : mfiOs ? 'rgba(255,68,68,0.1)' : 'rgba(136,136,136,0.1)',
+                                }}
+                              >
+                                MFI {displayMfi.toFixed(1)}{mfiOb ? ' 超买' : mfiOs ? ' 超卖' : ''}
                               </span>
                             );
                           })()}

@@ -8,6 +8,7 @@ import { validateStockCode } from '../utils/validation';
 import { Card, StockSearchInput } from '../components/common';
 import { useStockPriceHistory } from '../hooks';
 import ChipDistributionChart from '../components/charts/ChipDistributionChart';
+import { getCachedVisualization, setCachedVisualization } from '../cache/visualizationCache';
 
 /** 计算成交量的 N 日简单移动平均（过滤掉不足N天的数据点） */
 function calculateVolumeMA(
@@ -272,6 +273,24 @@ const VisualizationPage: React.FC = () => {
   useEffect(() => {
     loadSearchHistory();
   }, [loadSearchHistory]);
+
+  // 从缓存恢复上次查看的标的可视化数据
+  useEffect(() => {
+    const cached = getCachedVisualization();
+    if (cached) {
+      console.log('[可视化缓存] 从缓存恢复数据:', cached.stockCode, cached.stockName);
+      setStockCode(cached.stockCode);
+      setVisualizationData(cached.visualizationData);
+      visualizationDataRef.current = cached.visualizationData;
+      setSelectedIndicators(cached.selectedIndicators);
+      setSelectedDateRange(cached.selectedDateRange);
+      setRefreshKey(prev => prev + 1);
+      // 恢复预计算的筹码分布数据
+      if (cached.visualizationData.chip_distribution) {
+        precomputedChipDistributionRef.current = cached.visualizationData.chip_distribution;
+      }
+    }
+  }, []);
 
   const searchHistoryRef = useRef<VisualizationSearchHistoryItem[]>([]);
   searchHistoryRef.current = searchHistory;
@@ -2519,6 +2538,15 @@ const VisualizationPage: React.FC = () => {
         precomputedChipDistributionRef.current = freshData.chip_distribution;
       }
 
+      // 更新可视化缓存（仅保留最近查看的一只标的）
+      setCachedVisualization({
+        stockCode: normalized,
+        stockName: response.stock_name || '',
+        visualizationData: freshData,
+        selectedIndicators,
+        selectedDateRange,
+      });
+
       // 记录股价（如果有K线数据，记录最新的收盘价）
       if (freshData.kline_data && freshData.kline_data.length > 0) {
         const latestKline = freshData.kline_data[freshData.kline_data.length - 1];
@@ -2590,6 +2618,15 @@ const VisualizationPage: React.FC = () => {
         console.log('保存预计算的筹码分布数据:', freshData.chip_distribution);
         precomputedChipDistributionRef.current = freshData.chip_distribution;
       }
+
+      // 更新可视化缓存（仅保留最近查看的一只标的）
+      setCachedVisualization({
+        stockCode: item.stock_code,
+        stockName: response.stock_name || '',
+        visualizationData: freshData,
+        selectedIndicators: filterValidIndicators(['volume', 'macd', 'main_capital_absorption', 'main_cost', 'tiandao']),
+        selectedDateRange,
+      });
 
       // 记录股价（如果有K线数据，记录最新的收盘价）
       if (freshData.kline_data && freshData.kline_data.length > 0) {
