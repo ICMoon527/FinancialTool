@@ -104,6 +104,16 @@ _BLOCKED_CODE_PREFIXES: Tuple[str, ...] = (
     "302",
 )
 
+# 大盘指数条目（code带交易所前缀）
+_INDEX_ENTRIES: List[Tuple[str, str, str]] = [
+    ("sh000001", "上证指数", "SH"),
+    ("sz399001", "深证成指", "SZ"),
+    ("sz399006", "创业板指", "SZ"),
+    ("sh000688", "科创50", "SH"),
+    ("sh000016", "上证50", "SH"),
+    ("sh000300", "沪深300", "SH"),
+]
+
 
 def _is_valid_stock(name: str, code: str, _market: str) -> bool:
     """判断股票是否应该包含在搜索索引中"""
@@ -168,16 +178,26 @@ class StockSearchIndex:
         # 从 stock_pool 表加载
         stocks = self._load_from_stock_pool()
         if not stocks:
-            logger.warning("stock_pool 表为空，搜索索引为空")
-            return 0
+            logger.warning("stock_pool 表为空，仅加载指数条目")
 
         # 逐条过滤并生成索引字段
-        for code, name, market in stocks:
-            if not _is_valid_stock(name, code, market):
-                continue
+        if stocks:
+            for code, name, market in stocks:
+                if not _is_valid_stock(name, code, market):
+                    continue
 
+                entry = self._build_entry(code, name, market)
+                self._entries.append(entry)
+
+        # 添加大盘指数条目（代码带交易所前缀，不会与个股冲突）
+        for code, name, market in _INDEX_ENTRIES:
             entry = self._build_entry(code, name, market)
             self._entries.append(entry)
+        logger.info(
+            "已加载 %d 只股票 + %d 个指数",
+            len(self._entries) - len(_INDEX_ENTRIES),
+            len(_INDEX_ENTRIES),
+        )
 
         # 构建排序列表
         self._sorted_by_code = sorted(
@@ -352,6 +372,10 @@ class StockSearchIndex:
         # 特殊处理 * 前缀查询（ST 股票搜索）
         if query.startswith('*'):
             self._search_st_stocks(query, matches)
+
+        # 对带字母的代码查询也尝试代码匹配（如 sh000001 → 上证指数）
+        if not is_digits and any(c.isdigit() for c in query):
+            self._search_by_code(query, matches)
 
         # 对非 * 查询，如果查询以 ST 前缀开头，同时尝试 ST 拼音匹配
         if not query.startswith('*') and query.isascii() and query.strip():

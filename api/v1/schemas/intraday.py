@@ -100,6 +100,8 @@ class IntradayDataResponse(BaseModel):
     stock_code: str
     stock_name: str = ""
     date: str
+    latest_price: float = Field(default=0.0, description="最新价（用于搜索历史快照回填）")
+    change_pct: float = Field(default=0.0, description="涨跌幅（用于搜索历史快照回填）")
     kline_data: List[IntradayKlinePoint] = Field(default_factory=list)
     signals: List[IntradaySignal] = Field(default_factory=list)
     reference_lines: List[ReferenceLine] = Field(default_factory=list)

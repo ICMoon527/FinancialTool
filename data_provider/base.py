@@ -16,6 +16,7 @@
 
 import logging
 import random
+import re
 import time
 from abc import ABC, abstractmethod
 from datetime import datetime, date
@@ -473,6 +474,18 @@ class DataFetcherManager:
             DataFetchError: 所有数据源都失败时抛出
         """
         from .us_index_mapping import is_us_index_code, is_us_stock_code
+
+        # 检测 A 股指数代码（如 sh000001, sz399001），直接路由到指数数据接口
+        if re.match(r'^[Ss][Hh]\d{6}$', stock_code) or re.match(r'^[Ss][Zz]\d{6}$', stock_code):
+            logger.info(f"检测到指数代码 {stock_code}，路由到 get_index_daily_data")
+            df = self.get_index_daily_data(
+                symbol=stock_code.lower(),
+                start_date=start_date,
+                end_date=end_date,
+            )
+            if df is not None and not df.empty:
+                return df, "IndexFetcher"
+            raise DataFetchError(f"指数 {stock_code} 获取失败")
 
         # Normalize code (strip SH/SZ prefix etc.)
         stock_code = normalize_stock_code(stock_code)
@@ -1088,6 +1101,15 @@ class DataFetcherManager:
                 break
         
         if valid_data is not None:
+            # 指数数据可能缺少 amount 和 pct_chg 列，计算补全
+            if 'amount' not in valid_data.columns and 'close' in valid_data.columns and 'volume' in valid_data.columns:
+                valid_data['amount'] = (valid_data['close'] * valid_data['volume']).astype(float)
+                logger.info(f"为 {symbol} 补充 amount 列（close × volume）")
+            if 'pct_chg' not in valid_data.columns and 'close' in valid_data.columns:
+                # 涨跌幅 = (今收 - 昨收) / 昨收 × 100，首条填 0
+                prev_close = valid_data['close'].shift(1)
+                valid_data['pct_chg'] = ((valid_data['close'] - prev_close) / prev_close * 100).fillna(0.0)
+                logger.info(f"为 {symbol} 补充 pct_chg 列")
             return valid_data
 
         # 所有数据源都失败了

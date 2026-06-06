@@ -6,14 +6,15 @@
 支持多数据源 fallback 机制，提高数据获取成功率。
 """
 
+import json
 import logging
 import os
+import re
 import sys
-import traceback
-import yaml
-import json
 import threading
 import time
+import traceback
+import yaml
 from datetime import datetime, timedelta, date as date_type
 from pathlib import Path
 from typing import Optional, Callable, Any, Dict
@@ -355,7 +356,7 @@ def _get_intraday_klines(stock_code: str, date_str: Optional[str] = None) -> lis
     4. 其他 akshare 分时接口
 
     Args:
-        stock_code: 股票代码（如 000001，600519）
+        stock_code: 股票代码（如 000001，600519）或指数代码（如 sh000001）
         date_str: 日期字符串 YYYYMMDD 或 YYYY-MM-DD，None 为当日
 
     Returns:
@@ -365,7 +366,12 @@ def _get_intraday_klines(stock_code: str, date_str: Optional[str] = None) -> lis
         import akshare as ak
         import requests
 
-        code = _normalize_stock_code(stock_code)
+        # 检测是否为指数代码（带 sh/sz 前缀）
+        is_index_code = bool(re.match(r'^[Ss][Hh]\d{6}$', stock_code) or re.match(r'^[Ss][Zz]\d{6}$', stock_code))
+        if is_index_code:
+            code = stock_code  # 使用完整代码（如 sh000001），跳过归一化
+        else:
+            code = _normalize_stock_code(stock_code)
 
         if date_str is not None:
             date_str = date_str.replace("-", "")
@@ -383,11 +389,17 @@ def _get_intraday_klines(stock_code: str, date_str: Optional[str] = None) -> lis
         def fetch_tencent_1min():
             import pandas as pd
 
-            market = "sh" if code.startswith("6") else "sz"
-            url = f"https://web.ifzq.gtimg.cn/appstock/app/minute/query?code={market}{code}"
+            if is_index_code:
+                # 指数代码已带前缀，直接使用
+                symbol = code
+                market_prefix = code[:2]
+            else:
+                market_prefix = "sh" if code.startswith("6") else "sz"
+                symbol = f"{market_prefix}{code}"
+            url = f"https://web.ifzq.gtimg.cn/appstock/app/minute/query?code={symbol}"
             r = requests.get(url, timeout=8)
             data = r.json()
-            stock_data = data.get("data", {}).get(f"{market}{code}", {})
+            stock_data = data.get("data", {}).get(symbol, {})
             point_list = stock_data.get("data", {}).get("data", [])
             # 尝试从腾讯响应中提取实际日期
             resp_date = stock_data.get("data", {}).get("date", "")
@@ -434,8 +446,7 @@ def _get_intraday_klines(stock_code: str, date_str: Optional[str] = None) -> lis
         def fetch_sina_5min():
             import pandas as pd
 
-            market = "sh" if code.startswith("6") else "sz"
-            symbol_str = f"{market}{code}"
+            symbol_str = code if is_index_code else f"{'sh' if code.startswith('6') else 'sz'}{code}"
             url = (
                 "https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/"
                 "CN_MarketData.getKLineData"
@@ -1700,7 +1711,13 @@ def get_intraday_data(
 ) -> IntradayDataResponse:
     """获取分时K线数据和信号"""
     try:
-        code = _normalize_stock_code(stock_code)
+        # 检测指数代码（带 sh/sz 前缀），跳过归一化
+        is_index_intraday = bool(re.match(r'^[Ss][Hh]\d{6}$', stock_code) or re.match(r'^[Ss][Zz]\d{6}$', stock_code))
+        if is_index_intraday:
+            code = stock_code  # 使用完整代码（如 sh000001）
+            logger.info(f"检测到指数代码: {code}")
+        else:
+            code = _normalize_stock_code(stock_code)
 
         # 确定查询日期
         # 原则: 如果今天非交易日或盘前(<9:30), 查询上一交易日; 否则查询今天
@@ -1825,14 +1842,13 @@ def get_intraday_data(
 
         # 运行做T策略（含引力场）
         signals, summary, precomputed_result, precomputed_engine = _run_t0_strategy(klines, reference_lines, warmup_klines)
-
-        # 生成指标子图数据（含新增价格均线和均价偏离）
-        # 从参考线中提取日线级MA5价格，用于MA5乖离率计算
         ma5_price = None
         for rl in reference_lines:
             if rl.id == 'ma5':
                 ma5_price = rl.price
                 break
+
+        # 生成指标子图数据（指数也生成）
         indicator_sub_charts = _generate_indicator_sub_charts(
             klines, warmup_klines, precomputed_result, precomputed_engine,
             ma5_price=ma5_price,
@@ -1841,13 +1857,21 @@ def get_intraday_data(
         # 构建K线响应
         kline_points = [IntradayKlinePoint(**k) for k in klines]
 
-        # 获取股票名称（优先从 Stock Pool 数据库）
-        try:
-            fetcher_manager = DataFetcherManager()
-            stock_name = fetcher_manager.get_stock_name(code, skip_realtime=True) or ""
-        except Exception as e:
-            logger.warning(f"获取股票名称失败 {code}: {e}")
-            stock_name = ""
+        # 获取股票名称（指数使用预设映射，个股从 Stock Pool 数据库）
+        _INDEX_NAME_MAP = {
+            "sh000001": "上证指数", "sz399001": "深证成指",
+            "sz399006": "创业板指", "sh000688": "科创50",
+            "sh000016": "上证50", "sh000300": "沪深300",
+        }
+        if is_index_intraday:
+            stock_name = _INDEX_NAME_MAP.get(code.lower(), code)
+        else:
+            try:
+                fetcher_manager = DataFetcherManager()
+                stock_name = fetcher_manager.get_stock_name(code, skip_realtime=True) or ""
+            except Exception as e:
+                logger.warning(f"获取股票名称失败 {code}: {e}")
+                stock_name = ""
 
         rsi_ob, rsi_os = _get_rsi_thresholds()
         mfi_ob, mfi_os = _get_mfi_thresholds()
@@ -2158,17 +2182,26 @@ def _parse_tencent_realtime_batch(stock_codes: list) -> dict:
     """
     import requests as req
 
-    symbols = []
+    # 构建代码 → 完整symbol的映射（保留原始输入代码用于结果key）
+    symbol_map = {}  # {input_code: full_symbol}
     for code in stock_codes:
         code = code.strip()
-        if code.startswith(("6", "5", "9")):
-            symbols.append(f"sh{code}")
+        code_lower = code.lower()
+        if re.match(r'^sh\d{6}$', code_lower):
+            symbol_map[code] = code_lower  # sh000001 → sh000001
+        elif re.match(r'^sz\d{6}$', code_lower):
+            symbol_map[code] = code_lower  # sz399001 → sz399001
+        elif code_lower.startswith(("6", "5", "9")):
+            symbol_map[code] = f"sh{code_lower}"
         else:
-            symbols.append(f"sz{code}")
+            symbol_map[code] = f"sz{code_lower}"
 
-    if not symbols:
+    if not symbol_map:
         return {}
 
+    symbols = list(symbol_map.values())
+    # 反向映射：完整symbol → 原始输入代码
+    symbol_to_input = {v: k for k, v in symbol_map.items()}
     url = f"http://qt.gtimg.cn/q={','.join(symbols)}"
     headers = {
         "Referer": "http://finance.qq.com",
@@ -2197,11 +2230,9 @@ def _parse_tencent_realtime_batch(stock_codes: list) -> dict:
         if code_part.startswith("v_"):
             code_part = code_part[2:]
 
-        if code_part.startswith("sh"):
-            stock_code = code_part[2:]
-        elif code_part.startswith("sz"):
-            stock_code = code_part[2:]
-        else:
+        # 将响应中的symbol映射回原始输入代码
+        stock_code = symbol_to_input.get(code_part)
+        if stock_code is None:
             continue
 
         # 提取数据
@@ -2305,18 +2336,25 @@ def _parse_sina_realtime_batch(stock_codes: list) -> dict:
     import re
     import requests as req
 
-    symbols = []
+    # 构建代码 → 完整symbol的映射（保留原始输入代码用于结果key）
+    symbol_map = {}
     for code in stock_codes:
         code = code.strip()
-        if code.startswith(("6", "5", "9")):
-            symbols.append(f"sh{code}")
+        code_lower = code.lower()
+        if re.match(r'^sh\d{6}$', code_lower):
+            symbol_map[code] = code_lower
+        elif re.match(r'^sz\d{6}$', code_lower):
+            symbol_map[code] = code_lower
+        elif code_lower.startswith(("6", "5", "9")):
+            symbol_map[code] = f"sh{code_lower}"
         else:
-            symbols.append(f"sz{code}")
+            symbol_map[code] = f"sz{code_lower}"
 
-    if not symbols:
+    if not symbol_map:
         return {}
 
-    url = f"http://hq.sinajs.cn/list={','.join(symbols)}"
+    symbol_to_input = {v: k for k, v in symbol_map.items()}
+    url = f"http://hq.sinajs.cn/list={','.join(symbol_map.values())}"
     headers = {
         "Referer": "http://finance.sina.com.cn",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -2334,13 +2372,16 @@ def _parse_sina_realtime_batch(stock_codes: list) -> dict:
     pattern = re.compile(r'var hq_str_(sh|sz)(\d+)="([^"]*)"')
     for match in pattern.finditer(text):
         prefix = match.group(1)
-        code = match.group(2)
+        numeric_code = match.group(2)
         data_str = match.group(3)
+        raw_symbol = f"{prefix}{numeric_code}"
         fields = data_str.split(",")
         if len(fields) < 33:
             continue
 
-        stock_code = code
+        stock_code = symbol_to_input.get(raw_symbol)
+        if stock_code is None:
+            continue
         try:
             name = fields[0]
             open_price = float(fields[1]) if fields[1] else 0.0
@@ -2407,7 +2448,12 @@ def get_batch_status(
         current_full_data = None
 
         if current_code and current_code in batch_results:
-            code = _normalize_stock_code(current_code)
+            # 检测指数代码，与 get_intraday_data 保持一致
+            is_index_current = bool(re.match(r'^[Ss][Hh]\d{6}$', current_code) or re.match(r'^[Ss][Zz]\d{6}$', current_code))
+            if is_index_current:
+                code = current_code  # 指数保持完整代码（如 sh000001）
+            else:
+                code = _normalize_stock_code(current_code)
             info = batch_results[current_code]
             actual_date = info["actual_date"]
             klines = info["klines"]
@@ -2439,11 +2485,19 @@ def get_batch_status(
                     sn = raw_snapshots.get(current_code, {})
                     stock_name = sn.get("stock_name", "")
                     if not stock_name:
-                        try:
-                            fetcher_manager = DataFetcherManager()
-                            stock_name = fetcher_manager.get_stock_name(code, skip_realtime=True) or ""
-                        except Exception:
-                            pass
+                        if is_index_current:
+                            _INDEX_NAME_MAP_BATCH = {
+                                "sh000001": "上证指数", "sz399001": "深证成指",
+                                "sz399006": "创业板指", "sh000688": "科创50",
+                                "sh000016": "上证50", "sh000300": "沪深300",
+                            }
+                            stock_name = _INDEX_NAME_MAP_BATCH.get(code.lower(), code)
+                        else:
+                            try:
+                                fetcher_manager = DataFetcherManager()
+                                stock_name = fetcher_manager.get_stock_name(code, skip_realtime=True) or ""
+                            except Exception:
+                                pass
 
                     rsi_ob, rsi_os = _get_rsi_thresholds()
                     mfi_ob, mfi_os = _get_mfi_thresholds()

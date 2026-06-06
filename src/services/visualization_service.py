@@ -362,7 +362,17 @@ class VisualizationService:
         
         # 获取股票名称 - 如果不需要整合实时行情，则跳过实时行情获取
         should_add = _should_add_realtime_quote(kline_data, force_update=force_update)
-        stock_name = fetcher_manager.get_stock_name(stock_code, skip_realtime=not should_add)
+        # 大盘指数名称映射（代码带 sh/sz 前缀）
+        _INDEX_NAME_MAP = {
+            "sh000001": "上证指数", "sz399001": "深证成指",
+            "sz399006": "创业板指", "sh000688": "科创50",
+            "sh000016": "上证50", "sh000300": "沪深300",
+        }
+        stock_code_lower = stock_code.lower()
+        if stock_code_lower in _INDEX_NAME_MAP:
+            stock_name = _INDEX_NAME_MAP[stock_code_lower]
+        else:
+            stock_name = fetcher_manager.get_stock_name(stock_code, skip_realtime=not should_add)
         
         # 计算指标（不保存到数据库，直接计算）
         indicators_data = []
@@ -873,10 +883,20 @@ class VisualizationService:
                     'pct_chg': sd.pct_chg
                 })
 
-            # 从 STOCK_NAME_MAP 获取股票名称，如果没有则尝试从数据管理器获取
-            from src.analyzer import STOCK_NAME_MAP
-            stock_name = STOCK_NAME_MAP.get(stock_code)
-            
+            # 大盘指数名称映射（代码带 sh/sz 前缀）
+            _INDEX_NAME_MAP = {
+                "sh000001": "上证指数", "sz399001": "深证成指",
+                "sz399006": "创业板指", "sh000688": "科创50",
+                "sh000016": "上证50", "sh000300": "沪深300",
+            }
+            stock_code_lower = stock_code.lower()
+            stock_name = _INDEX_NAME_MAP.get(stock_code_lower)
+
+            # 非指数股票，从 STOCK_NAME_MAP 获取名称
+            if not stock_name:
+                from src.analyzer import STOCK_NAME_MAP
+                stock_name = STOCK_NAME_MAP.get(stock_code)
+
             # 如果 STOCK_NAME_MAP 中没有，尝试从数据管理器获取
             if not stock_name:
                 try:
