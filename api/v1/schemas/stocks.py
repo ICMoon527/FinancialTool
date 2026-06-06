@@ -11,7 +11,7 @@
 
 from typing import Optional, List
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class StockQuote(BaseModel):
@@ -30,8 +30,7 @@ class StockQuote(BaseModel):
     amount: Optional[float] = Field(None, description="成交额（元）")
     update_time: Optional[str] = Field(None, description="更新时间")
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "stock_code": "600519",
                 "stock_name": "贵州茅台",
@@ -46,7 +45,7 @@ class StockQuote(BaseModel):
                 "amount": 18000000000,
                 "update_time": "2024-01-01T15:00:00"
             }
-        }
+        })
 
 
 class KLineData(BaseModel):
@@ -61,8 +60,7 @@ class KLineData(BaseModel):
     amount: Optional[float] = Field(None, description="成交额")
     change_percent: Optional[float] = Field(None, description="涨跌幅 (%)")
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "date": "2024-01-01",
                 "open": 1785.00,
@@ -73,7 +71,7 @@ class KLineData(BaseModel):
                 "amount": 18000000000,
                 "change_percent": 0.84
             }
-        }
+        })
 
 
 class ExtractFromImageResponse(BaseModel):
@@ -91,15 +89,14 @@ class StockHistoryResponse(BaseModel):
     period: str = Field(..., description="K 线周期")
     data: List[KLineData] = Field(default_factory=list, description="K 线数据列表")
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "stock_code": "600519",
                 "stock_name": "贵州茅台",
                 "period": "daily",
                 "data": []
             }
-        }
+        })
 
 
 class MatchSegment(BaseModel):

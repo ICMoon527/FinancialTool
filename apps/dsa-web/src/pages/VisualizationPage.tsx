@@ -81,7 +81,7 @@ const VisualizationPage: React.FC = () => {
   const [selectedHistoryId, setSelectedHistoryId] = useState<number | null>(null);
   const [historySnapshots, setHistorySnapshots] = useState<Record<string, StockSnapshot>>({});
   const [selectedIndicators, setSelectedIndicators] = useState<string[]>(
-    filterValidIndicators(['volume', 'macd', 'main_capital_absorption', 'main_cost', 'main_trading'])
+    filterValidIndicators(['volume', 'macd', 'main_capital_absorption', 'main_cost', 'tiandao'])
   );
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [selectedDateRange, setSelectedDateRange] = useState('1y');
@@ -2560,7 +2560,7 @@ const VisualizationPage: React.FC = () => {
     setStockCode(item.stock_code);
     setSelectedHistoryId(item.id);
     // 不使用历史记录中的指标，使用默认指标
-    setSelectedIndicators(filterValidIndicators(['volume', 'macd', 'main_capital_absorption', 'main_cost', 'main_trading']));
+    setSelectedIndicators(filterValidIndicators(['volume', 'macd', 'main_capital_absorption', 'main_cost', 'tiandao']));
     setSidebarOpen(false);
 
     setIsLoading(true);
@@ -2577,7 +2577,7 @@ const VisualizationPage: React.FC = () => {
       const response = await visualizationApi.getVisualizationData(
         item.stock_code,
         item.days || 3650,
-        filterValidIndicators(['volume', 'macd', 'main_capital_absorption', 'main_cost', 'main_trading']),
+        filterValidIndicators(['volume', 'macd', 'main_capital_absorption', 'main_cost', 'tiandao']),
         startDateStr
       );
       // 创建全新对象，确保React能检测到变化

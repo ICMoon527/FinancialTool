@@ -14,7 +14,7 @@ import uuid
 from datetime import datetime
 from typing import Optional, Any, Generic, TypeVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 T = TypeVar('T')
 
@@ -25,13 +25,12 @@ class RootResponse(BaseModel):
     message: str = Field(..., description="API 运行状态消息", example="Daily Stock Analysis API is running")
     version: Optional[str] = Field(None, description="API 版本", example="1.0.0")
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "message": "Daily Stock Analysis API is running",
                 "version": "1.0.0"
             }
-        }
+        })
 
 
 class HealthResponse(BaseModel):
@@ -40,13 +39,12 @@ class HealthResponse(BaseModel):
     status: str = Field(..., description="服务状态", example="ok")
     timestamp: Optional[str] = Field(None, description="时间戳")
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "status": "ok",
                 "timestamp": "2024-01-01T12:00:00"
             }
-        }
+        })
 
 
 class ApiResponseMeta(BaseModel):
@@ -56,14 +54,13 @@ class ApiResponseMeta(BaseModel):
     request_id: Optional[str] = Field(None, description="请求追踪 ID")
     api_version: str = Field("1.0.0", description="API 版本")
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "timestamp": "2024-01-01T12:00:00",
                 "request_id": "550e8400-e29b-41d4-a716-446655440000",
                 "api_version": "1.0.0"
             }
-        }
+        })
 
 
 class ApiResponse(BaseModel, Generic[T]):
@@ -74,8 +71,7 @@ class ApiResponse(BaseModel, Generic[T]):
     data: Optional[T] = Field(None, description="响应数据")
     meta: ApiResponseMeta = Field(default_factory=ApiResponseMeta, description="响应元数据")
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "code": 200,
                 "message": "success",
@@ -86,7 +82,7 @@ class ApiResponse(BaseModel, Generic[T]):
                     "api_version": "1.0.0"
                 }
             }
-        }
+        })
 
 
 class ApiError(BaseModel):
@@ -98,8 +94,7 @@ class ApiError(BaseModel):
     detail: Optional[Any] = Field(None, description="附加错误信息")
     meta: ApiResponseMeta = Field(default_factory=ApiResponseMeta, description="响应元数据")
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "code": 404,
                 "error": "not_found",
@@ -111,7 +106,7 @@ class ApiError(BaseModel):
                     "api_version": "1.0.0"
                 }
             }
-        }
+        })
 
 
 class ErrorResponse(BaseModel):
@@ -121,14 +116,13 @@ class ErrorResponse(BaseModel):
     message: str = Field(..., description="错误详情", example="请求参数错误")
     detail: Optional[Any] = Field(None, description="附加错误信息")
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "error": "not_found",
                 "message": "资源不存在",
                 "detail": None
             }
-        }
+        })
 
 
 class SuccessResponse(BaseModel):
@@ -138,14 +132,13 @@ class SuccessResponse(BaseModel):
     message: Optional[str] = Field(None, description="成功消息")
     data: Optional[Any] = Field(None, description="响应数据")
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "success": True,
                 "message": "操作成功",
                 "data": None
             }
-        }
+        })
 
 
 def success_response(

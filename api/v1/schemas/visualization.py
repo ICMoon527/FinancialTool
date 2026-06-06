@@ -10,7 +10,7 @@
 
 from typing import Optional, List, Dict, Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class VisualizationIndicatorData(BaseModel):
@@ -33,15 +33,14 @@ class VisualizationResponse(BaseModel):
     circulating_shares: Optional[float] = Field(None, description="最新流通股本")
     turnover_filled_count: int = Field(0, description="填充的历史换手率记录数")
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "stock_code": "600519",
                 "stock_name": "贵州茅台",
                 "kline_data": [],
                 "indicators": []
             }
-        }
+        })
 
 
 class VisualizationSearchHistoryItem(BaseModel):
@@ -59,12 +58,11 @@ class VisualizationSearchHistoryResponse(BaseModel):
     
     items: List[VisualizationSearchHistoryItem] = Field(default_factory=list, description="搜索历史列表")
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "items": []
             }
-        }
+        })
 
 
 class ChipDistributionResponse(BaseModel):

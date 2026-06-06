@@ -93,6 +93,20 @@ function hexToRgba(hex: string, alpha: number): string {
   return `#${rgb}${a}`;
 }
 
+/** 检测是否为指数代码（上证指数、深证成指等） */
+function isIndexCode(code: string): boolean {
+  return /^(sh000|sz399)/i.test(code);
+}
+
+/** 根据股票代码获取涨跌幅限制比例 */
+function getPriceLimitRatio(code: string): number {
+  if (isIndexCode(code)) return 0; // 指数无涨跌停限制
+  if (/^8/.test(code)) return 0.30; // 北交所 ±30%
+  if (/^688/.test(code)) return 0.20; // 科创板 ±20%
+  if (/^30/.test(code)) return 0.20; // 创业板 ±20%
+  return 0.10; // 主板 ±10%
+}
+
 /**
  * 生成完整交易日时间点（9:30-11:30, 13:00-15:00），用于锚点系列撑开时间轴
  * dateStr: "YYYY-MM-DD"
@@ -1641,9 +1655,8 @@ const IntradayPage: React.FC = () => {
       }));
       if (avgPriceData.length > 0) {
         const avgSeries = chart.addSeries(lightweightCharts.LineSeries, {
-          color: '#FF8800',
+          color: '#FFD700',
           lineWidth: 1,
-          lineStyle: 1, // dotted
           priceLineVisible: false,
           lastValueVisible: false,
           crosshairMarkerVisible: false,
@@ -1689,11 +1702,23 @@ const IntradayPage: React.FC = () => {
           const prevCloseRef = data.reference_lines.find((rl: any) => rl.id === 'prev_close');
           const prevClosePrice = prevCloseRef?.price;
           if (priceRangeEnabledRef.current && prevCloseRef && typeof prevClosePrice === 'number' && isFinite(prevClosePrice)) {
-            const rangeLow = prevClosePrice * 0.9;
-            const rangeHigh = prevClosePrice * 1.1;
-            chipOverlaps = chipUpper.price >= rangeLow && chipLower.price <= rangeHigh;
-            if (chipOverlaps) {
-              clampedUpperPrice = Math.min(chipUpperPrice, rangeHigh);
+            const limitRatio = getPriceLimitRatio(data.stock_code);
+            if (limitRatio > 0) {
+              const rangeLow = prevClosePrice * (1 - limitRatio);
+              const rangeHigh = prevClosePrice * (1 + limitRatio);
+              chipOverlaps = chipUpper.price >= rangeLow && chipLower.price <= rangeHigh;
+              if (chipOverlaps) {
+                clampedUpperPrice = Math.min(chipUpperPrice, rangeHigh);
+              }
+            } else {
+              // 指数无涨跌停限制，使用K线实际范围
+              chipOverlaps = chipUpper.price >= klineMin && chipLower.price <= klineMax;
+              if (chipOverlaps) {
+                const visibleMax = klineMax + (klineMax - klineMin) * 0.125;
+                clampedUpperPrice = Math.min(chipUpperPrice, visibleMax);
+                autoAnchorLow = klineMin;
+                autoAnchorHigh = klineMax;
+              }
             }
           } else {
             chipOverlaps = chipUpper.price >= klineMin && chipLower.price <= klineMax;
@@ -1726,7 +1751,7 @@ const IntradayPage: React.FC = () => {
         data.reference_lines.forEach((rl) => {
           const isChipLine = rl.id === 'chip_upper' || rl.id === 'chip_lower';
           if (isChipLine && !chipOverlaps) return; // 筹码区不在可见范围内，跳过该参考线
-          const ls: 0 | 1 | 2 | 3 | 4 = rl.style === 'dashed' ? 2 : (rl.style === 'dotted' ? 1 : 0);
+          const ls: 0 | 1 | 2 | 3 | 4 = 2; // 所有参考线统一使用虚线（分时均线不在此列，不受影响）
           // 将颜色 hex 转换为半透明 hex 作为标签背景色
           const labelBgColor = hexToRgba(rl.color, 0.35);
           const priceLine = refLayer.createPriceLine({
@@ -1825,13 +1850,14 @@ const IntradayPage: React.FC = () => {
         klines.map((k) => ({ time: k.time as number, value: k.close })),
       );
 
-      // ── 设置初始价格范围为昨收的±10%（受 toggle 控制）──
+      // ── 设置初始价格范围为昨收的±N%（受 toggle 控制，N 根据股票板块自动适配）──
       if (priceRangeEnabledRef.current) {
         const prevCloseRef = (data.reference_lines || []).find((rl: any) => rl.id === 'prev_close');
         const prevClose = prevCloseRef?.price;
-        if (prevCloseRef && typeof prevClose === 'number' && isFinite(prevClose) && klines.length >= 2) {
-          const ycLow = prevClose * 0.9;
-          const ycHigh = prevClose * 1.1;
+        const limitRatio = getPriceLimitRatio(data.stock_code);
+        if (limitRatio > 0 && prevCloseRef && typeof prevClose === 'number' && isFinite(prevClose) && klines.length >= 2) {
+          const ycLow = prevClose * (1 - limitRatio);
+          const ycHigh = prevClose * (1 + limitRatio);
           const firstTime = klines[0].time;
           const lastTime = klines[klines.length - 1].time;
           if (firstTime != null && lastTime != null) {
@@ -3837,7 +3863,7 @@ const IntradayPage: React.FC = () => {
               type="button"
               onClick={() => setPriceRangeEnabled((v) => !v)}
               disabled={isLoading}
-              title={priceRangeEnabled ? '昨收±10%范围已激活，点击关闭' : '自动范围，点击激活昨收±10%'}
+              title={priceRangeEnabled ? '昨收±涨跌停范围已激活，点击关闭' : '自动范围，点击激活昨收±涨跌停范围'}
               className={`text-sm border rounded-lg px-3 py-2 transition-colors flex items-center gap-1.5 ${
                 priceRangeEnabled
                   ? 'bg-cyan/15 border-cyan/40 text-cyan hover:bg-cyan/20'
@@ -3847,7 +3873,7 @@ const IntradayPage: React.FC = () => {
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
               </svg>
-              <span>{priceRangeEnabled ? '昨收±10%' : '自动范围'}</span>
+              <span>{priceRangeEnabled ? '昨收±涨跌停' : '自动范围'}</span>
             </button>
           </div>
 

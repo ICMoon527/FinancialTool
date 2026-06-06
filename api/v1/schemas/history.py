@@ -11,7 +11,7 @@
 
 from typing import Optional, List, Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class HistoryItem(BaseModel):
@@ -31,8 +31,7 @@ class HistoryItem(BaseModel):
     operation_advice: Optional[str] = Field(None, description="操作建议")
     created_at: Optional[str] = Field(None, description="创建时间")
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "id": 1234,
                 "query_id": "abc123",
@@ -43,7 +42,7 @@ class HistoryItem(BaseModel):
                 "operation_advice": "持有",
                 "created_at": "2024-01-01T12:00:00"
             }
-        }
+        })
 
 
 class HistoryListResponse(BaseModel):
@@ -54,15 +53,14 @@ class HistoryListResponse(BaseModel):
     limit: int = Field(..., description="每页数量")
     items: List[HistoryItem] = Field(default_factory=list, description="记录列表")
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "total": 100,
                 "page": 1,
                 "limit": 20,
                 "items": []
             }
-        }
+        })
 
 
 class NewsIntelItem(BaseModel):
@@ -72,14 +70,13 @@ class NewsIntelItem(BaseModel):
     snippet: str = Field("", description="新闻摘要（最多200字）")
     url: str = Field(..., description="新闻链接")
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "title": "公司发布业绩快报，营收同比增长 20%",
                 "snippet": "公司公告显示，季度营收同比增长 20%...",
                 "url": "https://example.com/news/123"
             }
-        }
+        })
 
 
 class NewsIntelResponse(BaseModel):
@@ -88,13 +85,12 @@ class NewsIntelResponse(BaseModel):
     total: int = Field(..., description="新闻条数")
     items: List[NewsIntelItem] = Field(default_factory=list, description="新闻列表")
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "total": 2,
                 "items": []
             }
-        }
+        })
 
 
 class ReportMeta(BaseModel):
@@ -150,8 +146,7 @@ class AnalysisReport(BaseModel):
     strategy: Optional[ReportStrategy] = Field(None, description="策略点位区")
     details: Optional[ReportDetails] = Field(None, description="详情区")
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "meta": {
                     "query_id": "abc123",
@@ -175,4 +170,4 @@ class AnalysisReport(BaseModel):
                 },
                 "details": None
             }
-        }
+        })

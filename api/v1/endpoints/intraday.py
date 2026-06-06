@@ -1403,6 +1403,103 @@ def _ensure_turnover_rate(daily_df, code, db_manager, end_date):
     return daily_df, True
 
 
+def _try_load_index_cache_and_generate_ref_lines(
+    ref_lines: list, code: str, klines: list, q_date, today_open: float, today_high: float, today_low: float
+):
+    """从大盘指数缓存读取日线数据，生成参考线
+
+    当数据库无日线数据时（如 sh000001/sz399001），尝试从 data/cache/ 下的
+    market_*.pkl 缓存加载日线数据，用于生成参考线。
+    """
+    import re as _re
+    import pandas as pd
+
+    # 仅处理指数代码
+    is_index = bool(_re.match(r'^[Ss][Hh]\d{6}$', code) or _re.match(r'^[Ss][Zz]\d{6}$', code))
+    if not is_index:
+        logger.debug(f"非指数代码，跳过缓存读取: {code}")
+        return
+
+    symbol = code.lower()
+    try:
+        from stock_selector.market_data_cache import MarketDataCache
+
+        cached_df = MarketDataCache.load(symbol)
+        if cached_df is None or cached_df.empty:
+            logger.debug(f"大盘指数缓存无数据: {symbol}")
+            return
+
+        logger.debug(f"从大盘指数缓存加载 {symbol} 日线数据，共 {len(cached_df)} 条")
+
+        # 转换为 ReferenceLineGenerator 需要的格式
+        df_rows = []
+        for _, row in cached_df.iterrows():
+            df_rows.append({
+                'Date': row['date'],
+                'Open': float(row['open']),
+                'High': float(row['high']),
+                'Low': float(row['low']),
+                'Close': float(row['close']),
+                'Volume': float(row['volume']),
+            })
+
+        daily_df = pd.DataFrame(df_rows)
+        daily_df['Date'] = pd.to_datetime(daily_df['Date'])
+        daily_df = daily_df.sort_values('Date').set_index('Date')
+
+        # 将当日分时数据转换为日线OHLC，追加到历史DataFrame
+        today_close = klines[-1]['Close']
+        today_vol = sum(k.get('Volume', 0) or 0 for k in klines)
+        today_row = pd.DataFrame({
+            'Open':  [today_open],
+            'High':  [today_high],
+            'Low':   [today_low],
+            'Close': [today_close],
+            'Volume': [today_vol],
+        }, index=[pd.Timestamp(q_date)])
+        daily_df = pd.concat([daily_df, today_row])
+        daily_df = daily_df.sort_index()
+
+        from watchdog.strategies.reference_line_generator import ReferenceLineGenerator
+        from api.v1.schemas.intraday import ReferenceLine
+
+        gen = ReferenceLineGenerator(daily_df)
+        daily_refs = gen.generate_all()
+
+        id_map = {
+            'attack_line': 'attack_line',
+            'trading_line': 'operation_line',
+            'defense_line': 'defense_line',
+            'ma_5': 'ma5',
+            'ma_10': 'ma10',
+            'ma_20': 'ma20',
+            'prev_close': 'prev_close',
+        }
+        skip_ids = {'previous_high_30', 'previous_low_30', 'chip_dense_upper', 'chip_dense_lower'}
+        for ref_dict in daily_refs:
+            rid = ref_dict['id']
+            if rid in skip_ids:
+                continue
+            mapped_id = id_map.get(rid, rid)
+            ref_lines.append(ReferenceLine(
+                id=mapped_id,
+                label=ref_dict['label'],
+                price=ref_dict['price'],
+                category=ref_dict['category'],
+                color=ref_dict['color'],
+                style=ref_dict['style'],
+                base_weight=ref_dict['base_weight'],
+            ))
+
+        # ── 前高/前低 30个自然日HHV/LLV ──
+        _add_30day_extreme_lines(ref_lines, daily_df, q_date, today_low, today_high)
+
+        logger.debug(f"从大盘指数缓存生成 {len(daily_refs)} 条日线级参考线: {symbol}")
+
+    except Exception as e:
+        logger.warning(f"从大盘指数缓存生成参考线失败: {symbol}, {e}", exc_info=True)
+
+
 def _compute_reference_lines(klines: list, code: str, db_manager=None, query_date: str = None) -> list:
     """计算支撑/压力参考线
 
@@ -1603,6 +1700,12 @@ def _compute_reference_lines(klines: list, code: str, db_manager=None, query_dat
 
                         # ── 前高/前低 30个自然日HHV/LLV ──
                         _add_30day_extreme_lines(ref_lines, daily_df, q_date, today_low, today_high)
+
+                else:
+                    # 数据库无足够日线数据，尝试从大盘指数缓存读取（如 sh000001/sz399001）
+                    _try_load_index_cache_and_generate_ref_lines(
+                        ref_lines, code, klines, q_date, today_open, today_high, today_low
+                    )
 
             except Exception as db_err:
                 logger.warning(f"从数据库获取日线数据失败，跳过日线级参考线: {db_err}", exc_info=True)

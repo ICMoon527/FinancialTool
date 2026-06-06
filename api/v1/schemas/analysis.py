@@ -13,7 +13,7 @@
 from typing import Optional, List, Any
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class TaskStatusEnum(str, Enum):
@@ -51,15 +51,14 @@ class AnalyzeRequest(BaseModel):
         description="是否使用异步模式"
     )
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "stock_code": "600519",
                 "report_type": "detailed",
                 "force_refresh": False,
                 "async_mode": False
             }
-        }
+        })
 
 
 class AnalysisResultResponse(BaseModel):
@@ -71,8 +70,7 @@ class AnalysisResultResponse(BaseModel):
     report: Optional[Any] = Field(None, description="分析报告")
     created_at: str = Field(..., description="创建时间")
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "query_id": "abc123def456",
                 "stock_code": "600519",
@@ -85,7 +83,7 @@ class AnalysisResultResponse(BaseModel):
                 },
                 "created_at": "2024-01-01T12:00:00"
             }
-        }
+        })
 
 
 class TaskAccepted(BaseModel):
@@ -99,14 +97,13 @@ class TaskAccepted(BaseModel):
     )
     message: Optional[str] = Field(None, description="提示信息")
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "task_id": "task_abc123",
                 "status": "pending",
                 "message": "Analysis task accepted"
             }
-        }
+        })
 
 
 class TaskStatus(BaseModel):
@@ -133,8 +130,7 @@ class TaskStatus(BaseModel):
         description="错误信息（仅在 failed 时存在）"
     )
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "task_id": "task_abc123",
                 "status": "completed",
@@ -142,7 +138,7 @@ class TaskStatus(BaseModel):
                 "result": None,
                 "error": None
             }
-        }
+        })
 
 
 class TaskInfo(BaseModel):
@@ -164,8 +160,7 @@ class TaskInfo(BaseModel):
     completed_at: Optional[str] = Field(None, description="完成时间")
     error: Optional[str] = Field(None, description="错误信息（仅在 failed 时存在）")
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "task_id": "abc123def456",
                 "stock_code": "600519",
@@ -179,7 +174,7 @@ class TaskInfo(BaseModel):
                 "completed_at": None,
                 "error": None
             }
-        }
+        })
 
 
 class TaskListResponse(BaseModel):
@@ -190,15 +185,14 @@ class TaskListResponse(BaseModel):
     processing: int = Field(..., description="处理中的任务数")
     tasks: List[TaskInfo] = Field(..., description="任务列表")
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "total": 3,
                 "pending": 1,
                 "processing": 2,
                 "tasks": []
             }
-        }
+        })
 
 
 class DuplicateTaskErrorResponse(BaseModel):
@@ -209,12 +203,11 @@ class DuplicateTaskErrorResponse(BaseModel):
     stock_code: str = Field(..., description="股票代码")
     existing_task_id: str = Field(..., description="已存在的任务 ID")
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "error": "duplicate_task",
                 "message": "股票 600519 正在分析中",
                 "stock_code": "600519",
                 "existing_task_id": "abc123def456"
             }
-        }
+        })
