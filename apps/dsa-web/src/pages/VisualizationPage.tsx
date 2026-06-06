@@ -158,6 +158,8 @@ const VisualizationPage: React.FC = () => {
   const tiandaoJinniu2SeriesRef = useRef<any>(null);
   // 存储天道数据用于十字线值查找
   const tiandaoDataRef = useRef<any>(null);
+  // 天道买入信号标记插件引用
+  const tiandaoMarkersRef = useRef<any>(null);
   
   // 布林带系列引用
   const bollingerUpperSeriesRef = useRef<any>(null);
@@ -1197,6 +1199,12 @@ const VisualizationPage: React.FC = () => {
       // 保存天道数据到 ref
       tiandaoDataRef.current = tiandaoIndicator;
 
+      // 清理旧的买入信号标记
+      if (tiandaoMarkersRef.current) {
+        tiandaoMarkersRef.current.setMarkers([]);
+        tiandaoMarkersRef.current = null;
+      }
+
       if (isTiandaoSelected && tiandaoIndicator && tiandaoIndicator.data && tiandaoIndicator.data.length > 0) {
         // td_jinzuan 金钻趋势（金色细线，核心趋势线）
         const jinzuanData = tiandaoIndicator.data
@@ -1278,6 +1286,41 @@ const VisualizationPage: React.FC = () => {
           });
           series.setData(bbiData);
           tiandaoBbiSeriesRef.current = series;
+        }
+
+        // 处理买入信号标记（td_xg 和 td_xg2）
+        if (candlestickSeriesRef.current) {
+          const markers: any[] = [];
+
+          tiandaoIndicator.data.forEach((item: any) => {
+            // td_xg: ▲买入（红色箭头，K线下方）
+            if (item.td_xg === 1) {
+              markers.push({
+                time: item.date,
+                position: 'belowBar',
+                shape: 'arrowUp',
+                color: '#FF0000',
+                text: '买入',
+                size: 1,
+              });
+            }
+            // td_xg2: ↖金钻起涨（品红色箭头，K线下方）
+            if (item.td_xg2 === 1) {
+              markers.push({
+                time: item.date,
+                position: 'belowBar',
+                shape: 'arrowUp',
+                color: '#FF00FF',
+                text: '金钻',
+                size: 1,
+              });
+            }
+          });
+
+          tiandaoMarkersRef.current = lightweightCharts.createSeriesMarkers(
+            candlestickSeriesRef.current,
+            markers,
+          );
         }
       }
     } catch (error) {
