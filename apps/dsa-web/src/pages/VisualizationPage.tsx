@@ -38,7 +38,7 @@ const INDICATOR_OPTIONS = [
   { id: 'strong_detonation', name: '强势起爆', description: '强势起爆指标，识别强势起爆阶段', color: '#AA44FF' },
   { id: 'resonance_chase', name: '共振追涨', description: '共振追涨指标，识别共振追涨机会', color: '#AA44FF' },
   { id: 'dmi', name: 'DMI', description: '方向移动指数，显示趋势方向和强度', color: '#44AA44' },
-  { id: 'tiandao', name: '天道', description: '天道做T指标 (JGZ四线版)', color: '#FFD700' },
+  { id: 'tiandao', name: '天道', description: '天道做T指标 (金牛/金钻趋势/金牛2)', color: '#FFD700' },
   { id: 'bollinger', name: '布林带', description: '布林带指标 (上轨/中轨/下轨)', color: '#FF8C00' },
 ];
 
@@ -119,6 +119,10 @@ const VisualizationPage: React.FC = () => {
     bollingerUpper?: number;
     bollingerMiddle?: number;
     bollingerLower?: number;
+    tiandaoJinzuan?: number;
+    tiandaoJinniu?: number;
+    tiandaoJinniu2?: number;
+    tiandaoBbi?: number;
   }>({});
 
   useEffect(() => {
@@ -343,6 +347,10 @@ const VisualizationPage: React.FC = () => {
       macdSignal?: string;
       expmaFast?: number;
       expmaSlow?: number;
+      tiandaoJinzuan?: number;
+      tiandaoJinniu?: number;
+      tiandaoJinniu2?: number;
+      tiandaoBbi?: number;
     } = {};
 
     const bankerData = getIndicatorDataItem('banker_control', time);
@@ -422,6 +430,14 @@ const VisualizationPage: React.FC = () => {
     if (expmaData) {
       values.expmaFast = expmaData.EXPMA_Fast;
       values.expmaSlow = expmaData.EXPMA_Slow;
+    }
+
+    const tiandaoData = getIndicatorDataItem('tiandao', time);
+    if (tiandaoData) {
+      values.tiandaoJinzuan = tiandaoData.td_jinzuan;
+      values.tiandaoJinniu = tiandaoData.td_jinniu;
+      values.tiandaoJinniu2 = tiandaoData.td_jinniu2;
+      values.tiandaoBbi = tiandaoData.td_bbi;
     }
 
     return values;
@@ -780,6 +796,10 @@ const VisualizationPage: React.FC = () => {
                 bollingerUpper,
                 bollingerMiddle,
                 bollingerLower,
+                tiandaoJinzuan: indicatorValues.tiandaoJinzuan,
+                tiandaoJinniu: indicatorValues.tiandaoJinniu,
+                tiandaoJinniu2: indicatorValues.tiandaoJinniu2,
+                tiandaoBbi: indicatorValues.tiandaoBbi,
               });
             } else {
               const dataPoint = mainTradingDataRef.current.data.find((item: any) => item.date === param.time);
@@ -850,6 +870,10 @@ const VisualizationPage: React.FC = () => {
                   bollingerUpper,
                   bollingerMiddle,
                   bollingerLower,
+                  tiandaoJinzuan: indicatorValues.tiandaoJinzuan,
+                  tiandaoJinniu: indicatorValues.tiandaoJinniu,
+                  tiandaoJinniu2: indicatorValues.tiandaoJinniu2,
+                  tiandaoBbi: indicatorValues.tiandaoBbi,
                 });
               } else {
                 const klinePoint = klineDataRef.current.find((item: any) => item.time === param.time);
@@ -875,6 +899,10 @@ const VisualizationPage: React.FC = () => {
                   bollingerUpper,
                   bollingerMiddle,
                   bollingerLower,
+                  tiandaoJinzuan: indicatorValues.tiandaoJinzuan,
+                  tiandaoJinniu: indicatorValues.tiandaoJinniu,
+                  tiandaoJinniu2: indicatorValues.tiandaoJinniu2,
+                  tiandaoBbi: indicatorValues.tiandaoBbi,
                 });
               }
             }
@@ -1180,7 +1208,7 @@ const VisualizationPage: React.FC = () => {
 
         if (jinzuanData.length > 0) {
           const series = mainChartRef.current!.addSeries(lightweightCharts.LineSeries, {
-            color: '#FFD700',
+            color: '#FF0000',
             lineWidth: 1,
             priceLineVisible: false,
             lastValueVisible: false,
@@ -1200,8 +1228,9 @@ const VisualizationPage: React.FC = () => {
 
         if (jinniuData.length > 0) {
           const series = mainChartRef.current!.addSeries(lightweightCharts.LineSeries, {
-            color: '#FF4444',
+            color: '#FFFF00',
             lineWidth: 1,
+            lineStyle: 2,
             priceLineVisible: false,
             lastValueVisible: false,
             crosshairMarkerVisible: false,
@@ -1220,7 +1249,7 @@ const VisualizationPage: React.FC = () => {
 
         if (jinniu2Data.length > 0) {
           const series = mainChartRef.current!.addSeries(lightweightCharts.LineSeries, {
-            color: '#00FF00',
+            color: '#00FFFF',
             lineWidth: 1,
             priceLineVisible: false,
             lastValueVisible: false,
@@ -1681,7 +1710,7 @@ const VisualizationPage: React.FC = () => {
           if (mainCostLineData.length > 0) {
             const mainCostLineSeries = chart.addSeries(lightweightCharts.LineSeries, {
               color: '#FF4444',
-              lineWidth: 2,
+              lineWidth: 1,
               priceLineVisible: false,
               lastValueVisible: false,
             });
@@ -2315,6 +2344,10 @@ const VisualizationPage: React.FC = () => {
                     macdSignal: indicatorValues.macdSignal,
                     expmaFast: indicatorValues.expmaFast,
                     expmaSlow: indicatorValues.expmaSlow,
+                    tiandaoJinzuan: indicatorValues.tiandaoJinzuan,
+                    tiandaoJinniu: indicatorValues.tiandaoJinniu,
+                    tiandaoJinniu2: indicatorValues.tiandaoJinniu2,
+                    tiandaoBbi: indicatorValues.tiandaoBbi,
                   });
                 } else {
                   // 即使没有主图数据，也要更新所有子图指标的值
@@ -2338,6 +2371,10 @@ const VisualizationPage: React.FC = () => {
                     macdSignal: indicatorValues.macdSignal,
                     expmaFast: indicatorValues.expmaFast,
                     expmaSlow: indicatorValues.expmaSlow,
+                    tiandaoJinzuan: indicatorValues.tiandaoJinzuan,
+                    tiandaoJinniu: indicatorValues.tiandaoJinniu,
+                    tiandaoJinniu2: indicatorValues.tiandaoJinniu2,
+                    tiandaoBbi: indicatorValues.tiandaoBbi,
                   });
                 }
               }
@@ -2904,6 +2941,35 @@ const VisualizationPage: React.FC = () => {
                         )}
                       </>
                     )}
+                    {selectedIndicators.includes('tiandao') && (
+                      <>
+                        <h3 className="text-sm font-medium text-white">天道</h3>
+                        {cursorValues.tiandaoJinzuan !== undefined && cursorValues.tiandaoJinzuan !== null && !isNaN(cursorValues.tiandaoJinzuan) && (
+                          <div className="flex items-center gap-2">
+                            <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#FF0000' }} />
+                            <span className="text-xs text-white">金钻趋势: <span className="font-mono">{cursorValues.tiandaoJinzuan.toFixed(2)}</span></span>
+                          </div>
+                        )}
+                        {cursorValues.tiandaoJinniu !== undefined && cursorValues.tiandaoJinniu !== null && !isNaN(cursorValues.tiandaoJinniu) && (
+                          <div className="flex items-center gap-2">
+                            <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#FFFF00' }} />
+                            <span className="text-xs text-white">金牛: <span className="font-mono">{cursorValues.tiandaoJinniu.toFixed(2)}</span></span>
+                          </div>
+                        )}
+                        {cursorValues.tiandaoJinniu2 !== undefined && cursorValues.tiandaoJinniu2 !== null && !isNaN(cursorValues.tiandaoJinniu2) && (
+                          <div className="flex items-center gap-2">
+                            <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#00FFFF' }} />
+                            <span className="text-xs text-white">金牛2: <span className="font-mono">{cursorValues.tiandaoJinniu2.toFixed(2)}</span></span>
+                          </div>
+                        )}
+                        {cursorValues.tiandaoBbi !== undefined && cursorValues.tiandaoBbi !== null && !isNaN(cursorValues.tiandaoBbi) && (
+                          <div className="flex items-center gap-2">
+                            <div className="w-2 h-2 rounded-full border border-white" style={{ backgroundColor: 'transparent' }} />
+                            <span className="text-xs text-white">BBI: <span className="font-mono">{cursorValues.tiandaoBbi.toFixed(2)}</span></span>
+                          </div>
+                        )}
+                      </>
+                    )}
                     {selectedIndicators.includes('bollinger') && (
                       <>
                         <h3 className="text-sm font-medium text-white">布林带</h3>
@@ -2961,27 +3027,7 @@ const VisualizationPage: React.FC = () => {
                         )}
                       </>
                     )}
-                  {selectedIndicators.includes('tiandao') && visualizationData && (
-                    <>
-                      <h3 className="text-sm font-medium text-white">天道做T</h3>
-                      <div className="flex items-center gap-2">
-                        <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#FF4444' }} />
-                        <span className="text-xs text-white">金牛</span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#FFD700' }} />
-                        <span className="text-xs text-white">金钻趋势</span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#00FF00' }} />
-                        <span className="text-xs text-white">金牛2</span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#FFFFFF' }} />
-                        <span className="text-xs text-white">BBI</span>
-                      </div>
-                    </>
-                  )}
+                  {selectedIndicators.includes('tiandao') && visualizationData && null}
                   </div>
                   <div 
                     ref={mainChartContainerRef} 

@@ -6,25 +6,35 @@ from indicators.base import BaseIndicator
 
 class Tiandao(BaseIndicator):
     """
-    天道指标 - 完整版（趋势线 + 买入信号 + 资金流 + 金钻起涨）
+    天道指标 - 通达信公式完整版（趋势线 + 买入信号 + 资金流 + 金钻起涨）
 
     该指标包含：
 
     趋势线（4条）：
-    - td_jinniu (金牛，红色): 2 * XMA²(H, n) - XMA²(L, n)，通道上轨
-    - td_jinzuan (金钻趋势，金色): 2 * XMA²(L, n) - XMA²(H, n)，核心趋势线
-    - td_jinniu2 (金牛2，绿色): EMA(金钻趋势, n)，慢速跟随线
+    - td_jinniu (金牛，黄色虚线): 2*XMA²(H,n) - XMA²(L,n)，通道上轨
+    - td_jinzuan (金钻趋势，红色粗线): 2*XMA²(L,n) - XMA²(H,n)，通道下轨
+    - td_jinniu2 (金牛2，青色粗线): EMA(金钻趋势, n)，慢速跟随线
     - td_bbi (BBI): (MA(C,3) + MA(C,6) + MA(C,12) + MA(C,24)) / 4
 
+    核心公式说明：
+    金牛 = 2*XMA(XMA(H,25),25) - XMA(XMA(L,25),25)
+    金钻趋势 = 2*XMA(XMA(L,25),25) - XMA(XMA(H,25),25)
+    金牛2 = EMA(金钻趋势, 25)
+
+    XMA 为通达信居中对称移动平均（Centered Moving Average）：
+    - 窗口中心位于 i，取 [i-h, i+h-ε] 范围的算术平均
+    - h = floor(N/2), ε = 1 - (N mod 2)
+    - 边界处窗口自动截断
+
     买入信号（2个）：
-    - td_xg (▲买入): 金钻趋势 > HIGH AND 回调买 AND L <= 金钻趋势
+    - td_xg (▲买入): 金钻趋势 > HIGH AND 回调买
     - td_xg2 (↖金钻起涨): C>O AND DY2<0.02 AND MA(C,5)>MA(C,60) AND C/REF(C,1)>=1.02 AND H<金牛
 
     资金流指标：
     - td_ddx, td_v2, td_v5, td_v10, td_v20
 
     参数：
-    - n: XMA/EMA 周期（默认 25）
+    - n: XMA/EMA 周期（默认 25），用于金牛、金钻趋势、金牛2
     - n1/n2/n3/n4: BBI 各均线周期（默认 3/6/12/24）
     """
 
@@ -41,17 +51,26 @@ class Tiandao(BaseIndicator):
     @staticmethod
     def _xma(series: pd.Series, n: int) -> pd.Series:
         """
-        通达信 XMA 偏移移动平均（纯递推实现，无未来函数）。
+        通达信 XMA 居中对称移动平均（Centered Moving Average）。
 
-        递推公式: XMA_t = (X_t + (n-1) * XMA_{t-1}) / n
-        alpha = 1/n，权重衰减慢，均线更平滑，适合捕捉中期趋势。
+        XMA(X, N) 在位置 i 的计算方式：
+        - 窗口中心位于 i，取 [i-h, i+h-ε] 范围的算术平均
+        - 其中 h = floor(N/2), ε = 1 - (N mod 2)
+        - N 为奇数时窗口左右对称，各取 (N-1)/2 个数据
+        - 边界处窗口自动截断（有多少数据取多少）
+
+        注意：XMA 使用了未来数据，尾部最后 h 根K线的值会随新数据到来而漂移。
         """
         values = series.values.astype(np.float64)
-        result = np.empty_like(values)
-        result[0] = values[0]
-        alpha = 1.0 / n
-        for i in range(1, len(values)):
-            result[i] = (1.0 - alpha) * result[i - 1] + alpha * values[i]
+        length = len(values)
+        h = n // 2
+        eps = 1 - (n % 2)  # N 奇数→0, N 偶数→1
+
+        result = np.full(length, np.nan)
+        for i in range(length):
+            left = max(0, i - h)
+            right = min(length - 1, i + h - eps)
+            result[i] = np.mean(values[left:right + 1])
         return pd.Series(result, index=series.index)
 
     @staticmethod
@@ -99,7 +118,7 @@ class Tiandao(BaseIndicator):
 
         result = data.copy()
 
-        # ========== 第一部分：四条趋势线 ==========
+        # ========== 第一部分：四条趋势线（通达信原版公式）==========
 
         # BBI: 四条均线的均值
         bbi = (
@@ -109,17 +128,17 @@ class Tiandao(BaseIndicator):
             + close.rolling(self.n4).mean()
         ) / 4.0
 
-        # 两次 XMA 平滑: XMA(XMA(price, n), n)
-        xma_high_2 = self._xma(self._xma(high, n), n)
-        xma_low_2 = self._xma(self._xma(low, n), n)
+        # 双重 XMA 平滑：XMA²(H, n) 和 XMA²(L, n)
+        xma2_high = self._xma(self._xma(high, n), n)  # XMA(XMA(H, n), n)
+        xma2_low = self._xma(self._xma(low, n), n)    # XMA(XMA(L, n), n)
 
-        # 金钻趋势: 2 * XMA²(L, n) - XMA²(H, n)
-        jinzuan = 2 * xma_low_2 - xma_high_2
+        # 金牛（上轨，黄色虚线）: 2*XMA²(H) - XMA²(L)
+        jinniu = 2 * xma2_high - xma2_low
 
-        # 金牛: 2 * XMA²(H, n) - XMA²(L, n)
-        jinniu = 2 * xma_high_2 - xma_low_2
+        # 金钻趋势（下轨，红色）: 2*XMA²(L) - XMA²(H)
+        jinzuan = 2 * xma2_low - xma2_high
 
-        # 金牛2: EMA(金钻趋势, n)
+        # 金牛2（青色，慢速跟随线）: EMA(金钻趋势, n)
         jinniu2 = jinzuan.ewm(span=n, adjust=False).mean()
 
         # ========== 第二部分：VAR23 回调买 & XG 买入信号 ==========
@@ -138,8 +157,9 @@ class Tiandao(BaseIndicator):
         cross_var23 = self._cross(var23, ma_var23_2)
         hui_diao_mai = (llv2 == llv7) & (count_neg >= 1) & cross_var23
 
-        # XG = 金钻趋势 > HIGH AND 回调买 AND L <= 金钻趋势
-        xg = (jinzuan > high) & hui_diao_mai & (low <= jinzuan)
+        # XG = 金钻趋势 > HIGH AND 回调买
+        # 注：金钻趋势 > HIGH 自然隐含 low <= HIGH < 金钻趋势，故 L <= 金钻趋势 恒成立，已省略
+        xg = (jinzuan > high) & hui_diao_mai
 
         # ========== 第三部分：DDX 资金流 ==========
 

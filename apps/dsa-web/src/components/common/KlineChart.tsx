@@ -450,7 +450,7 @@ const KlineChart: React.FC<{
           if (mainCostLineData.length > 0) {
             const mainCostLineSeries = chart.addSeries(lightweightCharts.LineSeries, {
               color: '#FF4444',
-              lineWidth: 2,
+              lineWidth: 1,
               priceLineVisible: false,
               lastValueVisible: false,
             });
