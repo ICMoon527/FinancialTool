@@ -1,14 +1,15 @@
 import type React from 'react';
-import { useEffect } from 'react';
+import { useEffect, useMemo } from 'react';
 import { useAuth, useSystemConfig } from '../hooks';
 import {
   ChangePasswordCard,
   ImageStockExtractor,
   SettingsAlert,
-  SettingsField,
+  SettingsGroup,
   SettingsLoading,
 } from '../components/settings';
 import { getCategoryDescriptionZh, getCategoryTitleZh } from '../utils/systemConfigI18n';
+import type { SystemConfigItem } from '../types/systemConfig';
 
 const SettingsPage: React.FC = () => {
   const { passwordChangeable } = useAuth();
@@ -56,6 +57,25 @@ const SettingsPage: React.FC = () => {
   }, [clearToast, toast]);
 
   const activeItems = itemsByCategory[activeCategory] || [];
+
+  // 按 group 分组当前分类下的配置项
+  const activeGroups = useMemo(() => {
+    const groupMap = new Map<string, SystemConfigItem[]>();
+    // 没有 group 的配置项归入"其他"组
+    groupMap.set('其他', []);
+    for (const item of activeItems) {
+      const group = item.schema?.group || '其他';
+      if (!groupMap.has(group)) {
+        groupMap.set(group, []);
+      }
+      groupMap.get(group)!.push(item);
+    }
+    // 移除空的"其他"组
+    if (groupMap.get('其他')!.length === 0) {
+      groupMap.delete('其他');
+    }
+    return Array.from(groupMap.entries()).map(([name, items]) => ({ name, items }));
+  }, [activeItems]);
 
   return (
     <div className="min-h-screen px-4 pb-6 pt-4 md:px-6">
@@ -180,14 +200,14 @@ const SettingsPage: React.FC = () => {
               </div>
             ) : null}
             {activeItems.length ? (
-              activeItems.map((item) => (
-                <SettingsField
-                  key={item.key}
-                  item={item}
-                  value={item.value}
+              activeGroups.map((group) => (
+                <SettingsGroup
+                  key={group.name}
+                  name={group.name}
+                  items={group.items}
+                  issueByKey={issueByKey}
                   disabled={isSaving}
                   onChange={setDraftValue}
-                  issues={issueByKey[item.key] || []}
                 />
               ))
             ) : (

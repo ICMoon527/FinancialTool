@@ -118,6 +118,7 @@ export function useSystemConfig() {
           description: '',
           displayOrder: CATEGORY_DISPLAY_ORDER[category] ?? 999,
           fields: [],
+          groups: [],
         });
       }
       categoryMap.get(category)?.fields.push(item.schema);

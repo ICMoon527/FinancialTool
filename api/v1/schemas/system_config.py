@@ -14,6 +14,7 @@ class SystemConfigFieldSchema(BaseModel):
     key: str = Field(..., description="Configuration key name")
     title: Optional[str] = Field(None, description="Display title")
     description: Optional[str] = Field(None, description="Field description")
+    group: Optional[str] = Field(None, description="Sub-group name for folding UI")
     category: Literal["home", "chat", "stock_selector", "visualization", "intraday", "backtest", "settings", "uncategorized"]
     data_type: Literal["string", "integer", "number", "boolean", "array", "json", "time"]
     ui_control: Literal["text", "password", "number", "select", "textarea", "switch", "time"]
@@ -34,6 +35,7 @@ class SystemConfigCategorySchema(BaseModel):
     description: Optional[str] = None
     display_order: int
     fields: List[SystemConfigFieldSchema]
+    groups: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class SystemConfigSchemaResponse(BaseModel):

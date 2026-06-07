@@ -2840,6 +2840,8 @@ def get_field_definition(key: str, value_hint: Optional[str] = None) -> Dict[str
     if key_upper in _FIELD_DEFINITIONS:
         field = deepcopy(_FIELD_DEFINITIONS[key_upper])
         field["key"] = key_upper
+        if "group" not in field:
+            field["group"] = _infer_group(key_upper)
         return field
 
     category = _infer_category(key_upper)
@@ -2849,6 +2851,7 @@ def get_field_definition(key: str, value_hint: Optional[str] = None) -> Dict[str
         "title": key_upper.replace("_", " ").title(),
         "description": "Auto-inferred field metadata.",
         "category": category,
+        "group": _infer_group(key_upper),
         "data_type": data_type,
         "ui_control": _infer_ui_control(data_type, key_upper),
         "is_sensitive": _is_sensitive_key(key_upper),
@@ -2863,10 +2866,10 @@ def get_field_definition(key: str, value_hint: Optional[str] = None) -> Dict[str
 
 
 def build_schema_response() -> Dict[str, Any]:
-    """Build schema payload grouped by category."""
+    """Build schema payload grouped by category, with sub-groups per category."""
     category_map: Dict[str, Dict[str, Any]] = {}
     for category in get_category_definitions():
-        category_map[category["category"]] = {**category, "fields": []}
+        category_map[category["category"]] = {**category, "fields": [], "groups": []}
 
     for key in sorted(_FIELD_DEFINITIONS.keys()):
         field = get_field_definition(key)
@@ -2878,6 +2881,15 @@ def build_schema_response() -> Dict[str, Any]:
             category["fields"],
             key=lambda item: (item.get("display_order", 9999), item["key"]),
         )
+        # 构建分组信息
+        group_sets: Dict[str, List[Dict[str, Any]]] = {}
+        for field in category["fields"]:
+            group_name = field.get("group", "其他")
+            group_sets.setdefault(group_name, []).append(field)
+        category["groups"] = [
+            {"name": name, "fields": fields, "count": len(fields)}
+            for name, fields in group_sets.items()
+        ]
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -2958,6 +2970,43 @@ def _infer_category(key: str) -> str:
         return "backtest"
     # 其余归入设置
     return "settings"
+
+
+def _infer_group(key: str) -> str:
+    """根据键名前缀推断所属分组（用于 settings 分类下的子分组）。"""
+    if key.startswith(("WECHAT_", "WECOM_")):
+        return "企业微信"
+    if key.startswith("FEISHU_"):
+        return "飞书"
+    if key.startswith("DINGTALK_"):
+        return "钉钉"
+    if key.startswith("TELEGRAM_"):
+        return "Telegram"
+    if key.startswith("DISCORD_"):
+        return "Discord"
+    if key.startswith("EMAIL_"):
+        return "邮件"
+    if key.startswith("PUSHOVER_"):
+        return "Pushover"
+    if key.startswith("PUSHPLUS_"):
+        return "PushPlus"
+    if key.startswith("SERVERCHAN3_"):
+        return "Server酱"
+    if key.startswith("CUSTOM_WEBHOOK_"):
+        return "自定义Webhook"
+    if key.startswith("ASTRBOT_"):
+        return "AstrBot"
+    if key.startswith("REDIS_"):
+        return "Redis"
+    if key.startswith("BOT_"):
+        return "机器人"
+    if key.startswith(("RETRY_", "CB_", "CACHE_", "RATE_LIMIT_", "TIMEOUT_")):
+        return "数据提供者"
+    if key.startswith("WATCHDOG_"):
+        return "监控"
+    if key.startswith("MARKDOWN_TO_IMAGE_"):
+        return "Markdown转图片"
+    return "系统运行时"
 
 
 def _infer_data_type(key: str, value_hint: Optional[str]) -> str:

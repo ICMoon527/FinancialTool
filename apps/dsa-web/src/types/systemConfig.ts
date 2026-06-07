@@ -31,6 +31,7 @@ export interface SystemConfigFieldSchema {
   title?: string;
   description?: string;
   category: SystemConfigCategory;
+  group?: string;
   dataType: SystemConfigDataType;
   uiControl: SystemConfigUIControl;
   isSensitive: boolean;
@@ -42,12 +43,19 @@ export interface SystemConfigFieldSchema {
   displayOrder: number;
 }
 
+export interface SystemConfigFieldGroup {
+  name: string;
+  fields: SystemConfigFieldSchema[];
+  count: number;
+}
+
 export interface SystemConfigCategorySchema {
   category: SystemConfigCategory;
   title: string;
   description?: string;
   displayOrder: number;
   fields: SystemConfigFieldSchema[];
+  groups: SystemConfigFieldGroup[];
 }
 
 export interface SystemConfigSchemaResponse {

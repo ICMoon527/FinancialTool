@@ -9,6 +9,7 @@ import { Card, StockSearchInput } from '../components/common';
 import { useStockPriceHistory } from '../hooks';
 import ChipDistributionChart from '../components/charts/ChipDistributionChart';
 import { getCachedVisualization, setCachedVisualization } from '../cache/visualizationCache';
+import { TiandaoBandPrimitive } from '../components/TiandaoBandPrimitive';
 
 /** 计算成交量的 N 日简单移动平均（过滤掉不足N天的数据点） */
 function calculateVolumeMA(
@@ -161,6 +162,10 @@ const VisualizationPage: React.FC = () => {
   const tiandaoDataRef = useRef<any>(null);
   // 天道买入信号标记插件引用
   const tiandaoMarkersRef = useRef<any>(null);
+  // 天道 DRAWBAND 红绿带状区域引用（ISeriesPrimitive自定义绘制）
+  const tiandaoBandPrimitiveRef = useRef<TiandaoBandPrimitive | null>(null);
+  // 天道 STICKLINE 黄色柱体引用（CandlestickSeries覆盖K线）
+  const tiandaoStickCandleRef = useRef<any>(null);
   
   // 布林带系列引用
   const bollingerUpperSeriesRef = useRef<any>(null);
@@ -1209,6 +1214,14 @@ const VisualizationPage: React.FC = () => {
         mainChartRef.current.removeSeries(tiandaoJinniu2SeriesRef.current);
         tiandaoJinniu2SeriesRef.current = null;
       }
+      if (tiandaoBandPrimitiveRef.current) {
+        candlestickSeriesRef.current?.detachPrimitive(tiandaoBandPrimitiveRef.current);
+        tiandaoBandPrimitiveRef.current = null;
+      }
+      if (tiandaoStickCandleRef.current) {
+        mainChartRef.current.removeSeries(tiandaoStickCandleRef.current);
+        tiandaoStickCandleRef.current = null;
+      }
 
       const isTiandaoSelected = selectedIndicators.includes('tiandao');
       const tiandaoIndicator = visualizationData.indicators.find(
@@ -1305,6 +1318,77 @@ const VisualizationPage: React.FC = () => {
           });
           series.setData(bbiData);
           tiandaoBbiSeriesRef.current = series;
+        }
+
+        // DRAWBAND 红绿带状区域：使用 ISeriesPrimitive 自定义绘制，只在金钻趋势和金牛2之间填充
+        const bandPrimitive = new TiandaoBandPrimitive();
+        bandPrimitive.data = tiandaoIndicator.data as any;
+        candlestickSeriesRef.current!.attachPrimitive(bandPrimitive);
+        tiandaoBandPrimitiveRef.current = bandPrimitive;
+
+        // STICKLINE 黄色柱体：使用 CandlestickSeries 直接覆盖在K线上
+        // 从 kline_data 构建 OHLC 查找表（按日期匹配）
+        const klineDateMap = new Map<string, any>();
+        if (visualizationData.kline_data) {
+          visualizationData.kline_data.forEach((kl: any) => {
+            klineDateMap.set(kl.date || kl.time, kl);
+          });
+        }
+
+        const overlayCandleData: any[] = [];
+        tiandaoIndicator.data.forEach((item: any) => {
+          const jinzuan = item.td_jinzuan != null ? Number(item.td_jinzuan) : null;
+          const kl = klineDateMap.get(item.date);
+          if (jinzuan == null || !kl) return;
+
+          const high = kl.high != null ? Number(kl.high) : (kl.High != null ? Number(kl.High) : null);
+          const low = kl.low != null ? Number(kl.low) : (kl.Low != null ? Number(kl.Low) : null);
+          const open = kl.open != null ? Number(kl.open) : (kl.Open != null ? Number(kl.Open) : null);
+          const close = kl.close != null ? Number(kl.close) : (kl.Close != null ? Number(kl.Close) : null);
+
+          if (high == null || low == null || open == null || close == null) return;
+
+          const maxOC = Math.max(open, close);
+          const minOC = Math.min(open, close);
+
+          if (jinzuan > low && jinzuan < high) {
+            // 条件1: 金钻趋势在K线范围内，黄色柱体覆盖 min(minOC, jinzuan) 到 jinzuan
+            const stickLow = Math.min(minOC, jinzuan);
+            overlayCandleData.push({
+              time: item.date,
+              open: stickLow,
+              high: jinzuan,
+              low: stickLow,
+              close: jinzuan,
+            });
+          } else if (jinzuan >= high) {
+            // 条件2: 金钻趋势突破K线上方，黄色柱体覆盖整根K线实体
+            overlayCandleData.push({
+              time: item.date,
+              open: minOC,
+              high: maxOC,
+              low: minOC,
+              close: maxOC,
+            });
+          }
+          // 不满足条件不添加数据（NaN跳过）
+          // 注意：lightweight-charts CandlestickSeries 不支持按数据点跳过，
+          // 不添加数据点即可
+        });
+
+        if (overlayCandleData.length > 0) {
+          const overlaySeries = mainChartRef.current!.addSeries(lightweightCharts.CandlestickSeries, {
+            upColor: '#FFD700',
+            downColor: '#FFD700',
+            borderUpColor: '#FFD700',
+            borderDownColor: '#FFD700',
+            wickUpColor: 'transparent',
+            wickDownColor: 'transparent',
+            priceLineVisible: false,
+            lastValueVisible: false,
+          });
+          overlaySeries.setData(overlayCandleData);
+          tiandaoStickCandleRef.current = overlaySeries;
         }
 
         // 处理买入信号标记（td_xg 和 td_xg2）
