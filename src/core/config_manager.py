@@ -12,6 +12,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
+try:
+    import yaml
+except ImportError:  # pragma: no cover
+    yaml = None
+
 from dotenv import dotenv_values
 
 _ASSIGNMENT_PATTERN = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$")
@@ -62,6 +67,12 @@ class ConfigManager:
         file_stat = self._env_path.stat()
         updated_at = datetime.fromtimestamp(file_stat.st_mtime, tz=timezone.utc)
         return updated_at.isoformat()
+
+    def get_aggregated_config_version(self) -> str:
+        """返回所有受管理配置文件的聚合版本哈希。"""
+        versions = [self.get_config_version()]
+        # YAML 文件版本将由 SystemConfigService 注册后填充
+        return hashlib.sha256("|".join(versions).encode()).hexdigest()
 
     def apply_updates(
         self,
@@ -170,3 +181,102 @@ class ConfigManager:
             return Path(env_file).resolve()
 
         return (Path(__file__).resolve().parent.parent.parent / ".env").resolve()
+
+
+class YamlConfigManager:
+    """管理 YAML 配置文件，支持扁平化键值对读写。"""
+
+    def __init__(self, yaml_path: Path):
+        self._yaml_path = yaml_path
+
+    def read_config_map(self) -> Dict[str, str]:
+        """读取 YAML 文件并返回扁平化的键值对。"""
+        if yaml is None:
+            return {}
+        if not self._yaml_path.exists():
+            return {}
+        try:
+            with open(self._yaml_path, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+            return self._flatten_dict(data)
+        except Exception:
+            return {}
+
+    def write_config_map(self, flat_map: Dict[str, str]) -> bool:
+        """将扁平化键值对写入嵌套 YAML 文件。"""
+        if yaml is None:
+            return False
+        temp_path = self._yaml_path.with_suffix(self._yaml_path.suffix + ".tmp")
+        try:
+            nested = self._unflatten_dict(flat_map)
+            if not self._yaml_path.parent.exists():
+                self._yaml_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(temp_path, "w", encoding="utf-8", newline="\n") as f:
+                yaml.safe_dump(nested, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, self._yaml_path)
+            return True
+        except Exception:
+            if temp_path.exists():
+                temp_path.unlink()
+            return False
+
+    def get_version(self) -> str:
+        """返回此 YAML 文件的版本哈希。"""
+        if not self._yaml_path.exists():
+            return "missing:0"
+        content = self._yaml_path.read_bytes()
+        file_stat = self._yaml_path.stat()
+        content_hash = hashlib.sha256(content).hexdigest()
+        return f"{file_stat.st_mtime_ns}:{content_hash}"
+
+    @staticmethod
+    def _flatten_dict(data: dict, prefix: str = "") -> Dict[str, str]:
+        """将嵌套字典扁平化为点分隔的键。"""
+        result: Dict[str, str] = {}
+        for key, value in data.items():
+            full_key = f"{prefix}.{key}" if prefix else key
+            if isinstance(value, dict):
+                result.update(YamlConfigManager._flatten_dict(value, full_key))
+            elif isinstance(value, list):
+                result[full_key] = ",".join(str(v) for v in value)
+            elif value is None:
+                result[full_key] = ""
+            else:
+                result[full_key] = str(value)
+        return result
+
+    @staticmethod
+    def _unflatten_dict(flat_map: Dict[str, str]) -> dict:
+        """将扁平点分隔键转换回嵌套字典。"""
+        result: dict = {}
+        for key, value in flat_map.items():
+            parts = key.split(".")
+            current = result
+            for i, part in enumerate(parts[:-1]):
+                if part not in current or not isinstance(current[part], dict):
+                    current[part] = {}
+                current = current[part]
+            current[parts[-1]] = YamlConfigManager._coerce_value(value)
+        return result
+
+    @staticmethod
+    def _coerce_value(value: str):
+        """将字符串值转换为适当的 Python 类型。"""
+        if not value.strip():
+            return None
+        lower = value.strip().lower()
+        if lower == "true":
+            return True
+        if lower == "false":
+            return False
+        try:
+            return int(value)
+        except ValueError:
+            pass
+        try:
+            return float(value)
+        except ValueError:
+            pass
+        return value

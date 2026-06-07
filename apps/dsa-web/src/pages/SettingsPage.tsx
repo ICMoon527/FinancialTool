@@ -33,6 +33,8 @@ const SettingsPage: React.FC = () => {
     setDraftValue,
     configVersion,
     maskToken,
+    configOutdated,
+    confirmReload,
   } = useSystemConfig();
 
   useEffect(() => {
@@ -92,6 +94,27 @@ const SettingsPage: React.FC = () => {
         ) : null}
       </header>
 
+      {configOutdated ? (
+        <div className="mb-4 rounded-2xl border border-amber-500/30 bg-amber-500/10 p-4 backdrop-blur-sm">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <svg className="w-5 h-5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z"/>
+              </svg>
+              <span className="text-sm text-amber-200">检测到配置文件已更新，点击刷新加载最新配置。</span>
+            </div>
+            <button
+              type="button"
+              className="btn-secondary text-sm"
+              onClick={() => void confirmReload()}
+              disabled={isLoading || isSaving}
+            >
+              刷新配置
+            </button>
+          </div>
+        </div>
+      ) : null}
+
       {loadError ? (
         <SettingsAlert
           title="加载设置失败"
@@ -138,7 +161,7 @@ const SettingsPage: React.FC = () => {
           </aside>
 
           <section className="space-y-3 rounded-2xl border border-white/8 bg-card/60 p-4 backdrop-blur-sm">
-            {activeCategory === 'base' ? (
+            {activeCategory === 'home' ? (
               <div className="space-y-3">
                 <ImageStockExtractor
                   stockListValue={
@@ -151,7 +174,7 @@ const SettingsPage: React.FC = () => {
                 />
               </div>
             ) : null}
-            {activeCategory === 'system' && passwordChangeable ? (
+            {activeCategory === 'settings' && passwordChangeable ? (
               <div className="space-y-3">
                 <ChangePasswordCard />
               </div>

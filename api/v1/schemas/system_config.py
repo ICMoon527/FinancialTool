@@ -14,7 +14,7 @@ class SystemConfigFieldSchema(BaseModel):
     key: str = Field(..., description="Configuration key name")
     title: Optional[str] = Field(None, description="Display title")
     description: Optional[str] = Field(None, description="Field description")
-    category: Literal["base", "data_source", "ai_model", "notification", "system", "agent", "backtest", "visualization", "uncategorized"]
+    category: Literal["home", "chat", "stock_selector", "visualization", "intraday", "backtest", "settings", "uncategorized"]
     data_type: Literal["string", "integer", "number", "boolean", "array", "json", "time"]
     ui_control: Literal["text", "password", "number", "select", "textarea", "switch", "time"]
     is_sensitive: bool
@@ -130,3 +130,10 @@ class SystemConfigConflictResponse(BaseModel):
     error: str
     message: str
     current_config_version: str
+
+
+class SystemConfigVersionResponse(BaseModel):
+    """Response schema for config version polling."""
+
+    config_version: str = Field(..., description="Aggregated config version hash")
+    updated_at: Optional[str] = Field(None, description="Last update timestamp in ISO8601 format")

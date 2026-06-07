@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { systemConfigApi, SystemConfigConflictError, SystemConfigValidationError } from '../api/systemConfig';
 import type {
   ConfigValidationIssue,
@@ -21,13 +21,13 @@ type SaveResult = {
 };
 
 const CATEGORY_DISPLAY_ORDER: Record<string, number> = {
-  base: 10,
-  ai_model: 20,
-  data_source: 30,
-  notification: 40,
-  system: 50,
-  agent: 55,
+  home: 10,
+  chat: 20,
+  stock_selector: 30,
+  visualization: 40,
+  intraday: 50,
   backtest: 60,
+  settings: 70,
   uncategorized: 99,
 };
 
@@ -74,7 +74,7 @@ export function useSystemConfig() {
 
   // UI state
   const [draftValues, setDraftValues] = useState<Record<string, string>>({});
-  const [activeCategory, setActiveCategory] = useState<string>('base');
+  const [activeCategory, setActiveCategory] = useState<string>('settings');
   const [validationIssues, setValidationIssues] = useState<ConfigValidationIssue[]>([]);
   const [toast, setToast] = useState<ToastState>(null);
 
@@ -157,6 +157,12 @@ export function useSystemConfig() {
 
   const hasDirty = dirtyKeys.length > 0;
 
+  // 配置变更检测状态
+  const [configOutdated, setConfigOutdated] = useState(false);
+  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const hasDirtyRef = useRef(hasDirty);
+  hasDirtyRef.current = hasDirty;
+
   const issueByKey = useMemo(() => {
     const map: Record<string, ConfigValidationIssue[]> = {};
     for (const issue of validationIssues) {
@@ -181,7 +187,7 @@ export function useSystemConfig() {
       }
       setDraftValues(draft);
 
-      const defaultCategory = sorted[0]?.schema?.category || 'base';
+      const defaultCategory = sorted[0]?.schema?.category || 'settings';
       setActiveCategory((current) => {
         const exists = sorted.some((item) => item.schema?.category === current);
         return exists ? current : defaultCategory;
@@ -321,6 +327,56 @@ export function useSystemConfig() {
     setToast(null);
   }, []);
 
+  // 启动/停止配置版本轮询
+  const startPolling = useCallback(() => {
+    if (pollingRef.current) {
+      return;
+    }
+
+    pollingRef.current = setInterval(async () => {
+      try {
+        const versionResp = await systemConfigApi.getConfigVersion();
+        if (versionResp.configVersion && versionResp.configVersion !== configVersion) {
+          setConfigOutdated(true);
+        }
+      } catch {
+        // 轮询失败时静默处理，不打扰用户
+      }
+    }, 30000); // 每 30 秒轮询一次
+  }, [configVersion]);
+
+  const stopPolling = useCallback(() => {
+    if (pollingRef.current) {
+      clearInterval(pollingRef.current);
+      pollingRef.current = null;
+    }
+  }, []);
+
+  // 组件挂载时启动轮询，卸载时停止
+  useEffect(() => {
+    startPolling();
+    return () => {
+      stopPolling();
+    };
+  }, [startPolling, stopPolling]);
+
+  // 重新加载配置（清除过期标记）
+  const reloadFromServer = useCallback(async () => {
+    setConfigOutdated(false);
+    await load();
+  }, [load]);
+
+  // 用户确认刷新（有未保存修改时提示）
+  const confirmReload = useCallback(() => {
+    if (hasDirtyRef.current) {
+      const confirmed = window.confirm('检测到配置文件已更新。您有未保存的修改，刷新将丢弃本地修改。是否继续？');
+      if (!confirmed) {
+        return;
+      }
+    }
+    void reloadFromServer();
+  }, [reloadFromServer]);
+
   return {
     // Server state
     configVersion,
@@ -351,5 +407,10 @@ export function useSystemConfig() {
     save,
     resetDraft,
     setDraftValue,
+
+    // 配置变更轮询
+    configOutdated,
+    reloadFromServer,
+    confirmReload,
   };
 }

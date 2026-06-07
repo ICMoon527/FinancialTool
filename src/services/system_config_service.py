@@ -5,10 +5,11 @@ from __future__ import annotations
 
 import logging
 import re
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from src.config import Config, setup_env
-from src.core.config_manager import ConfigManager
+from src.core.config_manager import ConfigManager, YamlConfigManager
 from src.core.config_registry import (
     build_schema_response,
     get_category_definitions,
@@ -17,6 +18,13 @@ from src.core.config_registry import (
 )
 
 logger = logging.getLogger(__name__)
+
+# YAML config files managed by the settings page
+_MANAGED_YAML_FILES = [
+    "config/scorer_config.yaml",
+    "config/industry_percentiles.yaml",
+    "stock_selector/backtest_config.yaml",
+]
 
 
 class ConfigValidationError(Exception):
@@ -38,17 +46,32 @@ class ConfigConflictError(Exception):
 class SystemConfigService:
     """Service layer for reading, validating, and updating runtime configuration."""
 
-    def __init__(self, manager: Optional[ConfigManager] = None):
+    def __init__(self, manager: Optional[ConfigManager] = None, yaml_managers: Optional[Dict[str, YamlConfigManager]] = None):
         self._manager = manager or ConfigManager()
+        self._yaml_managers: Dict[str, YamlConfigManager] = yaml_managers or {}
+        if not self._yaml_managers:
+            project_root = Path(__file__).resolve().parent.parent.parent
+            for yaml_rel_path in _MANAGED_YAML_FILES:
+                yaml_path = project_root / yaml_rel_path
+                if yaml_path.exists():
+                    self._yaml_managers[yaml_rel_path] = YamlConfigManager(yaml_path)
 
     def get_schema(self) -> Dict[str, Any]:
         """Return grouped schema metadata for UI rendering."""
         return build_schema_response()
 
     def get_config(self, include_schema: bool = True, mask_token: str = "******") -> Dict[str, Any]:
-        """Return current config values without server-side secret masking."""
+        """Return current config values from .env and managed YAML files."""
         config_map = self._manager.read_config_map()
         registered_keys = set(get_registered_field_keys())
+
+        # 读取 YAML 配置文件中的值
+        for yaml_path, yaml_mgr in self._yaml_managers.items():
+            yaml_map = yaml_mgr.read_config_map()
+            for yaml_key, yaml_value in yaml_map.items():
+                full_key = f"{yaml_path}:{yaml_key}"
+                config_map[full_key] = yaml_value
+
         all_keys = set(config_map.keys()) | registered_keys
 
         category_orders = {
@@ -77,16 +100,23 @@ class SystemConfigService:
 
         items.sort(
             key=lambda item: (
-                category_orders.get(schema_by_key[item["key"]].get("category", "uncategorized"), 999),
+                category_orders.get(schema_by_key[item["key"]].get("category", "settings"), 999),
                 schema_by_key[item["key"]].get("display_order", 9999),
                 item["key"],
             )
         )
 
         return {
-            "config_version": self._manager.get_config_version(),
+            "config_version": self._manager.get_aggregated_config_version(),
             "mask_token": mask_token,
             "items": items,
+            "updated_at": self._manager.get_updated_at(),
+        }
+
+    def get_config_version(self) -> Dict[str, Any]:
+        """Return aggregated config version and update timestamp."""
+        return {
+            "config_version": self._manager.get_aggregated_config_version(),
             "updated_at": self._manager.get_updated_at(),
         }
 
@@ -106,8 +136,8 @@ class SystemConfigService:
         mask_token: str = "******",
         reload_now: bool = True,
     ) -> Dict[str, Any]:
-        """Validate and persist updates into `.env`, then reload runtime config."""
-        current_version = self._manager.get_config_version()
+        """Validate and persist updates into .env and YAML files, then reload runtime config."""
+        current_version = self._manager.get_aggregated_config_version()
         if current_version != config_version:
             raise ConfigConflictError(current_version=current_version)
 
@@ -116,25 +146,54 @@ class SystemConfigService:
         if errors:
             raise ConfigValidationError(issues=errors)
 
-        updates: List[Tuple[str, str]] = []
+        # 分离 .env 更新和 YAML 更新
+        env_updates: List[Tuple[str, str]] = []
+        yaml_updates: Dict[str, Dict[str, str]] = {}  # yaml_path -> {key: value}
         sensitive_keys: Set[str] = set()
-        for item in items:
-            key = item["key"].upper()
-            value = item["value"]
-            updates.append((key, value))
-            field_schema = get_field_definition(key)
-            if bool(field_schema.get("is_sensitive", False)):
-                sensitive_keys.add(key)
 
-        updated_keys, skipped_masked_keys, new_version = self._manager.apply_updates(
-            updates=updates,
-            sensitive_keys=sensitive_keys,
-            mask_token=mask_token,
-        )
+        for item in items:
+            key = item["key"]
+            value = item["value"]
+            field_schema = get_field_definition(key)
+            is_sensitive = bool(field_schema.get("is_sensitive", False))
+
+            if ":" in key and not key.isupper():
+                # YAML config key (e.g., "config/scorer_config.yaml:scorer.min_score")
+                yaml_path, yaml_key = key.split(":", 1)
+                if yaml_path not in yaml_updates:
+                    yaml_updates[yaml_path] = {}
+                yaml_updates[yaml_path][yaml_key] = value
+            else:
+                # .env config key
+                key_upper = key.upper()
+                env_updates.append((key_upper, value))
+                if is_sensitive:
+                    sensitive_keys.add(key_upper)
+
+        # 应用 .env 更新
+        updated_keys: List[str] = []
+        skipped_masked_keys: List[str] = []
+        new_version = current_version
+
+        if env_updates:
+            updated_keys, skipped_masked_keys, new_version = self._manager.apply_updates(
+                updates=env_updates,
+                sensitive_keys=sensitive_keys,
+                mask_token=mask_token,
+            )
+
+        # 应用 YAML 更新
+        yaml_updated_count = 0
+        for yaml_path, yaml_flat_map in yaml_updates.items():
+            if yaml_path in self._yaml_managers:
+                yaml_mgr = self._yaml_managers[yaml_path]
+                if yaml_mgr.write_config_map(yaml_flat_map):
+                    yaml_updated_count += len(yaml_flat_map)
+                    updated_keys.extend([f"{yaml_path}:{k}" for k in yaml_flat_map.keys()])
 
         warnings: List[str] = []
         reload_triggered = False
-        if reload_now:
+        if reload_now and env_updates:
             try:
                 Config.reset_instance()
                 setup_env(override=True)
@@ -144,6 +203,8 @@ class SystemConfigService:
             except Exception as exc:  # pragma: no cover - defensive branch
                 logger.error("Configuration reload failed: %s", exc, exc_info=True)
                 warnings.append("Configuration updated but reload failed")
+
+        new_version = self._manager.get_aggregated_config_version()
 
         return {
             "success": True,
@@ -163,17 +224,30 @@ class SystemConfigService:
         updated_map: Dict[str, str] = {}
 
         for item in items:
-            key = item["key"].upper()
+            raw_key = item["key"]
             value = item["value"]
-            field_schema = get_field_definition(key, value)
-            is_sensitive = bool(field_schema.get("is_sensitive", False))
 
-            if is_sensitive and value == mask_token and current_map.get(key):
-                continue
+            # 判断是否为 YAML 配置键
+            is_yaml_key = ":" in raw_key and not raw_key.isupper()
 
-            updated_map[key] = value
-            effective_map[key] = value
-            issues.extend(self._validate_value(key=key, value=value, field_schema=field_schema))
+            if is_yaml_key:
+                # YAML key: 只做基本验证，不检查敏感字段和 mask_token
+                field_schema = get_field_definition(raw_key, value)
+                updated_map[raw_key] = value
+                effective_map[raw_key] = value
+                issues.extend(self._validate_value(key=raw_key, value=value, field_schema=field_schema))
+            else:
+                # .env key: 原有流程
+                key = raw_key.upper()
+                field_schema = get_field_definition(key, value)
+                is_sensitive = bool(field_schema.get("is_sensitive", False))
+
+                if is_sensitive and value == mask_token and current_map.get(key):
+                    continue
+
+                updated_map[key] = value
+                effective_map[key] = value
+                issues.extend(self._validate_value(key=key, value=value, field_schema=field_schema))
 
         issues.extend(self._validate_cross_field(effective_map=effective_map, updated_keys=set(updated_map.keys())))
         return issues

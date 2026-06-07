@@ -1,12 +1,11 @@
 export type SystemConfigCategory =
-  | 'base'
-  | 'data_source'
-  | 'ai_model'
-  | 'notification'
-  | 'system'
-  | 'agent'
-  | 'backtest'
+  | 'home'
+  | 'chat'
+  | 'stock_selector'
   | 'visualization'
+  | 'intraday'
+  | 'backtest'
+  | 'settings'
   | 'uncategorized';
 
 export type SystemConfigDataType =
@@ -121,4 +120,9 @@ export interface SystemConfigConflictResponse {
   error: string;
   message: string;
   currentConfigVersion: string;
+}
+
+export interface SystemConfigVersionResponse {
+  configVersion: string;
+  updatedAt?: string;
 }

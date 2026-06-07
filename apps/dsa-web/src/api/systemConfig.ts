@@ -5,6 +5,7 @@ import type {
   SystemConfigResponse,
   SystemConfigSchemaResponse,
   SystemConfigValidationErrorResponse,
+  SystemConfigVersionResponse,
   UpdateSystemConfigRequest,
   UpdateSystemConfigResponse,
   ValidateSystemConfigRequest,
@@ -79,6 +80,11 @@ export const systemConfigApi = {
   async getSchema(): Promise<SystemConfigSchemaResponse> {
     const response = await apiClient.get<Record<string, unknown>>('/api/v1/system/config/schema');
     return toCamelCase<SystemConfigSchemaResponse>(response.data);
+  },
+
+  async getConfigVersion(): Promise<SystemConfigVersionResponse> {
+    const response = await apiClient.get<Record<string, unknown>>('/api/v1/system/config/version');
+    return toCamelCase<SystemConfigVersionResponse>(response.data);
   },
 
   async validate(payload: ValidateSystemConfigRequest): Promise<ValidateSystemConfigResponse> {

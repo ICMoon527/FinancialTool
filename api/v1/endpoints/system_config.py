@@ -14,6 +14,7 @@ from api.v1.schemas.system_config import (
     SystemConfigResponse,
     SystemConfigSchemaResponse,
     SystemConfigValidationErrorResponse,
+    SystemConfigVersionResponse,
     UpdateSystemConfigRequest,
     UpdateSystemConfigResponse,
     ValidateSystemConfigRequest,
@@ -163,5 +164,33 @@ def get_system_config_schema(
             detail={
                 "error": "internal_error",
                 "message": "Failed to load system configuration schema",
+            },
+        )
+
+
+@router.get(
+    "/config/version",
+    response_model=SystemConfigVersionResponse,
+    responses={
+        200: {"description": "Config version retrieved"},
+        500: {"description": "Internal server error", "model": ErrorResponse},
+    },
+    summary="Get config version",
+    description="Return aggregated config version hash for polling-based change detection.",
+)
+def get_system_config_version(
+    service: SystemConfigService = Depends(get_system_config_service),
+) -> SystemConfigVersionResponse:
+    """Return current config version for frontend polling."""
+    try:
+        payload = service.get_config_version()
+        return SystemConfigVersionResponse.model_validate(payload)
+    except Exception as exc:
+        logger.error("Failed to get config version: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "internal_error",
+                "message": "Failed to get config version",
             },
         )
