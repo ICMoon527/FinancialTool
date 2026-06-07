@@ -215,11 +215,17 @@ const StockSelectorPage: React.FC = () => {
   const [isTogglingStrategy, setIsTogglingStrategy] = useState(false);
 
   const [candidates, setCandidates] = useState<StockCandidateInfo[]>(() => {
+    // 优先使用同步缓存，避免 useEffect 时序问题导致选中标的被覆盖
+    const cached = getCachedStockSelector();
+    if (cached?.candidates && cached.candidates.length > 0) return cached.candidates;
     const saved = localStorage.getItem('stockSelector_candidates');
     return saved ? JSON.parse(saved) : [];
   });
   const [screeningError, setScreeningError] = useState<string | null>(null);
-  const [selectedStock, setSelectedStock] = useState<StockCandidateInfo | null>(null);
+  const [selectedStock, setSelectedStock] = useState<StockCandidateInfo | null>(() => {
+    const cached = getCachedStockSelector();
+    return cached?.selectedStock || null;
+  });
 
   const [stockCodes, setStockCodes] = useState('');
   const [strategyTypeFilter, setStrategyTypeFilter] = useState<'ALL' | 'NATURAL_LANGUAGE' | 'PYTHON'>('ALL');
@@ -587,7 +593,13 @@ const StockSelectorPage: React.FC = () => {
 
   useEffect(() => {
     if (processedCandidates.length > 0 && (!selectedStock || !processedCandidates.find(c => c.stock_code === selectedStock.stock_code))) {
-      setSelectedStock(processedCandidates[0]);
+      // 检查缓存中是否有选中的标的，如果有则优先使用缓存的选择而非锁定为第一个
+      const cached = getCachedStockSelector();
+      if (cached?.selectedStock && processedCandidates.find(c => c.stock_code === cached.selectedStock!.stock_code)) {
+        setSelectedStock(cached.selectedStock);
+      } else {
+        setSelectedStock(processedCandidates[0]);
+      }
     }
   }, [processedCandidates]);
 

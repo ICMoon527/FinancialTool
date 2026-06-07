@@ -4,6 +4,7 @@ import * as lightweightCharts from 'lightweight-charts';
 import { visualizationApi, type VisualizationResponse } from '../../api/visualization';
 import { systemConfigApi } from '../../api/systemConfig';
 import { TiandaoBandPrimitive } from '../TiandaoBandPrimitive';
+import { getCachedKlineChart, setCachedKlineChart } from '../../cache/klineChartCache';
 
 const SUBCHART_HEIGHT = 150;
 const DEFAULT_DAYS = 150;
@@ -28,6 +29,8 @@ const KlineChart: React.FC<{
   const isTimeRangeUpdatingRef = useRef(false);
   const isCrosshairUpdatingRef = useRef(false);
   
+  const dataFetchedRef = useRef(false);
+
   const [cursorValues, setCursorValues] = useState<{
     closePrice?: number;
     mainCost?: number;
@@ -78,21 +81,45 @@ const KlineChart: React.FC<{
         ['main_capital_absorption', 'main_capital_distribution', 'main_cost', 'tiandao']
       );
       setVisualizationData(response);
+      // 写入缓存：保存最近查看的标的数据，避免重复请求
+      setCachedKlineChart({
+        stockCode: code,
+        stockName: stockName || '',
+        visualizationData: response,
+      });
     } catch (err) {
       console.error('Failed to load visualization data:', err);
       setError(err instanceof Error ? err.message : '加载数据失败，请稍后重试');
     } finally {
       setIsLoading(false);
     }
-  }, [defaultDays]);
+  }, [defaultDays, stockName]);
 
   useEffect(() => {
     loadSystemConfig();
   }, [loadSystemConfig]);
 
+  // 从缓存恢复：若缓存标的代码与当前请求一致，直接使用缓存数据，避免重复请求
   useEffect(() => {
+    if (!stockCode) return;
+    const cached = getCachedKlineChart();
+    if (cached && cached.stockCode === stockCode) {
+      console.log('[KlineChart缓存] 从缓存恢复数据:', cached.stockCode, cached.stockName);
+      setVisualizationData(cached.visualizationData);
+      dataFetchedRef.current = true;
+      return;
+    }
+    // 缓存未命中，发起网络请求
+    dataFetchedRef.current = false;
     loadVisualizationData(stockCode);
-  }, [stockCode, defaultDays, loadVisualizationData]);
+  }, [stockCode]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 当 defaultDays 变更（系统配置加载完毕后），用新天数重新获取数据
+  useEffect(() => {
+    if (!stockCode || !dataFetchedRef.current) return;
+    if (defaultDays === DEFAULT_DAYS) return; // 未加载配置时不触发
+    loadVisualizationData(stockCode);
+  }, [defaultDays]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const filterDataByTimeRange = (data: any[], timeField: string = 'date') => {
     if (!earliestDateRef.current || !latestDateRef.current || !data || data.length === 0) {
