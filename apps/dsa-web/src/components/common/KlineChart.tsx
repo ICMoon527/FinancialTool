@@ -3,6 +3,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import * as lightweightCharts from 'lightweight-charts';
 import { visualizationApi, type VisualizationResponse } from '../../api/visualization';
 import { systemConfigApi } from '../../api/systemConfig';
+import { TiandaoBandPrimitive } from '../TiandaoBandPrimitive';
 
 const SUBCHART_HEIGHT = 150;
 const DEFAULT_DAYS = 150;
@@ -42,6 +43,15 @@ const KlineChart: React.FC<{
   const timeSyncSubscription = useRef<any>(null);
   const indicatorsDataRef = useRef<{ [key: string]: any }>({});
 
+  // 天道指标系列引用
+  const tiandaoBbiSeriesRef = useRef<any>(null);
+  const tiandaoJinzuanSeriesRef = useRef<any>(null);
+  const tiandaoJinniuSeriesRef = useRef<any>(null);
+  const tiandaoJinniu2SeriesRef = useRef<any>(null);
+  const tiandaoBandPrimitiveRef = useRef<TiandaoBandPrimitive | null>(null);
+  const tiandaoStickCandleRef = useRef<any>(null);
+  const tiandaoMarkersRef = useRef<any>(null);
+
   const loadSystemConfig = useCallback(async () => {
     try {
       const config = await systemConfigApi.getConfig(false);
@@ -65,7 +75,7 @@ const KlineChart: React.FC<{
       const response = await visualizationApi.getVisualizationData(
         code,
         defaultDays,
-        ['main_capital_absorption', 'main_capital_distribution', 'main_cost']
+        ['main_capital_absorption', 'main_capital_distribution', 'main_cost', 'tiandao']
       );
       setVisualizationData(response);
     } catch (err) {
@@ -320,6 +330,233 @@ const KlineChart: React.FC<{
       }
     } catch (error) {
       console.error('Error updating K-line data:', error);
+    }
+  }, [visualizationData]);
+
+  // 更新天道指标系列（主图叠加）
+  useEffect(() => {
+    if (!mainChartRef.current || !visualizationData) return;
+
+    try {
+      // 清理旧的天道系列
+      if (tiandaoBbiSeriesRef.current) {
+        mainChartRef.current.removeSeries(tiandaoBbiSeriesRef.current);
+        tiandaoBbiSeriesRef.current = null;
+      }
+      if (tiandaoJinzuanSeriesRef.current) {
+        mainChartRef.current.removeSeries(tiandaoJinzuanSeriesRef.current);
+        tiandaoJinzuanSeriesRef.current = null;
+      }
+      if (tiandaoJinniuSeriesRef.current) {
+        mainChartRef.current.removeSeries(tiandaoJinniuSeriesRef.current);
+        tiandaoJinniuSeriesRef.current = null;
+      }
+      if (tiandaoJinniu2SeriesRef.current) {
+        mainChartRef.current.removeSeries(tiandaoJinniu2SeriesRef.current);
+        tiandaoJinniu2SeriesRef.current = null;
+      }
+      if (tiandaoBandPrimitiveRef.current) {
+        candlestickSeriesRef.current?.detachPrimitive(tiandaoBandPrimitiveRef.current);
+        tiandaoBandPrimitiveRef.current = null;
+      }
+      if (tiandaoStickCandleRef.current) {
+        mainChartRef.current.removeSeries(tiandaoStickCandleRef.current);
+        tiandaoStickCandleRef.current = null;
+      }
+
+      const tiandaoIndicator = visualizationData.indicators.find(
+        (ind: any) => ind.indicator_type === 'tiandao'
+      );
+
+      // 清理旧的买入信号标记
+      if (tiandaoMarkersRef.current) {
+        tiandaoMarkersRef.current.setMarkers([]);
+        tiandaoMarkersRef.current = null;
+      }
+
+      if (tiandaoIndicator && tiandaoIndicator.data && tiandaoIndicator.data.length > 0) {
+        // td_jinzuan 金钻趋势（金色细线，核心趋势线）
+        const jinzuanData = tiandaoIndicator.data
+          .map((item: any) => ({
+            time: item.date,
+            value: item.td_jinzuan != null ? Number(item.td_jinzuan.toFixed(2)) : null,
+          }))
+          .filter((d: any) => d.value !== null && d.value !== undefined);
+
+        if (jinzuanData.length > 0) {
+          const series = mainChartRef.current!.addSeries(lightweightCharts.LineSeries, {
+            color: '#FF0000',
+            lineWidth: 1,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+          });
+          series.setData(jinzuanData);
+          tiandaoJinzuanSeriesRef.current = series;
+        }
+
+        // td_jinniu 金牛（红色细线，通道上轨）
+        const jinniuData = tiandaoIndicator.data
+          .map((item: any) => ({
+            time: item.date,
+            value: item.td_jinniu != null ? Number(item.td_jinniu.toFixed(2)) : null,
+          }))
+          .filter((d: any) => d.value !== null && d.value !== undefined);
+
+        if (jinniuData.length > 0) {
+          const series = mainChartRef.current!.addSeries(lightweightCharts.LineSeries, {
+            color: '#FFFF00',
+            lineWidth: 1,
+            lineStyle: 2,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+          });
+          series.setData(jinniuData);
+          tiandaoJinniuSeriesRef.current = series;
+        }
+
+        // td_jinniu2 金牛2（绿色细线，慢速跟随）
+        const jinniu2Data = tiandaoIndicator.data
+          .map((item: any) => ({
+            time: item.date,
+            value: item.td_jinniu2 != null ? Number(item.td_jinniu2.toFixed(2)) : null,
+          }))
+          .filter((d: any) => d.value !== null && d.value !== undefined);
+
+        if (jinniu2Data.length > 0) {
+          const series = mainChartRef.current!.addSeries(lightweightCharts.LineSeries, {
+            color: '#00FFFF',
+            lineWidth: 1,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+          });
+          series.setData(jinniu2Data);
+          tiandaoJinniu2SeriesRef.current = series;
+        }
+
+        // td_bbi BBI 线
+        const bbiData = tiandaoIndicator.data
+          .map((item: any) => ({
+            time: item.date,
+            value: item.td_bbi != null ? Number(item.td_bbi.toFixed(2)) : null,
+          }))
+          .filter((d: any) => d.value !== null && d.value !== undefined);
+
+        if (bbiData.length > 0) {
+          const series = mainChartRef.current!.addSeries(lightweightCharts.LineSeries, {
+            color: '#FFFFFF',
+            lineWidth: 1,
+            lineStyle: 2,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+          });
+          series.setData(bbiData);
+          tiandaoBbiSeriesRef.current = series;
+        }
+
+        // DRAWBAND 红绿带状区域：使用 ISeriesPrimitive 自定义绘制
+        const bandPrimitive = new TiandaoBandPrimitive();
+        bandPrimitive.data = tiandaoIndicator.data as any;
+        candlestickSeriesRef.current!.attachPrimitive(bandPrimitive);
+        tiandaoBandPrimitiveRef.current = bandPrimitive;
+
+        // STICKLINE 黄色柱体
+        const klineDateMap = new Map<string, any>();
+        if (visualizationData.kline_data) {
+          visualizationData.kline_data.forEach((kl: any) => {
+            klineDateMap.set(kl.date || kl.time, kl);
+          });
+        }
+
+        const overlayCandleData: any[] = [];
+        tiandaoIndicator.data.forEach((item: any) => {
+          const jinzuan = item.td_jinzuan != null ? Number(item.td_jinzuan) : null;
+          const kl = klineDateMap.get(item.date);
+          if (jinzuan == null || !kl) return;
+
+          const high = kl.high != null ? Number(kl.high) : (kl.High != null ? Number(kl.High) : null);
+          const low = kl.low != null ? Number(kl.low) : (kl.Low != null ? Number(kl.Low) : null);
+          const open = kl.open != null ? Number(kl.open) : (kl.Open != null ? Number(kl.Open) : null);
+          const close = kl.close != null ? Number(kl.close) : (kl.Close != null ? Number(kl.Close) : null);
+
+          if (high == null || low == null || open == null || close == null) return;
+
+          const maxOC = Math.max(open, close);
+          const minOC = Math.min(open, close);
+
+          if (jinzuan > low && jinzuan < high) {
+            const stickLow = Math.min(minOC, jinzuan);
+            overlayCandleData.push({
+              time: item.date,
+              open: stickLow,
+              high: jinzuan,
+              low: stickLow,
+              close: jinzuan,
+            });
+          } else if (jinzuan >= high) {
+            overlayCandleData.push({
+              time: item.date,
+              open: minOC,
+              high: maxOC,
+              low: minOC,
+              close: maxOC,
+            });
+          }
+        });
+
+        if (overlayCandleData.length > 0) {
+          const overlaySeries = mainChartRef.current!.addSeries(lightweightCharts.CandlestickSeries, {
+            upColor: '#FFD700',
+            downColor: '#FFD700',
+            borderUpColor: '#FFD700',
+            borderDownColor: '#FFD700',
+            wickUpColor: 'transparent',
+            wickDownColor: 'transparent',
+            priceLineVisible: false,
+            lastValueVisible: false,
+          });
+          overlaySeries.setData(overlayCandleData);
+          tiandaoStickCandleRef.current = overlaySeries;
+        }
+
+        // 买入信号标记（td_xg 和 td_xg2）
+        if (candlestickSeriesRef.current) {
+          const markers: any[] = [];
+
+          tiandaoIndicator.data.forEach((item: any) => {
+            if (item.td_xg === 1) {
+              markers.push({
+                time: item.date,
+                position: 'belowBar',
+                shape: 'arrowUp',
+                color: '#FF0000',
+                text: '买入',
+                size: 1,
+              });
+            }
+            if (item.td_xg2 === 1) {
+              markers.push({
+                time: item.date,
+                position: 'belowBar',
+                shape: 'arrowUp',
+                color: '#FF00FF',
+                text: '金钻',
+                size: 1,
+              });
+            }
+          });
+
+          tiandaoMarkersRef.current = lightweightCharts.createSeriesMarkers(
+            candlestickSeriesRef.current,
+            markers,
+          );
+        }
+      }
+    } catch (error) {
+      console.error('Error updating Tiandao:', error);
     }
   }, [visualizationData]);
 
