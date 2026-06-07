@@ -636,6 +636,14 @@ def _run_t0_strategy(klines: list, reference_lines: list = None, warmup_klines: 
             full_df = df_klines
         precomputed_result = strategy.engine.calculate_all(full_df)
 
+        # 统一前后端 MACD_Bar_Sum 计算逻辑：仅累计当日分时数据（预热数据不参与累加）
+        # 前端从 indicator_sub_charts（仅当日数据）计算 runningMacdBarSum，
+        # 后端原逻辑对全量（含预热）做 cumsum()，导致 MACD_Bar_Sum 被预热期负值压低
+        if warmup_rows > 0 and "MACD_Bar" in precomputed_result.columns:
+            today_macd_bars = precomputed_result.iloc[warmup_rows:]["MACD_Bar"].fillna(0)
+            today_cumsum = today_macd_bars.cumsum()
+            precomputed_result.loc[precomputed_result.index[warmup_rows:], "MACD_Bar_Sum"] = today_cumsum.values
+
         ref_lines_raw = reference_lines or []
         ref_lines = [
             {"id": rl.id if hasattr(rl, "id") else rl.get("id", ""),
