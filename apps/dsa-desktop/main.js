@@ -555,6 +555,13 @@ async function createWindow() {
       onHealthProgress
     );
     logStartup(`Backend ready in ${healthInfo.elapsedMs}ms (${healthInfo.attempts} probes)`);
+
+    // 清除 HTTP 缓存，确保每次启动都加载最新的前端文件
+    // 解决 win-unpacked 复制到其他电脑后因 Chromium 缓存导致显示旧版页面的问题
+    const cacheClearStartedAt = Date.now();
+    await mainWindow.webContents.session.clearCache();
+    logStartup(`HTTP cache cleared in ${Date.now() - cacheClearStartedAt}ms`);
+
     const mainPageStartedAt = Date.now();
     await mainWindow.loadURL(`http://127.0.0.1:${port}/`);
     logStartup(`Main page loadURL resolved in ${Date.now() - mainPageStartedAt}ms`);
