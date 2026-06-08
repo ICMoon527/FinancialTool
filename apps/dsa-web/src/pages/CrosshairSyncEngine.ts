@@ -113,6 +113,29 @@ export class CrosshairSyncEngine {
     }
   }
 
+  /** 更新已注册条目中的数据数组，确保增量更新后 setCrosshairAtTime 能匹配到最新时间点 */
+  updateEntryData(id: string, data: { time: number; value: number }[]): void {
+    const entry = this.entries.get(id);
+    if (entry) {
+      entry.data = data;
+    }
+  }
+
+  /** 向已注册条目的数据数组追加新数据点，用于子图增量更新 */
+  appendEntryData(id: string, data: { time: number; value: number }[]): void {
+    const entry = this.entries.get(id);
+    if (entry) {
+      entry.data = [...entry.data, ...data];
+    }
+  }
+
+  /** 对所有已注册条目在 RAF 中重设 crosshair，用于 mode 0 图表增量更新后抵消内置渲染覆盖 */
+  reapplyAllEntries(time: Time): void {
+    this.entries.forEach((entry, id) => {
+      this._setCrosshair(entry, time, id);
+    });
+  }
+
   syncTimeRange(range: { from: Time; to: Time }): void {
     const fromStr = new Date(Number(range.from) * 1000).toLocaleTimeString();
     const toStr = new Date(Number(range.to) * 1000).toLocaleTimeString();

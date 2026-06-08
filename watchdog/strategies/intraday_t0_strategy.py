@@ -330,7 +330,7 @@ class IntradayIndicatorEngine:
         self.mfi_overbought = mfi_cfg.get("overbought", 80)
         self.mfi_oversold = mfi_cfg.get("oversold", 20)
 
-    # ---------- 工具函数 ----------
+        # ---------- 工具函数 ----------
 
     @staticmethod
     def _sma(series: pd.Series, period: int) -> pd.Series:

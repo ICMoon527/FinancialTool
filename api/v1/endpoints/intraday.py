@@ -1123,6 +1123,8 @@ def _generate_indicator_sub_charts(klines: list, warmup_klines: list = None,
                 )
             )
 
+        
+
         # ── 3. KDJ ──
         kdj_k_data = []
         kdj_d_data = []

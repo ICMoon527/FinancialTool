@@ -1429,7 +1429,7 @@ const IntradayPage: React.FC = () => {
       // ── 清空所有容器DOM，确保完全干净（防御性措施，解决chart.remove()可能残留canvas的问题）──
       try { container.innerHTML = ''; } catch (e) { /* ignore */ }
       try { volContainer.innerHTML = ''; } catch (e) { /* ignore */ }
-      [absorptionContainerRef, macdContainerRef, rsiContainerRef, kdjContainerRef].forEach((ref) => {
+      [absorptionContainerRef, macdContainerRef, rsiContainerRef, kdjContainerRef, mfiContainerRef].forEach((ref) => {
         if (ref.current) {
           try { ref.current.innerHTML = ''; } catch (e) { /* ignore */ }
         }
@@ -1922,10 +1922,9 @@ const IntradayPage: React.FC = () => {
           lastValueVisible: false,
           crosshairMarkerVisible: false,
         } as any);
-        chipSeries.setData(klines.map((k) => ({
-          time: k.time as any,
-          value: clampedUpperPrice,
-        })));
+        // 用全天时间点覆盖，筹码区从开盘到收盘全覆盖，增量更新无需额外维护
+        const chipFullDayPoints = generateFullDayTimePoints(date, clampedUpperPrice);
+        chipSeries.setData(chipFullDayPoints as any);
         chipAreaRef.current = chipSeries;
       }
 
@@ -2153,6 +2152,7 @@ const IntradayPage: React.FC = () => {
           rightPriceScale: {
             scaleMargins: { top: 0.1, bottom: 0.1 },
             borderVisible: false,
+            autoScale: true,
           },
           crosshair: { mode: 1 },
           localization: {
@@ -2464,6 +2464,7 @@ const IntradayPage: React.FC = () => {
         indicatorSeriesRef.current.set(sc.id, lineSeriesList);
 
         // 时间锚点系列：确保复盘时子图时间轴不收缩
+        const anchorValue = 0;
         const subAnchor = subChart.addSeries(lightweightCharts.LineSeries, {
           color: '#1a1a2e',
           lineWidth: 1,
@@ -2471,7 +2472,7 @@ const IntradayPage: React.FC = () => {
           lastValueVisible: false,
           crosshairMarkerVisible: false,
         });
-        subAnchor.setData(fullDayPoints.map((p: any) => ({ time: p.time, value: 0 })));
+        subAnchor.setData(fullDayPoints.map((p: any) => ({ time: p.time, value: anchorValue })));
         indicatorAnchorRefs.current.set(sc.id, subAnchor);
       }
 
@@ -2778,7 +2779,8 @@ const IntradayPage: React.FC = () => {
           const fullDayPoints = generateFullDayTimePoints(dateStr, refPrice);
           const subAnchor = indicatorAnchorRefs.current.get(subChart.id);
           if (subAnchor) {
-            subAnchor.setData(fullDayPoints.map((p: any) => ({ time: p.time, value: 0 })));
+            const anchorVal = 0;
+            subAnchor.setData(fullDayPoints.map((p: any) => ({ time: p.time, value: anchorVal })));
           }
         }
       }
@@ -2794,6 +2796,45 @@ const IntradayPage: React.FC = () => {
       // ── 快照追加（仅新增K线时）──
       if (isNewKline) {
         appendSnapshotIncremental(data, dateStr);
+      }
+
+      // ── 增量更新后将十字线定位到最新数据点 ──
+      // 1) 必须在 RAF 中重设 crosshair，抵消 mode 0 下一帧内置 crosshair 渲染的覆盖
+      // 2) 必须先更新引擎缓存的数据，否则找不到最新时间点
+      // 3) 即使数据未变化（isKlineChanged=false）也要执行，因为用户未移动十字线但数据已往后推移
+      if (klines.length > 0) {
+        const latestTime = klines[klines.length - 1].time;
+        if (latestTime != null) {
+          // 更新引擎数据缓存
+          syncEngineRef.current.updateEntryData('main', klines.map((k) => ({ time: k.time, value: k.close })));
+          syncEngineRef.current.updateEntryData('volume', klines.map((k) => ({ time: k.time, value: (k as any).volume || 0 })));
+          indicatorDataAccumulatedRef.current.forEach((cached, id) => {
+            if (cached.lines.length > 0) {
+              const newPoints: { time: number; value: number }[] = [];
+              const linesToProcess = cached.lines;
+              for (const ln of linesToProcess) {
+                if (ln.data && ln.data.length > 0) {
+                  const lastPt = ln.data[ln.data.length - 1];
+                  if (lastPt.time != null && lastPt.value != null) {
+                    const ms = parseTimestamp(lastPt.time as string, dateStr);
+                    const unixSec = Math.floor(ms / 1000);
+                    newPoints.push({ time: unixSec, value: lastPt.value });
+                  }
+                }
+              }
+              if (newPoints.length > 0) {
+                syncEngineRef.current.appendEntryData(id, newPoints);
+              }
+            }
+          });
+          // 在 RAF 中重设所有图表的 crosshair，确保 mode 0 图表的 built-in 渲染不会覆盖
+          const capturedTime = latestTime;
+          const crosshairRafId = requestAnimationFrame(() => {
+            syncEngineRef.current.reapplyAllEntries(capturedTime as any);
+          });
+          // 记录 RAF id 以便清理
+          renderDataRafIdsRef.current.push(crosshairRafId);
+        }
       }
     },
     [],
@@ -3167,7 +3208,7 @@ const IntradayPage: React.FC = () => {
 
         const subFullDayAnchorData = generateFullDayTimePoints(dateStr, 0);
         indicatorAnchorRefs.current.forEach((subAnchor) => {
-          try { subAnchor.setData(subFullDayAnchorData as any); } catch (_e) { /* ignore */ }
+          try { subAnchor.setData(subFullDayAnchorData.map((p: any) => ({ time: p.time, value: 0 })) as any); } catch (_e) { /* ignore */ }
         });
 
         // fitContent 让锚点系列撑开时间轴到全天
@@ -4398,8 +4439,15 @@ const IntradayPage: React.FC = () => {
                                 </td>
                               </tr>
                             ))}
+                            {/* 买总/卖总 分割线 */}
                             <tr>
-                              <td colSpan={3}><div className="border-t border-white/15 my-0.5" /></td>
+                              <td colSpan={3}>
+                                <div className="flex items-center justify-between text-[9px] font-semibold text-muted/70 pt-1 pb-0.5">
+                                  <span>卖总：<span className="text-green-400/90">{calcDepthTotal(snap.ask_volumes)}手</span></span>
+                                  <span className="text-muted/50">|</span>
+                                  <span>买总：<span className="text-red-400/90">{calcDepthTotal(snap.bid_volumes)}手</span></span>
+                                </div>
+                              </td>
                             </tr>
                             {/* 买一→买五，红色 */}
                             {[0, 1, 2, 3, 4].map((i) => (
@@ -4413,15 +4461,6 @@ const IntradayPage: React.FC = () => {
                                 </td>
                               </tr>
                             ))}
-                            <tr>
-                              <td colSpan={3} className="pt-1">
-                                <div className="flex items-center justify-between text-[9px] font-semibold text-muted/70">
-                                  <span>买总：<span className="text-red-400/90">{calcDepthTotal(snap.bid_volumes)}手</span></span>
-                                  <span className="text-muted/50">|</span>
-                                  <span>卖总：<span className="text-green-400/90">{calcDepthTotal(snap.ask_volumes)}手</span></span>
-                                </div>
-                              </td>
-                            </tr>
                           </tbody>
                         </table>
                       )}

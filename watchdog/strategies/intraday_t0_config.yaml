@@ -66,7 +66,7 @@ indicators:
     overbought: 80          # 超买阈值
     oversold: 20            # 超卖阈值
 
-# 信号配置
+  # 信号配置
 signals:
   buy:
     thresholds:

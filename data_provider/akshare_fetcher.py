@@ -1004,8 +1004,11 @@ class AkshareFetcher(BaseFetcher):
         try:
             import requests
             
-            # 判断市场前缀
-            if stock_code.startswith(('6', '5', '9')):
+            # 判断市场前缀：如果代码已带 sh/sz 前缀（如 A 股指数），直接使用
+            code_lower = stock_code.lower()
+            if code_lower.startswith('sh') or code_lower.startswith('sz'):
+                symbol = code_lower
+            elif stock_code.startswith(('6', '5', '9')):
                 symbol = f"sh{stock_code}"
             else:
                 symbol = f"sz{stock_code}"
@@ -1102,8 +1105,11 @@ class AkshareFetcher(BaseFetcher):
         try:
             import requests
             
-            # 判断市场前缀
-            if stock_code.startswith(('6', '5', '9')):
+            # 判断市场前缀：如果代码已带 sh/sz 前缀（如 A 股指数），直接使用
+            code_lower = stock_code.lower()
+            if code_lower.startswith('sh') or code_lower.startswith('sz'):
+                symbol = code_lower
+            elif stock_code.startswith(('6', '5', '9')):
                 symbol = f"sh{stock_code}"
             else:
                 symbol = f"sz{stock_code}"

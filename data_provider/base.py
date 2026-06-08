@@ -646,8 +646,14 @@ class DataFetcherManager:
         if not self._realtime_enabled:
             return None
 
+        # 检测 A 股指数代码（如 sh000001, sz399001），在 normalize 之前保存原始代码
+        a_share_index_code = stock_code if re.match(r'^[Ss][Hh]\d{6}$', stock_code) or re.match(r'^[Ss][Zz]\d{6}$', stock_code) else None
+
         # Normalize code (strip SH/SZ prefix etc.)
         stock_code = normalize_stock_code(stock_code)
+
+        # A 股指数使用原始带前缀的代码，普通股票使用归一化后的代码
+        realtime_code = a_share_index_code or stock_code
 
         from .realtime_types import get_realtime_circuit_breaker
         from .akshare_fetcher import _is_us_code
@@ -720,7 +726,7 @@ class DataFetcherManager:
                     for fetcher in self._fetchers:
                         if fetcher.name == "AkshareFetcher":
                             if hasattr(fetcher, 'get_realtime_quote'):
-                                quote = fetcher.get_realtime_quote(stock_code, source="em")
+                                quote = fetcher.get_realtime_quote(realtime_code, source="em")
                             break
                 
                 elif source == "akshare_sina":
@@ -728,7 +734,7 @@ class DataFetcherManager:
                     for fetcher in self._fetchers:
                         if fetcher.name == "AkshareFetcher":
                             if hasattr(fetcher, 'get_realtime_quote'):
-                                quote = fetcher.get_realtime_quote(stock_code, source="sina")
+                                quote = fetcher.get_realtime_quote(realtime_code, source="sina")
                             break
                 
                 elif source in ("tencent", "akshare_qq"):
@@ -736,7 +742,7 @@ class DataFetcherManager:
                     for fetcher in self._fetchers:
                         if fetcher.name == "AkshareFetcher":
                             if hasattr(fetcher, 'get_realtime_quote'):
-                                quote = fetcher.get_realtime_quote(stock_code, source="tencent")
+                                quote = fetcher.get_realtime_quote(realtime_code, source="tencent")
                             break
                 
                 elif source == "tushare":
