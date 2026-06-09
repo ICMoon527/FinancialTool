@@ -18,6 +18,7 @@ from stock_selector.manager import StrategyManager
 from stock_selector.stock_pool import get_all_stock_code_name_pairs, filter_special_stock_codes, filter_st_stocks
 from stock_selector.strategies.Python.strong_detonation_python import MarketDataCache
 from stock_selector.trading_calendar import get_trading_calendar, is_trading_day
+from indicators.indicators.momentum_2 import Momentum2
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,7 @@ class StockSelectorService:
             data_provider=data_provider,
             config=self.config,
         )
+        self._momentum2_indicator = Momentum2()
 
     def set_data_provider(self, data_provider: any) -> None:
         self.strategy_manager.set_data_provider(data_provider)
@@ -421,6 +423,55 @@ class StockSelectorService:
             logger.debug(f"Failed to calculate purple days: {e}")
             return None
 
+    def _calculate_momentum2_data(self, df: pd.DataFrame) -> Optional[Dict[str, Any]]:
+        """计算动能二号展示指标（前一日颜色、高度变化百分比等）"""
+        if df is None or len(df) < 6:
+            return None
+        try:
+            df = df.copy()
+            if 'Open' not in df.columns and 'open' in df.columns:
+                df = df.rename(columns={
+                    'open': 'Open', 'high': 'High',
+                    'low': 'Low', 'close': 'Close', 'volume': 'Volume'
+                })
+            result_df = self._momentum2_indicator.calculate(df)
+            if len(result_df) < 2:
+                return None
+
+            latest = result_df.iloc[-1]
+            prev = result_df.iloc[-2]
+
+            today_is_red = bool(latest['strong_momentum1']) if pd.notna(latest['strong_momentum1']) else False
+            today_height = float(latest['momentum_price']) if pd.notna(latest['momentum_price']) else 0
+
+            prev_is_red = bool(prev['strong_momentum1']) if pd.notna(prev['strong_momentum1']) else False
+            prev_is_yellow = bool(prev['medium_momentum1']) if pd.notna(prev['medium_momentum1']) else False
+            prev_is_green = bool(prev['weak_momentum1']) if pd.notna(prev['weak_momentum1']) else False
+            prev_is_blue = bool(prev['recovery_momentum1']) if pd.notna(prev['recovery_momentum1']) else False
+            prev_height = float(prev['momentum_price']) if pd.notna(prev['momentum_price']) else 0
+
+            prev_color = None
+            height_change_pct = None
+            if prev_is_green:
+                prev_color = "绿"
+            elif prev_is_blue:
+                prev_color = "蓝"
+            elif prev_is_red and prev_height > 0:
+                prev_color = "红"
+                height_change_pct = ((today_height - prev_height) / prev_height) * 100
+            elif prev_is_yellow:
+                prev_color = "黄"
+
+            return {
+                'momentum2_today_height': today_height,
+                'momentum2_prev_height': prev_height,
+                'momentum2_red_pillar': today_is_red,
+                'momentum2_prev_color': prev_color,
+                'momentum2_height_change_pct': height_change_pct,
+            }
+        except Exception:
+            return None
+
     def _screen_single_stock(
         self,
         stock_code: str,
@@ -513,9 +564,10 @@ class StockSelectorService:
                         daily_data = daily_data[daily_data['low'] <= daily_data['high']]
                         # 3. 过滤掉非交易日的数据
                         daily_data = daily_data[daily_data['date'].apply(is_trading_day)]
-                        # 4. 确保至少还有30条数据
-                        if len(daily_data) < 30:
-                            logger.debug(f"从数据库读取 {stock_code} 数据清洗后不足30条，放弃使用数据库数据")
+                        # 4. 确保至少达到配置要求的日线数量
+                        min_days = self.config.update_data_default_days
+                        if len(daily_data) < min_days:
+                            logger.debug(f"从数据库读取 {stock_code} 数据清洗后不足{min_days}条，放弃使用数据库数据")
                             daily_data = None
                         else:
                             logger.debug(f"从数据库读取 {stock_code} 数据成功，原始 {len(records)} 条，清洗后 {len(daily_data)} 条")
@@ -552,6 +604,13 @@ class StockSelectorService:
                 # 计算连紫数
                 if purple_days is None:
                     purple_days = self._calculate_purple_days(daily_data, market_data)
+
+            # 如果连紫数计算返回None（数据不足60条等），默认显示0
+            if purple_days is None:
+                purple_days = 0
+
+            # 计算动能二号展示指标（独立于策略，为所有股票统一计算）
+            momentum2_data = self._calculate_momentum2_data(daily_data)
 
         # 从日线数据获取涨跌幅，不调用外部API
         # 如果日线数据中没有涨跌幅，则保持为None
@@ -598,6 +657,11 @@ class StockSelectorService:
         candidate.extra_data["change_pct"] = change_pct
         candidate.extra_data["control_degree"] = control_degree
         
+        # 写入动能二号展示指标（独立于策略，为所有股票统一计算）
+        if momentum2_data:
+            for key, value in momentum2_data.items():
+                candidate.extra_data[key] = value
+        
         # 优先使用我们自己计算的连紫数，只有在没有计算时才尝试从策略匹配中获取
         final_purple_days = purple_days
         if final_purple_days is None:
@@ -619,12 +683,18 @@ class StockSelectorService:
                 sub_strategies = match.match_details.get("sub_strategies", {})
                 momentum2 = sub_strategies.get("momentum_2_red_pillar_python")
                 if momentum2:
-                    candidate.extra_data["momentum2_score_reason"] = momentum2.get("score_reason")
-                    candidate.extra_data["momentum2_today_height"] = momentum2.get("today_height")
-                    candidate.extra_data["momentum2_prev_height"] = momentum2.get("prev_height")
-                    candidate.extra_data["momentum2_red_pillar"] = momentum2.get("red_pillar")
-                    candidate.extra_data["momentum2_height_change_pct"] = momentum2.get("height_change_pct")
-                    candidate.extra_data["momentum2_prev_color"] = momentum2.get("prev_color")
+                    if "momentum2_score_reason" not in candidate.extra_data:
+                        candidate.extra_data["momentum2_score_reason"] = momentum2.get("score_reason")
+                    if "momentum2_today_height" not in candidate.extra_data:
+                        candidate.extra_data["momentum2_today_height"] = momentum2.get("today_height")
+                    if "momentum2_prev_height" not in candidate.extra_data:
+                        candidate.extra_data["momentum2_prev_height"] = momentum2.get("prev_height")
+                    if "momentum2_red_pillar" not in candidate.extra_data:
+                        candidate.extra_data["momentum2_red_pillar"] = momentum2.get("red_pillar")
+                    if "momentum2_height_change_pct" not in candidate.extra_data:
+                        candidate.extra_data["momentum2_height_change_pct"] = momentum2.get("height_change_pct")
+                    if "momentum2_prev_color" not in candidate.extra_data:
+                        candidate.extra_data["momentum2_prev_color"] = momentum2.get("prev_color")
             candidate.add_strategy_match(match)
 
         # 判断是否所有选择的策略都匹配
@@ -660,8 +730,8 @@ class StockSelectorService:
             # 数据清洗：过滤掉非交易日的数据
             daily_data = daily_data[daily_data['date'].apply(is_trading_day)]
             
-            if daily_data.empty or len(daily_data) < 30:
-                logger.debug(f"预加载数据清洗后不足30条，{stock_code} 数据不足，跳过")
+            if daily_data.empty or len(daily_data) < self.config.update_data_default_days:
+                logger.debug(f"预加载数据清洗后不足{self.config.update_data_default_days}条，{stock_code} 数据不足，跳过")
                 return None
             
             if 'pct_chg' in daily_data.columns:
@@ -676,6 +746,13 @@ class StockSelectorService:
                 logger.debug(f"未找到 {market_index_code} 的大盘缓存数据，将使用个股价格作为代理")
             
             purple_days = self._calculate_purple_days(daily_data, market_data)
+
+            # 如果连紫数计算返回None（数据不足60条等），默认显示0
+            if purple_days is None:
+                purple_days = 0
+
+            # 计算动能二号展示指标（独立于策略，为所有股票统一计算）
+            momentum2_data = self._calculate_momentum2_data(daily_data)
         else:
             logger.debug(f"无预加载数据，{stock_code} 数据不足，跳过")
             return None
@@ -722,6 +799,11 @@ class StockSelectorService:
         candidate.extra_data["change_pct"] = change_pct
         candidate.extra_data["control_degree"] = control_degree
         
+        # 写入动能二号展示指标（独立于策略，为所有股票统一计算）
+        if momentum2_data:
+            for key, value in momentum2_data.items():
+                candidate.extra_data[key] = value
+        
         final_purple_days = purple_days
         if final_purple_days is None:
             for match in matches:
@@ -741,12 +823,18 @@ class StockSelectorService:
                 sub_strategies = match.match_details.get("sub_strategies", {})
                 momentum2 = sub_strategies.get("momentum_2_red_pillar_python")
                 if momentum2:
-                    candidate.extra_data["momentum2_score_reason"] = momentum2.get("score_reason")
-                    candidate.extra_data["momentum2_today_height"] = momentum2.get("today_height")
-                    candidate.extra_data["momentum2_prev_height"] = momentum2.get("prev_height")
-                    candidate.extra_data["momentum2_red_pillar"] = momentum2.get("red_pillar")
-                    candidate.extra_data["momentum2_height_change_pct"] = momentum2.get("height_change_pct")
-                    candidate.extra_data["momentum2_prev_color"] = momentum2.get("prev_color")
+                    if "momentum2_score_reason" not in candidate.extra_data:
+                        candidate.extra_data["momentum2_score_reason"] = momentum2.get("score_reason")
+                    if "momentum2_today_height" not in candidate.extra_data:
+                        candidate.extra_data["momentum2_today_height"] = momentum2.get("today_height")
+                    if "momentum2_prev_height" not in candidate.extra_data:
+                        candidate.extra_data["momentum2_prev_height"] = momentum2.get("prev_height")
+                    if "momentum2_red_pillar" not in candidate.extra_data:
+                        candidate.extra_data["momentum2_red_pillar"] = momentum2.get("red_pillar")
+                    if "momentum2_height_change_pct" not in candidate.extra_data:
+                        candidate.extra_data["momentum2_height_change_pct"] = momentum2.get("height_change_pct")
+                    if "momentum2_prev_color" not in candidate.extra_data:
+                        candidate.extra_data["momentum2_prev_color"] = momentum2.get("prev_color")
             candidate.add_strategy_match(match)
 
 

@@ -235,7 +235,7 @@ const StockSelectorPage: React.FC = () => {
   const [selectedStrategyIds, setSelectedStrategyIds] = useState<string[]>([]);
   const [isStrategyDropdownOpen, setIsStrategyDropdownOpen] = useState(false);
 
-  const [sortField, setSortField] = useState<'score' | 'purpleDays'>('score');
+  const [sortField, setSortField] = useState<'score' | 'purpleDays' | 'controlDegree'>('score');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
   const [filterEnabled, setFilterEnabled] = useState(false);
   
@@ -573,7 +573,7 @@ const StockSelectorPage: React.FC = () => {
     result.sort((a, b) => {
       if (sortField === 'score') {
         return sortOrder === 'desc' ? b.overall_score - a.overall_score : a.overall_score - b.overall_score;
-      } else {
+      } else if (sortField === 'purpleDays') {
         const purpleDaysA = a.extra_data?.purple_days;
         const purpleDaysB = b.extra_data?.purple_days;
 
@@ -585,6 +585,19 @@ const StockSelectorPage: React.FC = () => {
         }
 
         return sortOrder === 'desc' ? purpleDaysB - purpleDaysA : purpleDaysA - purpleDaysB;
+      } else {
+        // controlDegree
+        const cdA = a.extra_data?.control_degree;
+        const cdB = b.extra_data?.control_degree;
+
+        if (cdA === undefined || cdA === null) {
+          return 1;
+        }
+        if (cdB === undefined || cdB === null) {
+          return -1;
+        }
+
+        return sortOrder === 'desc' ? cdB - cdA : cdA - cdB;
       }
     });
 
@@ -855,6 +868,27 @@ const StockSelectorPage: React.FC = () => {
                   >
                     <span>连紫数</span>
                     {sortField === 'purpleDays' && (
+                      <span className="ml-1">{sortOrder === 'desc' ? '↓' : '↑'}</span>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (sortField !== 'controlDegree') {
+                        setSortField('controlDegree');
+                        setSortOrder('desc');
+                      } else {
+                        setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
+                      }
+                    }}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 border cursor-pointer ${
+                      sortField === 'controlDegree'
+                        ? 'border-cyan/40 bg-cyan/10 text-cyan shadow-[0_0_8px_rgba(0,212,255,0.15)]'
+                        : 'border-white/10 bg-transparent text-muted hover:border-white/20 hover:text-secondary'
+                    }`}
+                  >
+                    <span>控盘度</span>
+                    {sortField === 'controlDegree' && (
                       <span className="ml-1">{sortOrder === 'desc' ? '↓' : '↑'}</span>
                     )}
                   </button>
