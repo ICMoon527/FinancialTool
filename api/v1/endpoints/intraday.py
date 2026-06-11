@@ -2706,13 +2706,22 @@ def _run_batch_download(task_id: str, target_date: str, max_workers: int, force:
             return
 
     try:
-        from stock_selector.stock_pool import get_all_stock_code_name_pairs
+        from stock_selector.stock_pool import (
+            get_all_stock_code_name_pairs,
+            filter_beijing_stock_exchange,
+            filter_special_stock_codes,
+        )
 
         stock_pairs = get_all_stock_code_name_pairs(force_refresh=False)
         code_to_name = {code: name for code, name in stock_pairs}
 
+        # 预过滤不可下载的标的（北交所、科创板、创业板等），避免 total 虚高导致进度条走不满
+        codes = [code for code, _ in stock_pairs]
+        codes = filter_beijing_stock_exchange(codes)
+        codes = filter_special_stock_codes(codes)
+
         with _batch_download_lock:
-            task["total"] = len(stock_pairs)
+            task["total"] = len(codes)
             task["current_code"] = ""
             task["current_name"] = ""
 
@@ -2726,9 +2735,6 @@ def _run_batch_download(task_id: str, target_date: str, max_workers: int, force:
         processed = 0
         failed = 0
         skipped = 0
-        codes = [code for code, _ in stock_pairs]
-        # 过滤掉 '92' 开头的标的（B股等特殊类别）
-        codes = [c for c in codes if not c.startswith('92')]
 
         # 按市场分组：沪市优先（代码 6 开头）
         sh_codes = [c for c in codes if c.startswith("6")]
