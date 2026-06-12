@@ -166,6 +166,12 @@ function convertKlineData(
     const ts = k.timestamp || k.time || '';
     const utcMs = parseTimestamp(ts, dateStr);
     const unixSec = Math.floor(utcMs / 1000);
+    // 过滤异常值：跳过 OHLC 中包含 NaN 或 Infinity 的数据点，防止 Y 轴 scale 失控
+    if (
+      !isFinite(k.Open) || !isFinite(k.High) || !isFinite(k.Low) || !isFinite(k.Close)
+    ) {
+      continue;
+    }
     result.push({
       time: unixSec,
       open: k.Open,
@@ -540,6 +546,7 @@ const IntradayPage: React.FC = () => {
   const currentCrosshairTimeRef = useRef<Time | null>(null);
   const klineRawDataRef = useRef<any[]>([]);
   const lastIncrementalStockCodeRef = useRef<string | null>(null);
+  const currentStockCodeRef = useRef<string | null>(null);  // 追踪当前图表展示的股票代码，用于增量更新门禁
   const indicatorDataAccumulatedRef = useRef<Map<string, { lines: Array<{ name: string; data: any[] }> }>>(new Map());
   const crosshairSignalRef = useRef<Record<string, string>>({});
   const crosshairSubsRef = useRef<Array<any>>([]);
@@ -1486,6 +1493,7 @@ const IntradayPage: React.FC = () => {
         },
       });
       chartRef.current = chart;
+      currentStockCodeRef.current = data.stock_code;  // 记录当前图表展示的股票代码，用于增量更新门禁
 
       const volChart = lightweightCharts.createChart(volContainer, {
         width: volContainer.clientWidth,
@@ -1780,6 +1788,7 @@ const IntradayPage: React.FC = () => {
       const mainAnchor = chart.addSeries(lightweightCharts.LineSeries, {
         color: '#1a1a2e',
         lineWidth: 1,
+        lineVisible: false,  // 仅作为时间锚点撑开时间轴，不绘制线条，避免遮挡均价线
         priceLineVisible: false,
         lastValueVisible: false,
         crosshairMarkerVisible: false,
@@ -2548,6 +2557,11 @@ const IntradayPage: React.FC = () => {
     (data: IntradayDataResponse, dateStr: string) => {
       const chart = chartRef.current;
       if (!chart) return;
+
+      // ── 门禁：校验股票代码一致性，防止竞态条件下错误股票的数据污染当前图表 ──
+      if (data.stock_code !== currentStockCodeRef.current) {
+        return;
+      }
 
       // ── 1. 直接使用后端返回的全量K线数据更新 ──
       const klines = convertKlineData(data.kline_data, dateStr);
