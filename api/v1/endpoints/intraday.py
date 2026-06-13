@@ -1708,6 +1708,45 @@ def _compute_reference_lines(klines: list, code: str, db_manager=None, query_dat
                             ))
                         logger.debug(f"ReferenceLineGenerator 生成 {len(daily_refs)} 条日线级参考线")
 
+                        # ── 天道指标参考线（金牛 / 金钻）──
+                        try:
+                            from indicators.indicators.tiandao import Tiandao
+
+                            tiandao = Tiandao()
+                            tiandao_result = tiandao.calculate(daily_df)
+                            if len(tiandao_result) > 0:
+                                latest = tiandao_result.iloc[-1]
+                                jinniu_val = latest.get('td_jinniu')
+                                jinzuan_val = latest.get('td_jinzuan')
+
+                                if (jinniu_val is not None
+                                        and not (isinstance(jinniu_val, float) and math.isnan(jinniu_val))
+                                        and jinniu_val > 0):
+                                    ref_lines.append(ReferenceLine(
+                                        id='tiandao_jinniu',
+                                        label='金牛',
+                                        price=round(float(jinniu_val), 2),
+                                        category='tiandao',
+                                        color='#FFFF00',
+                                        style='dashed',
+                                        base_weight=1.0,
+                                    ))
+
+                                if (jinzuan_val is not None
+                                        and not (isinstance(jinzuan_val, float) and math.isnan(jinzuan_val))
+                                        and jinzuan_val > 0):
+                                    ref_lines.append(ReferenceLine(
+                                        id='tiandao_jinzuan',
+                                        label='金钻',
+                                        price=round(float(jinzuan_val), 2),
+                                        category='tiandao',
+                                        color='#FF0000',
+                                        style='dashed',
+                                        base_weight=1.0,
+                                    ))
+                        except Exception as tiandao_err:
+                            logger.warning(f"天道指标参考线计算失败: {tiandao_err}")
+
                         # ── 前高/前低 30个自然日HHV/LLV ──
                         _add_30day_extreme_lines(ref_lines, daily_df, q_date, today_low, today_high)
 
