@@ -606,13 +606,12 @@ const StockSelectorPage: React.FC = () => {
 
   useEffect(() => {
     if (processedCandidates.length > 0 && (!selectedStock || !processedCandidates.find(c => c.stock_code === selectedStock.stock_code))) {
-      // 检查缓存中是否有选中的标的，如果有则优先使用缓存的选择而非锁定为第一个
+      // 检查缓存中是否有选中的标的，如果有则优先使用缓存的选择
       const cached = getCachedStockSelector();
       if (cached?.selectedStock && processedCandidates.find(c => c.stock_code === cached.selectedStock!.stock_code)) {
         setSelectedStock(cached.selectedStock);
-      } else {
-        setSelectedStock(processedCandidates[0]);
       }
+      // 无缓存时不自动选择第一个，等待用户手动选择
     }
   }, [processedCandidates]);
 
