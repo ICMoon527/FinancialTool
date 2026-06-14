@@ -1912,23 +1912,19 @@ class AkshareFetcher(BaseFetcher):
 
     def get_fund_flow_data(self, stock_code: str, start_date: Optional[str] = None, end_date: Optional[str] = None) -> Optional[pd.DataFrame]:
         """
-        获取个股资金流向数据（获取完整数据，不进行日期范围过滤）
+        获取个股资金流向数据
 
-        优先方案：直接 requests.get 调用东财API（受益于 eastmoney_patch 的 NID cookie 注入）
-        备选方案：ak.stock_individual_fund_flow()
-
-        包含：主力净流入、小单净流入、中单净流入、大单净流入、超大单净流入等
+        只保留持久 Session + 代理直连东财 API 方案（依赖 eastmoney_patch 的 NID cookie 注入），
+        akshare 原始方法不走代理几乎必然失败，已移除。
 
         Args:
             stock_code: 股票代码
-            start_date: 开始日期，格式 YYYY-MM-DD（保留兼容性，但不使用）
-            end_date: 结束日期，格式 YYYY-MM-DD（保留兼容性，但不使用）
+            start_date: 保留兼容性，不使用
+            end_date: 保留兼容性，不使用
 
         Returns:
-            包含资金流向数据的DataFrame，获取失败返回None
+            包含资金流向数据的 DataFrame，获取失败返回 None
         """
-        import akshare as ak
-
         if _is_us_code(stock_code):
             logger.debug(f"[API跳过] {stock_code} 是美股，无资金流向数据")
             return None
@@ -1947,69 +1943,7 @@ class AkshareFetcher(BaseFetcher):
         else:
             market = "sz"
 
-        # ---- 代理检测：东财不可达时直接跳过直连，避免等待 ----
-        if AkshareFetcher._check_eastmoney_reachable():
-            df = self._get_fund_flow_direct(stock_code, market)
-            if df is not None and not df.empty:
-                return df
-            logger.info(f"[API回退] 直连失败，尝试 akshare 获取 {stock_code} 资金流向...")
-        else:
-            logger.warning(f"[API跳过] 东财 push2his 不可达（代理转发失败），跳过直连，尝试 akshare...")
-
-        # ---- 方案2: 回退到 akshare ----
-        try:
-            self._set_random_user_agent()
-            self._enforce_rate_limit()
-
-            logger.info(f"[API调用] ak.stock_individual_fund_flow(stock={stock_code}, market={market}) 获取资金流向...")
-            import time as _time
-            api_start = _time.time()
-
-            df = ak.stock_individual_fund_flow(stock=stock_code, market=market)
-
-            api_elapsed = _time.time() - api_start
-
-            if df is not None and not df.empty:
-                logger.info(f"[API返回] ak.stock_individual_fund_flow 成功: 返回 {len(df)} 天数据, 耗时 {api_elapsed:.2f}s")
-                logger.debug(f"[API返回] 资金流向数据列名: {list(df.columns)}")
-
-                # 标准化列名
-                column_mapping = {
-                    '日期': 'date',
-                    '主力净流入-净额': 'main_net_inflow',
-                    '小单净流入-净额': 'small_net_inflow',
-                    '中单净流入-净额': 'medium_net_inflow',
-                    '大单净流入-净额': 'big_net_inflow',
-                    '超大单净流入-净额': 'super_net_inflow',
-                    '主力净流入-净占比': 'main_net_ratio',
-                    '小单净流入-净占比': 'small_net_ratio',
-                    '中单净流入-净占比': 'medium_net_ratio',
-                    '大单净流入-净占比': 'big_net_ratio',
-                    '超大单净流入-净占比': 'super_net_ratio',
-                    '收盘价': 'close',
-                    '涨跌幅': 'pct_chg',
-                }
-
-                df = df.rename(columns=column_mapping)
-
-                # 转换日期格式
-                if 'date' in df.columns:
-                    df['date'] = pd.to_datetime(df['date']).dt.date
-
-                # 添加股票代码
-                df['code'] = stock_code
-
-                return df
-            else:
-                logger.warning(f"[API返回] ak.stock_individual_fund_flow 返回空数据")
-                return None
-
-        except Exception as e:
-            error_msg = str(e).lower()
-            if any(keyword in error_msg for keyword in ['banned', 'blocked', '频率', 'rate', '限制']):
-                raise RateLimitError(f"Akshare 资金流向可能被限流: {e}") from e
-            logger.error(f"[API错误] akshare 获取 {stock_code} 资金流向失败: {e}")
-            return None
+        return self._get_fund_flow_direct(stock_code, market)
 
     def _get_fund_flow_direct(self, stock_code: str, market: str) -> Optional[pd.DataFrame]:
         """

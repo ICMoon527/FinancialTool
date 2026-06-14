@@ -266,7 +266,15 @@ class VisualizationService:
             }
         
         logger.info(f"成功获取 {stock_code} 数据: {len(daily_data)} 条 (来源: {source_name})")
-        
+
+        # 将 API 获取的数据同步保存到数据库
+        try:
+            saved = self.db.save_daily_data(daily_data, stock_code, 'VisualizationService')
+            if saved > 0:
+                logger.info(f"{stock_code} 从 API 同步了 {saved} 条新数据到数据库")
+        except Exception as save_err:
+            logger.warning(f"{stock_code} API 数据同步到数据库失败: {save_err}（不影响可视化展示）")
+
         # 打印数据日期范围，便于调试
         if not daily_data.empty:
             if 'date' in daily_data.columns:
