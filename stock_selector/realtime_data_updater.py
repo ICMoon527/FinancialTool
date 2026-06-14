@@ -35,7 +35,6 @@ from data_provider.realtime_types import (
 )
 from src.storage import DatabaseManager, StockDaily
 
-from .data_update_tracker import DataUpdateTracker, get_update_tracker
 from .stock_pool import filter_special_stock_codes, get_all_stock_codes
 
 logger = logging.getLogger(__name__)
@@ -66,7 +65,6 @@ class RealtimeDataUpdater:
     def __init__(
         self,
         db_manager: Optional[DatabaseManager] = None,
-        update_tracker: Optional[DataUpdateTracker] = None,
         batch_size: int = 300,
     ):
         """
@@ -74,11 +72,9 @@ class RealtimeDataUpdater:
 
         Args:
             db_manager: 数据库管理器
-            update_tracker: 数据更新追踪器
             batch_size: 每批查询的股票数量（默认300只，优化版）
         """
         self.db_manager = db_manager or DatabaseManager.get_instance()
-        self.update_tracker = update_tracker or get_update_tracker()
         self.batch_size = batch_size
 
         self._should_stop = False
@@ -508,9 +504,6 @@ class RealtimeDataUpdater:
         print("性能优化：批量保存 + 取消休眠")
         print("=" * 80 + "\n")
 
-        # 用于批量更新追踪器的成功股票列表
-        all_success_codes = []
-
         try:
             from tqdm import tqdm
 
@@ -549,7 +542,6 @@ class RealtimeDataUpdater:
                             stock_daily = self._convert_realtime_to_stock_daily(quote, record_date)
                             if stock_daily is not None:
                                 batch_stock_dailies.append(stock_daily)
-                                all_success_codes.append(stock_code)
                             else:
                                 batch_failed_count += 1
                                 stats["failed_stocks"].append({"code": stock_code, "error": "转换失败"})
@@ -585,15 +577,6 @@ class RealtimeDataUpdater:
         except Exception as e:
             print(f"\n\n更新过程中发生错误：{e}")
             logger.error(f"批量更新实时数据时发生错误: {e}", exc_info=True)
-
-        # 批量更新追踪器（优化版，一次数据库操作）
-        if all_success_codes:
-            logger.info(f"批量更新追踪器：{len(all_success_codes)} 只股票")
-            self.update_tracker.update_records_batch(
-                all_success_codes,
-                data_start_date=record_date,
-                data_end_date=record_date,
-            )
 
         stats["end_time"] = datetime.now()
         duration = (stats["end_time"] - stats["start_time"]).total_seconds()
