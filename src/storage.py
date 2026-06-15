@@ -3236,37 +3236,38 @@ class DatabaseManager:
         indicator_json = json.dumps(indicators or {}, ensure_ascii=False)
         last_klines_json = json.dumps(indicators.get("last_klines", []) if indicators else [], ensure_ascii=False)
 
+        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
         with self.get_session() as session:
             try:
-                existing = session.query(IntradayDailySummary).filter(
-                    IntradayDailySummary.code == code,
-                    IntradayDailySummary.date == date_obj,
-                ).first()
-                if existing:
-                    existing.last_price = last_k.get("Close") or 0.0
-                    existing.avg_price = avg_price
-                    existing.total_volume = total_volume
-                    existing.total_amount = total_amount
-                    existing.indicator_snapshot_json = indicator_json
-                    existing.last_klines_json = last_klines_json
-                    existing.last_time = last_time
-                    existing.kline_count = len(klines)
-                    existing.created_at = datetime.now()
-                else:
-                    record = IntradayDailySummary(
-                        code=code,
-                        date=date_obj,
-                        last_price=last_k.get("Close") or 0.0,
-                        avg_price=avg_price,
-                        total_volume=total_volume,
-                        total_amount=total_amount,
-                        indicator_snapshot_json=indicator_json,
-                        last_klines_json=last_klines_json,
-                        last_time=last_time,
-                        kline_count=len(klines),
-                        created_at=datetime.now(),
-                    )
-                    session.add(record)
+                insert_stmt = sqlite_insert(IntradayDailySummary).values(
+                    code=code,
+                    date=date_obj,
+                    last_price=last_k.get("Close") or 0.0,
+                    avg_price=avg_price,
+                    total_volume=total_volume,
+                    total_amount=total_amount,
+                    indicator_snapshot_json=indicator_json,
+                    last_klines_json=last_klines_json,
+                    last_time=last_time,
+                    kline_count=len(klines),
+                    created_at=datetime.now(),
+                )
+                stmt = insert_stmt.on_conflict_do_update(
+                    index_elements=["code", "date"],
+                    set_={
+                        "last_price": insert_stmt.excluded.last_price,
+                        "avg_price": insert_stmt.excluded.avg_price,
+                        "total_volume": insert_stmt.excluded.total_volume,
+                        "total_amount": insert_stmt.excluded.total_amount,
+                        "indicator_snapshot_json": insert_stmt.excluded.indicator_snapshot_json,
+                        "last_klines_json": insert_stmt.excluded.last_klines_json,
+                        "last_time": insert_stmt.excluded.last_time,
+                        "kline_count": insert_stmt.excluded.kline_count,
+                        "created_at": insert_stmt.excluded.created_at,
+                    },
+                )
+                session.execute(stmt)
                 session.commit()
                 logger.debug(f"保存每日快照: {code} {date_obj}, 价格={last_k.get('Close')}, K线数={len(klines)}")
                 return True
