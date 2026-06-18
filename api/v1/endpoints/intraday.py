@@ -352,8 +352,7 @@ def _get_intraday_klines(stock_code: str, date_str: Optional[str] = None) -> lis
     支持的数据源（按优先级）:
     1. 腾讯财经1分钟分时 (高粒度，首选)
     2. 新浪财经5分钟K线 (标准OHLC，降级备选)
-    3. 东方财富 (stock_zh_a_hist_min_em)
-    4. 其他 akshare 分时接口
+    （东方财富及akshare其他接口已禁用，因IP被限制）
 
     Args:
         stock_code: 股票代码（如 000001，600519）或指数代码（如 sh000001）
@@ -396,7 +395,7 @@ def _get_intraday_klines(stock_code: str, date_str: Optional[str] = None) -> lis
             else:
                 market_prefix = "sh" if code.startswith("6") else "sz"
                 symbol = f"{market_prefix}{code}"
-            url = f"https://web.ifzq.gtimg.cn/appstock/app/minute/query?code={symbol}"
+            url = f"https://ifzq.gtimg.cn/appstock/app/minute/query?code={symbol}"
             r = requests.get(url, timeout=8)
             data = r.json()
             stock_data = data.get("data", {}).get(symbol, {})
@@ -478,41 +477,38 @@ def _get_intraday_klines(stock_code: str, date_str: Optional[str] = None) -> lis
 
         fetch_functions.append(("新浪财经5分钟K线", fetch_sina_5min))
 
-        # 数据源 3: 东方财富 (stock_zh_a_hist_min_em)
-        if hasattr(ak, 'stock_zh_a_hist_min_em'):
-            def fetch_em():
-                df = ak.stock_zh_a_hist_min_em(
-                    symbol=code,
-                    period="1",
-                    adjust="",
-                )
-                return df
+        # 数据源 3: 东方财富 (stock_zh_a_hist_min_em) — 已禁用，因 IP 被限制
+        # if hasattr(ak, 'stock_zh_a_hist_min_em'):
+        #     def fetch_em():
+        #         df = ak.stock_zh_a_hist_min_em(
+        #             symbol=code,
+        #             period="1",
+        #             adjust="",
+        #         )
+        #         return df
+        #     fetch_functions.append(("东方财富接口", fetch_em))
 
-            fetch_functions.append(("东方财富接口", fetch_em))
-
-        # 数据源 4: 尝试 akshare 的其他可能的分时接口
-        for attr_name in dir(ak):
-            if 'hist_min' in attr_name and (attr_name.startswith('stock') or attr_name.startswith('ak')):
-                try:
-                    func = getattr(ak, attr_name)
-
-                    def create_fetch_func(f):
-                        def fetch_func():
-                            try:
-                                return f(symbol=code, period="1", adjust="")
-                            except:
-                                try:
-                                    return f(symbol=code)
-                                except:
-                                    try:
-                                        return f(code)
-                                    except:
-                                        raise
-                        return fetch_func
-
-                    fetch_functions.append((attr_name, create_fetch_func(func)))
-                except:
-                    continue
+        # 数据源 4: akshare 其他分时接口 — 已禁用，因 IP 被限制
+        # for attr_name in dir(ak):
+        #     if 'hist_min' in attr_name and (attr_name.startswith('stock') or attr_name.startswith('ak')):
+        #         try:
+        #             func = getattr(ak, attr_name)
+        #             def create_fetch_func(f):
+        #                 def fetch_func():
+        #                     try:
+        #                         return f(symbol=code, period="1", adjust="")
+        #                     except:
+        #                         try:
+        #                             return f(symbol=code)
+        #                         except:
+        #                             try:
+        #                                 return f(code)
+        #                             except:
+        #                                 raise
+        #                 return fetch_func
+        #             fetch_functions.append((attr_name, create_fetch_func(func)))
+        #         except:
+        #             continue
 
         if not fetch_functions:
             raise HTTPException(
@@ -2863,6 +2859,12 @@ def _run_batch_download(task_id: str, target_date: str, max_workers: int, force:
                             fail_reason: str = str(info)
                             # 检查是否为连接相关错误（频率限制），但不包括"所有数据源耗尽"
                             is_all_sources_failed = "所有数据源获取" in fail_reason
+                            if is_all_sources_failed:
+                                # 所有数据源均失败，记录到数据库供后续"失败重试"
+                                try:
+                                    db.mark_batch_download_failed(code, q_date, str(info))
+                                except Exception:
+                                    pass
                             is_connection_error = (
                                 not is_all_sources_failed
                                 and any(
@@ -3058,6 +3060,14 @@ def start_batch_download(
     target_date = date or datetime.now().strftime("%Y-%m-%d")
     task_id = uuid_module.uuid4().hex[:12]
 
+    # 清除上一个交易日的失败记录，节省空间
+    from datetime import date as date_type
+    q_date = date_type.fromisoformat(target_date) if target_date else date_type.today()
+    try:
+        db_manager.clear_previous_date_failed(q_date)
+    except Exception:
+        pass
+
     task = {
         "task_id": task_id,
         "status": "running",
@@ -3181,6 +3191,257 @@ def toggle_pause_batch_download(
         new_state = task["paused"]
     action = "已暂停" if new_state else "已继续"
     return {"message": action, "task_id": task_id, "paused": new_state}
+
+
+def _run_batch_download_retry(task_id: str, target_date: str, max_workers: int, codes: list):
+    """后台线程：重试下载失败标的的分时数据
+
+    与 _run_batch_download 类似，但只处理指定的 codes 列表，
+    重试成功后清除 batch_download_failed 表中的记录。
+    """
+    from datetime import date as date_type
+
+    with _batch_download_lock:
+        task = _batch_download_tasks.get(task_id)
+        if not task:
+            return
+
+    try:
+        from stock_selector.stock_pool import get_all_stock_code_name_pairs
+
+        stock_pairs = get_all_stock_code_name_pairs(force_refresh=False)
+        code_to_name = {code: name for code, name in stock_pairs}
+
+        with _batch_download_lock:
+            task["total"] = len(codes)
+            task["current_code"] = ""
+            task["current_name"] = ""
+
+        from src.storage import DatabaseManager as DBManager
+
+        db = DBManager.get_instance()
+        q_date = date_type.fromisoformat(target_date) if target_date else date_type.today()
+
+        processed = 0
+        failed = 0
+        skipped = 0
+
+        batch_size = 20
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        for i in range(0, len(codes), batch_size):
+            # 检查是否被暂停/取消
+            while True:
+                with _batch_download_lock:
+                    if task.get("cancelled"):
+                        task["status"] = "cancelled"
+                        task["end_time"] = time.time()
+                        return
+                    paused = task.get("paused", False)
+                if not paused:
+                    break
+                time.sleep(1)
+
+            with _batch_download_lock:
+                if task.get("cancelled"):
+                    task["status"] = "cancelled"
+                    task["end_time"] = time.time()
+                    return
+
+            batch = codes[i : i + batch_size]
+
+            def _fetch_one(code: str):
+                nonlocal db, q_date
+                try:
+                    klines = _get_intraday_klines(code, target_date)
+                    if not klines:
+                        return code, False, "无分时数据"
+
+                    _inject_avg_price(klines)
+                    actual_date_str = _extract_date_from_klines(klines, q_date.isoformat())
+                    try:
+                        actual_q_date = date_type.fromisoformat(actual_date_str)
+                    except (ValueError, TypeError):
+                        actual_q_date = q_date
+                    db.save_intraday_klines(code, actual_q_date, klines)
+                    _set_cached_klines(code, klines)
+                    # 重试成功，清除失败记录
+                    try:
+                        db.clear_batch_download_failed(code, q_date)
+                    except Exception:
+                        pass
+                    return code, True, False
+                except Exception as e:
+                    return code, False, str(e)[:200]
+
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {executor.submit(_fetch_one, code): code for code in batch}
+                from concurrent.futures import TimeoutError as FuturesTimeoutError
+
+                try:
+                    for future in as_completed(futures, timeout=30):
+                        code = futures[future]
+                        try:
+                            code, ok, info = future.result(timeout=5)
+                        except Exception as e:
+                            ok, info = False, str(e)[:200]
+
+                        if ok:
+                            processed += 1
+                        else:
+                            failed += 1
+                            with _batch_download_lock:
+                                if len(task["errors"]) < 20:
+                                    task["errors"].append({"code": code, "error": str(info)})
+
+                        with _batch_download_lock:
+                            task["completed"] = processed + skipped
+                            task["failed"] = failed
+                            task["current_code"] = code
+                            task["current_name"] = code_to_name.get(code, "")
+                            task["elapsed_seconds"] = time.time() - task["start_time"]
+
+                except FuturesTimeoutError:
+                    for future in futures:
+                        future.cancel()
+                    with _batch_download_lock:
+                        task["failed"] = failed + len(futures)
+
+            time.sleep(0.3)
+
+        with _batch_download_lock:
+            task["status"] = "completed"
+            task["end_time"] = time.time()
+            task["elapsed_seconds"] = task["end_time"] - task["start_time"]
+
+        logger.info(
+            f"失败重试完成: {task_id}, 成功{processed}, 失败{failed}, "
+            f"耗时{task['elapsed_seconds']:.1f}s"
+        )
+
+    except Exception as e:
+        logger.error(f"失败重试异常: {task_id}: {e}", exc_info=True)
+        with _batch_download_lock:
+            task["status"] = "failed"
+            task["end_time"] = time.time()
+
+
+@router.post(
+    "/batch-download/retry-failed",
+    response_model=BatchDownloadStatus,
+    summary="重试批量下载失败的标的",
+)
+def retry_batch_download_failed(
+    date: Optional[str] = Body(None, description="目标日期 YYYY-MM-DD，默认当日"),
+    max_workers: int = Body(4, ge=1, le=10, description="并行线程数"),
+    db_manager: DatabaseManager = Depends(get_database_manager),
+) -> BatchDownloadStatus:
+    """从 batch_download_failed 表读取失败标的，重新下载分时数据"""
+    import threading
+    import uuid as uuid_module
+
+    from datetime import date as date_type
+
+    # 检查是否已有正在运行的任务
+    with _batch_download_lock:
+        for tid, t in _batch_download_tasks.items():
+            if t.get("status") == "running":
+                return BatchDownloadStatus(
+                    task_id=tid,
+                    status="running",
+                    total=t["total"],
+                    completed=t["completed"],
+                    failed=t["failed"],
+                    skipped=t.get("skipped", 0),
+                    current_code=t.get("current_code", ""),
+                    current_name=t.get("current_name", ""),
+                    elapsed_seconds=time.time() - t.get("start_time", time.time()),
+                    errors=t.get("errors", []),
+                    date=t.get("date", ""),
+                    paused=t.get("paused", False),
+                    waiting_retry=t.get("waiting_retry", False),
+                    retry_countdown=t.get("retry_countdown", 0),
+                )
+
+    target_date = date or datetime.now().strftime("%Y-%m-%d")
+    q_date = date_type.fromisoformat(target_date) if target_date else date_type.today()
+
+    # 查询失败列表
+    failed_records = db_manager.get_batch_download_failed(q_date)
+    if not failed_records:
+        return BatchDownloadStatus(
+            task_id="",
+            status="completed",
+            total=0,
+            completed=0,
+            failed=0,
+            date=target_date,
+        )
+
+    failed_codes = [r["code"] for r in failed_records]
+    task_id = uuid_module.uuid4().hex[:12]
+
+    task = {
+        "task_id": task_id,
+        "status": "running",
+        "total": len(failed_codes),
+        "completed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "current_code": "",
+        "current_name": "",
+        "start_time": time.time(),
+        "end_time": None,
+        "errors": [],
+        "date": target_date,
+        "cancelled": False,
+        "paused": False,
+        "waiting_retry": False,
+        "retry_countdown": 0,
+    }
+
+    with _batch_download_lock:
+        _batch_download_tasks[task_id] = task
+
+    thread = threading.Thread(
+        target=_run_batch_download_retry,
+        args=(task_id, target_date, max_workers, failed_codes),
+        daemon=True,
+    )
+    thread.start()
+
+    logger.info(f"启动失败重试: {task_id}, 日期={target_date}, 标的数={len(failed_codes)}")
+
+    return BatchDownloadStatus(
+        task_id=task_id,
+        status="running",
+        total=len(failed_codes),
+        completed=0,
+        failed=0,
+        date=target_date,
+    )
+
+
+@router.get(
+    "/batch-download/failed-list",
+    summary="查询批量下载失败列表",
+)
+def get_batch_download_failed_list(
+    date: Optional[str] = Query(None, description="目标日期 YYYY-MM-DD，默认当日"),
+    db_manager: DatabaseManager = Depends(get_database_manager),
+) -> dict:
+    """查询批量下载失败的标的列表"""
+    from datetime import date as date_type
+
+    target_date = date or datetime.now().strftime("%Y-%m-%d")
+    q_date = date_type.fromisoformat(target_date) if target_date else date_type.today()
+
+    failed_records = db_manager.get_batch_download_failed(q_date)
+    return {
+        "date": target_date,
+        "failed_list": failed_records,
+        "count": len(failed_records),
+    }
 
 
 # ---------- 搜索历史 ----------

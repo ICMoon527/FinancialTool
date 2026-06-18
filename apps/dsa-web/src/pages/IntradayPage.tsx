@@ -15,6 +15,7 @@ import {
   getBatchDownloadStatus,
   cancelBatchDownload,
   togglePauseBatchDownload,
+  retryFailedBatchDownload,
   getIntradayConfig,
   type IntradayDataResponse,
   type IntradayKlinePoint,
@@ -459,6 +460,21 @@ const IntradayPage: React.FC = () => {
       setBatchDownload(prev => prev ? { ...prev, paused: result.paused } : null);
     } catch {
       // 请求失败，轮询会自动同步状态
+    }
+  }, []);
+
+  const handleRetryFailed = useCallback(async () => {
+    const task = batchDownloadRef.current;
+    if (!task?.date) return;
+    try {
+      const status = await retryFailedBatchDownload(task.date);
+      setBatchDownload(status);
+      // 如果有失败标的，启动轮询
+      if (status.total > 0) {
+        setShowBatchModal(true);
+      }
+    } catch (err) {
+      console.error('失败重试启动失败:', err);
     }
   }, []);
 
@@ -4174,6 +4190,15 @@ const IntradayPage: React.FC = () => {
                     取消下载
                   </button>
                 </>
+              )}
+              {batchDownload.status === 'completed' && batchDownload.failed > 0 && (
+                <button
+                  type="button"
+                  onClick={handleRetryFailed}
+                  className="px-3 py-1.5 text-xs font-medium rounded border border-orange-500/30 text-orange-400 hover:bg-orange-500/10 transition-colors"
+                >
+                  失败重试 ({batchDownload.failed})
+                </button>
               )}
               {batchDownload.status !== 'running' && (
                 <button

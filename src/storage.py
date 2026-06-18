@@ -742,6 +742,28 @@ class IntradayDailySummary(Base):
         }
 
 
+class BatchDownloadFailed(Base):
+    """
+    批量下载失败记录表
+    记录批量下载分时数据时所有数据源均失败的标的，用于后续"失败重试"功能
+    """
+
+    __tablename__ = "batch_download_failed"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    code = Column(String(10), nullable=False, index=True)
+    date = Column(Date, nullable=False, index=True)  # 交易日日期
+    error_msg = Column(String(500))  # 失败原因
+    retry_count = Column(Integer, default=0)  # 重试次数
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    __table_args__ = (
+        UniqueConstraint("code", "date", name="uix_batch_download_failed_code_date"),
+        Index("ix_batch_download_failed_date", "date"),
+    )
+
+
 class ChipDistributionCache(Base):
     """
     筹码分布缓存表
@@ -3430,6 +3452,107 @@ class DatabaseManager:
             klines = [r.to_dict() for r in records[-limit:]]
             logger.debug(f"从K线表加载预热数据: {code} prev_date={prev_date}, {len(klines)} 根K线")
             return {"date": prev_date, "klines": klines}
+
+    # ============================================================
+    # 批量下载失败记录
+    # ============================================================
+
+    def mark_batch_download_failed(self, code: str, date_obj: date, error_msg: str = "") -> None:
+        """记录批量下载失败的标的
+
+        Args:
+            code: 股票代码
+            date_obj: 交易日日期
+            error_msg: 失败原因
+        """
+
+        with self.get_session() as session:
+            try:
+                # 先查询是否存在记录
+                existing = (
+                    session.query(BatchDownloadFailed)
+                    .filter(
+                        BatchDownloadFailed.code == code,
+                        BatchDownloadFailed.date == date_obj,
+                    )
+                    .one_or_none()
+                )
+                if existing:
+                    # 更新已有记录
+                    existing.error_msg = error_msg[:500] if error_msg else ""
+                    existing.retry_count = existing.retry_count + 1
+                    existing.updated_at = datetime.now()
+                else:
+                    # 创建新记录
+                    record = BatchDownloadFailed(
+                        code=code,
+                        date=date_obj,
+                        error_msg=error_msg[:500] if error_msg else "",
+                        retry_count=0,
+                        created_at=datetime.now(),
+                        updated_at=datetime.now(),
+                    )
+                    session.add(record)
+                session.commit()
+            except Exception as e:
+                session.rollback()
+                logger.warning(f"记录批量下载失败标记失败 {code} {date_obj}: {e}")
+
+    def clear_batch_download_failed(self, code: str, date_obj: date) -> None:
+        """清除单条批量下载失败记录（重试成功时调用）
+
+        Args:
+            code: 股票代码
+            date_obj: 交易日日期
+        """
+        with self.get_session() as session:
+            try:
+                session.query(BatchDownloadFailed).filter(
+                    BatchDownloadFailed.code == code,
+                    BatchDownloadFailed.date == date_obj,
+                ).delete()
+                session.commit()
+            except Exception as e:
+                session.rollback()
+                logger.warning(f"清除批量下载失败记录失败 {code} {date_obj}: {e}")
+
+    def get_batch_download_failed(self, date_obj: date) -> list[dict]:
+        """查询指定日期的批量下载失败列表
+
+        Args:
+            date_obj: 交易日日期
+
+        Returns:
+            失败记录列表 [{"code": ..., "error_msg": ..., "retry_count": ...}, ...]
+        """
+        with self.get_session() as session:
+            records = (
+                session.query(BatchDownloadFailed)
+                .filter(BatchDownloadFailed.date == date_obj)
+                .all()
+            )
+            return [
+                {"code": r.code, "error_msg": r.error_msg, "retry_count": r.retry_count}
+                for r in records
+            ]
+
+    def clear_previous_date_failed(self, current_date: date) -> None:
+        """清除上一个交易日的失败记录（启动新批量下载时调用）
+
+        Args:
+            current_date: 当前交易日日期
+        """
+        with self.get_session() as session:
+            try:
+                # 删除所有非当前日期的失败记录
+                session.query(BatchDownloadFailed).filter(
+                    BatchDownloadFailed.date < current_date,
+                ).delete()
+                session.commit()
+                logger.debug(f"已清除 {current_date} 之前的批量下载失败记录")
+            except Exception as e:
+                session.rollback()
+                logger.warning(f"清除旧失败记录失败: {e}")
 
 
 # 便捷函数

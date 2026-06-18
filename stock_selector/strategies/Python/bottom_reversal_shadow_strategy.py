@@ -7,7 +7,7 @@ A1:= (MIN(C,O)-L)/ABS(C-O)≥1.5;   -- 下影线长度 ≥ 实体1.5倍
 XL:=BARSLAST(L=LLV(L,30));         -- 距30日最低点的周期数
 A2:=L＞REF(L,XL);                  -- 当前最低价 > 30日最低点（已反弹）
 XG:=BARSLAST(H=HHV(H,10));         -- 距10日最高点的周期数
-A3:=XL＞XG;                        -- 30日低点出现在10日高点之后（先涨后跌）
+A3:=XG＞XL;                        -- 30日低点出现在10日高点之后（先见顶后见底，经历下跌）
 A4:=REF(C,XG)/REF(L,XL)＞1.3;      -- 高点收盘价 / 低点最低价 > 1.3（跌幅超30%）
 A5:=LLV(L,4)=L;                    -- 当前最低价是4日内最低（局部低点）
 RESULT: A1 AND A2 AND A3 AND A4 AND A5;
@@ -139,8 +139,8 @@ class BottomReversalShadowStrategy(StockSelectorStrategy):
             if xg is None:
                 return None
 
-            # ---- A3: 30日低点出现在10日高点之后（XL > XG，即低点距今更近） ----
-            a3 = xl > xg
+            # ---- A3: 10日高点出现在30日低点之前（XG > XL，先见顶后见底，经历下跌） ----
+            a3 = xg > xl
 
             # ---- A4: 高点收盘价 / 低点最低价 > 1.3 ----
             close_at_xg = close[n - 1 - xg]

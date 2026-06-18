@@ -264,3 +264,19 @@ class BatchDownloadStatus(BaseModel):
     paused: bool = False
     waiting_retry: bool = False
     retry_countdown: int = 0
+
+
+class FailedListItem(BaseModel):
+    """批量下载失败标的项"""
+
+    code: str = ""
+    error_msg: str = ""
+    retry_count: int = 0
+
+
+class FailedListResponse(BaseModel):
+    """批量下载失败列表响应"""
+
+    date: str = ""
+    failed_list: List[FailedListItem] = Field(default_factory=list)
+    count: int = 0

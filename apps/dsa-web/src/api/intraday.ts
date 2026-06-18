@@ -381,3 +381,45 @@ export async function togglePauseBatchDownload(
   if (!resp.ok) throw new Error(`暂停/继续失败: ${resp.status}`);
   return resp.json();
 }
+
+export async function retryFailedBatchDownload(
+  date?: string,
+  maxWorkers?: number,
+): Promise<BatchDownloadStatus> {
+  const body: Record<string, any> = {};
+  if (date) body.date = date;
+  if (maxWorkers) body.max_workers = maxWorkers;
+  const resp = await fetch(`${API_BASE}/batch-download/retry-failed`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw new Error(`失败重试启动失败: ${resp.status}`);
+  return resp.json();
+}
+
+export interface FailedListItem {
+  code: string;
+  error_msg: string;
+  retry_count: number;
+}
+
+export interface FailedListResponse {
+  date: string;
+  failed_list: FailedListItem[];
+  count: number;
+}
+
+export async function getBatchDownloadFailedList(
+  date?: string,
+): Promise<FailedListResponse> {
+  const ts = Date.now();
+  const params = date
+    ? `?date=${encodeURIComponent(date)}&_=${ts}`
+    : `?_=${ts}`;
+  const resp = await fetch(`${API_BASE}/batch-download/failed-list${params}`, {
+    headers: { 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' },
+  });
+  if (!resp.ok) throw new Error(`查询失败列表失败: ${resp.status}`);
+  return resp.json();
+}

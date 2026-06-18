@@ -50,6 +50,21 @@ DEFAULT_QUIET_LOGGERS = [
 ]
 
 
+class SuppressPathFilter(logging.Filter):
+    """抑制特定路径的 uvicorn 访问日志"""
+
+    def __init__(self, suppressed_paths: list = None):
+        super().__init__()
+        self.suppressed_paths = suppressed_paths or []
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        for path in self.suppressed_paths:
+            if path in msg:
+                return False
+        return True
+
+
 def setup_logging(
     log_prefix: str = "app",
     log_dir: str = "./logs",
@@ -135,6 +150,10 @@ def setup_logging(
 
     for logger_name in quiet_loggers:
         logging.getLogger(logger_name).setLevel(logging.WARNING)
+
+    # 抑制 uvicorn 访问日志中批量下载进度轮询的刷屏日志
+    uvicorn_access = logging.getLogger("uvicorn.access")
+    uvicorn_access.addFilter(SuppressPathFilter(["/batch-download/status"]))
 
     # 输出初始化完成信息（使用相对路径）
     try:
