@@ -606,6 +606,13 @@ const IntradayPage: React.FC = () => {
     loadHistory();
   }, [loadHistory]);
 
+  // ── 搜索历史加载后，立即并行获取侧边栏快照（跳过K线拉取，快速展示） ──
+  useEffect(() => {
+    if (searchHistory.length > 0) {
+      fetchAndUpdate(false, true);
+    }
+  }, [searchHistory.length]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // ── 搜索历史股票实时行情轮询（仅盘中） ──
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollingIntervalRef = useRef(30000);      // 从后端配置动态获取
@@ -624,13 +631,13 @@ const IntradayPage: React.FC = () => {
 
   const updateChartIncrementalRef = useRef<(data: IntradayDataResponse, dateStr: string) => void>(() => {});
 
-  const fetchAndUpdate = useCallback(async (includeSignals: boolean) => {
+  const fetchAndUpdate = useCallback(async (includeSignals: boolean, skipKlineFetch = false) => {
     const codes = searchHistoryRef.current.map(h => h.stock_code);
     if (codes.length === 0) return;
     const requestedCode = intradayData?.stock_code || '';
     try {
       const existingKlineCount = klineRawDataRef.current.length || 0;
-      const resp = await getBatchStatus(codes, requestedCode, includeSignals, existingKlineCount);
+      const resp = await getBatchStatus(codes, requestedCode, includeSignals, existingKlineCount, skipKlineFetch);
 
       // ── 快照去重：仅在数据变化时更新 sidebar ──
       const snapshotJson = JSON.stringify(resp.snapshots);
@@ -746,12 +753,6 @@ const IntradayPage: React.FC = () => {
           setIntradayData(data);
           setInputError(undefined);
           return data;
-        })
-        .then(() => {
-          // 自动加载完成后获取侧边栏快照（不含信号检测，避免与 auto-load 竞争资源）
-          if (searchHistory.length > 0) {
-            fetchAndUpdate(false);
-          }
         })
         .catch(err => {
           console.error('自动加载分时数据失败:', err);

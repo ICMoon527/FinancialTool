@@ -278,6 +278,7 @@ export async function getBatchStatus(
   currentCode: string,
   includeSignals: boolean = false,
   existingKlineCount: number = 0,
+  skipKlineFetch: boolean = false,
 ): Promise<BatchStatusResponse> {
   const resp = await fetch(`${API_BASE}/batch-status`, {
     method: 'POST',
@@ -287,6 +288,7 @@ export async function getBatchStatus(
       current_code: currentCode,
       include_signals: includeSignals,
       existing_kline_count: existingKlineCount,
+      skip_kline_fetch: skipKlineFetch,
     }),
   });
   if (!resp.ok) throw new Error(`批量状态查询失败: ${resp.status}`);

@@ -5,6 +5,7 @@ import {
   ChangePasswordCard,
   ImageStockExtractor,
   SettingsAlert,
+  SettingsField,
   SettingsGroup,
   SettingsLoading,
 } from '../components/settings';
@@ -200,16 +201,29 @@ const SettingsPage: React.FC = () => {
               </div>
             ) : null}
             {activeItems.length ? (
-              activeGroups.map((group) => (
-                <SettingsGroup
-                  key={group.name}
-                  name={group.name}
-                  items={group.items}
-                  issueByKey={issueByKey}
-                  disabled={isSaving}
-                  onChange={setDraftValue}
-                />
-              ))
+              activeGroups.length === 1 ? (
+                activeGroups[0].items.map((item) => (
+                  <SettingsField
+                    key={item.key}
+                    item={item}
+                    value={item.value}
+                    disabled={isSaving}
+                    onChange={setDraftValue}
+                    issues={issueByKey[item.key] || []}
+                  />
+                ))
+              ) : (
+                activeGroups.map((group) => (
+                  <SettingsGroup
+                    key={group.name}
+                    name={group.name}
+                    items={group.items}
+                    issueByKey={issueByKey}
+                    disabled={isSaving}
+                    onChange={setDraftValue}
+                  />
+                ))
+              )
             ) : (
               <div className="rounded-xl border border-white/8 bg-elevated/40 p-5 text-sm text-secondary">
                 当前分类下暂无配置项。

@@ -88,6 +88,9 @@ class SystemConfigService:
         for key in all_keys:
             raw_value = config_map.get(key, "")
             field_schema = schema_by_key[key]
+            # 如果 .env 中没有该 key，回退到 schema 的 default_value 以保持前后端一致
+            if not raw_value and field_schema.get("default_value") is not None:
+                raw_value = str(field_schema["default_value"])
             item: Dict[str, Any] = {
                 "key": key,
                 "value": raw_value,
