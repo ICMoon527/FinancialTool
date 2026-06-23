@@ -35,7 +35,7 @@ from indicators.indicators.bollinger import Bollinger
 from indicators.indicators.tiandao import Tiandao
 from indicators.indicators.chip_distribution import ChipDistribution
 from src.storage import DatabaseManager, get_db
-from src.core.trading_calendar import get_start_date_by_trading_days, get_market_for_stock
+from src.core.trading_calendar import get_start_date_by_trading_days, get_market_for_stock, is_market_open
 from src.services.turnover_service import TurnoverService
 from src.config import get_config
 
@@ -278,22 +278,65 @@ class VisualizationService:
             last_kline_date = kline_data[-1]['date']
             logger.info(f"{stock_code} 转换后 K线数据日期范围: {first_kline_date} ~ {last_kline_date}")
         
-        # ── 确保今日数据纳入指标计算（参考线如MA5、金牛等需要完整的含今日数据）──
-        today_str = date.today().strftime('%Y-%m-%d')
-        has_today_data = any(k.get('date') == today_str for k in kline_data)
-        if not has_today_data:
-            try:
-                logger.info(f"正在获取 {stock_code} 实时行情作为今日数据...")
-                quote = fetcher_manager.get_realtime_quote(stock_code)
-                if quote is not None:
-                    realtime_kline = _convert_realtime_quote_to_kline(quote)
-                    kline_data.append(realtime_kline)
-                    has_today_data = True
-                    logger.info(f"成功整合 {stock_code} 实时行情作为今日K线数据")
-                else:
-                    logger.warning(f"{stock_code} 实时行情无数据，今日数据将不纳入指标计算")
-            except Exception as e:
-                logger.warning(f"获取 {stock_code} 实时行情作为今日数据失败: {e}")
+        # ═══════════════════════════════════════════════════════════════════════════════
+        # 实时行情整合 & 今日占位行过滤
+        # ═══════════════════════════════════════════════════════════════════════════════
+        #
+        # 背景：日K可视化需要处理"今日"数据的显示逻辑。数据来源有两条路径：
+        #   1. get_daily_data（日K API）：end_date 传 today+1，某些数据源会返回今日
+        #      的占位行（volume=0, open=close=昨收），导致前端画出虚假的今日K线柱子。
+        #   2. get_realtime_quote（实时行情API）：非交易时段返回的是上一交易日的快照
+        #      （volume=0），如果无条件追加为今日数据，同样产生虚假柱子。
+        #
+        # 修复方案：通过交易日历（is_market_open + _is_trading_time）统一判断，
+        # 不依赖成交量等复杂推测，逻辑清晰可追溯。
+        #
+        # 各场景行为：
+        #   ┌──────────────────┬──────────────┬──────────────────────┬──────────────┐
+        #   │ 场景             │ 获取实时行情  │ 过滤今日占位行        │ 前端今日柱子  │
+        #   ├──────────────────┼──────────────┼──────────────────────┼──────────────┤
+        #   │ 非交易日          │ 否           │ 是（移除 volume=0）   │ 无           │
+        #   │ 交易日·盘前       │ 否           │ 是（移除 volume=0）   │ 无           │
+        #   │ 交易日·盘中       │ 是（补充API） │ 否                   │ 有（实时更新） │
+        #   │ 交易日·收盘后     │ 否           │ 是（仅移除占位行）    │ 有（API已含）  │
+        #   └──────────────────┴──────────────┴──────────────────────┴──────────────┘
+        #
+        # 关键变量：
+        #   in_trading = _is_trading_time() AND is_market_open(market, today)
+        #   _is_trading_time()  → 时间在 9:15-15:00 内（含集合竞价）
+        #   is_market_open()    → 今日是否为交易日（基于 data/trading_calendar.pkl）
+        #
+        market = get_market_for_stock(stock_code) or "cn"
+        in_trading = _is_trading_time() and is_market_open(market, today)
+        has_realtime_quote = False
+
+        # ── 1. 实时行情整合：仅「交易日 + 盘中」补充今日数据 ──
+        if in_trading:
+            today_str = today.strftime('%Y-%m-%d')
+            if not any(k.get('date') == today_str for k in kline_data):
+                try:
+                    logger.info(f"正在获取 {stock_code} 实时行情作为今日数据...")
+                    quote = fetcher_manager.get_realtime_quote(stock_code)
+                    if quote is not None:
+                        realtime_kline = _convert_realtime_quote_to_kline(quote)
+                        kline_data.append(realtime_kline)
+                        has_realtime_quote = True
+                        logger.info(f"成功整合 {stock_code} 实时行情作为今日K线数据")
+                    else:
+                        logger.warning(f"{stock_code} 实时行情无数据，今日数据将不纳入指标计算")
+                except Exception as e:
+                    logger.warning(f"获取 {stock_code} 实时行情作为今日数据失败: {e}")
+
+        # ── 2. 过滤今日占位行：非交易时段移除 volume=0 的今日数据 ──
+        if not in_trading:
+            today_str = today.strftime('%Y-%m-%d')
+            before = len(kline_data)
+            kline_data = [
+                k for k in kline_data
+                if not (k.get('date') == today_str and k.get('volume', 0) == 0)
+            ]
+            if len(kline_data) < before:
+                logger.info(f"过滤了 {before - len(kline_data)} 条今日占位K线数据（非交易时段）")
         
         # 获取股票名称 - 已整合今日数据的可以跳过实时行情
         # 大盘指数名称映射（代码带 sh/sz 前缀）
@@ -306,7 +349,7 @@ class VisualizationService:
         if stock_code_lower in _INDEX_NAME_MAP:
             stock_name = _INDEX_NAME_MAP[stock_code_lower]
         else:
-            stock_name = fetcher_manager.get_stock_name(stock_code, skip_realtime=has_today_data)
+            stock_name = fetcher_manager.get_stock_name(stock_code, skip_realtime=has_realtime_quote)
         
         # 计算指标（不保存到数据库，直接计算）
         indicators_data = []
