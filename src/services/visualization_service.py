@@ -63,74 +63,6 @@ def _is_trading_time() -> bool:
     return trading_start <= current_time <= trading_end
 
 
-def _should_add_realtime_quote(kline_data: List[Dict[str, Any]], force_update: bool = False) -> bool:
-    """
-    判断是否应该添加实时行情
-    
-    Args:
-        kline_data: 现有的 K线数据列表，每个元素是包含 'date' 字段的字典
-        force_update: 是否强制更新，跳过交易时间和已有数据的检查
-        
-    Returns:
-        True 如果应该添加实时行情，否则返回 False
-    """
-    # 如果强制更新，直接返回 True
-    if force_update:
-        return True
-    
-    # 获取今天的日期字符串
-    today_str = date.today().strftime('%Y-%m-%d')
-    
-    # 检查 kline_data 中是否已经有今天的数据
-    has_today_data = False
-    for kline in kline_data:
-        if kline.get('date') == today_str:
-            has_today_data = True
-            break
-    
-    if has_today_data:
-        # 已有今天数据，不需要添加
-        return False
-    
-    # 没有今天的数据，检查时间有两种情况需要添加：
-    # 1. 在交易时间内
-    # 2. 收盘后，但历史数据还没更新
-    if _is_trading_time() or _is_after_trading_day_and_should_add_realtime_after_close():
-        return True
-    
-    return False
-
-
-def _is_after_trading_day_and_should_add_realtime_after_close() -> bool:
-    """
-    判断是否是交易日且收盘后，但应该补充实时行情
-    
-    Returns:
-        True 如果是交易日且在收盘后2小时内，或历史数据可能还没更新
-    """
-    from datetime import datetime, time
-    from stock_selector.trading_calendar import is_trading_day
-    
-    today = date.today()
-    now = datetime.now()
-    
-    # 首先检查今天是不是交易日
-    if not is_trading_day(today):
-        return False
-    
-    # 检查是否在收盘后（15:00 之后，但在收盘后2小时内（17:00 之前）
-    # 这个时间段内，历史数据可能还没更新
-    market_close = time(15, 0, 0)
-    market_close_plus_2h = time(17, 0, 0)
-    current_time = now.time()
-    
-    if market_close < current_time <= market_close_plus_2h:
-        logger.info(f"交易日收盘后{current_time}，历史数据可能还没更新，尝试补充实时行情")
-        return True
-    
-    return False
-
-
 def _convert_realtime_quote_to_kline(quote: UnifiedRealtimeQuote) -> Dict[str, Any]:
     """
     将 UnifiedRealtimeQuote 对象转换为 K线数据格式字典
@@ -346,30 +278,24 @@ class VisualizationService:
             last_kline_date = kline_data[-1]['date']
             logger.info(f"{stock_code} 转换后 K线数据日期范围: {first_kline_date} ~ {last_kline_date}")
         
-        # 整合实时行情数据
-        try:
-            # 首先判断是否需要整合实时行情
-            should_add = _should_add_realtime_quote(kline_data, force_update=force_update)
-            
-            if not should_add:
-                logger.info(f"{stock_code} 不需要整合实时行情（非交易时间或已有今日数据），使用历史数据")
-            else:
-                logger.info(f"正在获取 {stock_code} 实时行情数据...")
+        # ── 确保今日数据纳入指标计算（参考线如MA5、金牛等需要完整的含今日数据）──
+        today_str = date.today().strftime('%Y-%m-%d')
+        has_today_data = any(k.get('date') == today_str for k in kline_data)
+        if not has_today_data:
+            try:
+                logger.info(f"正在获取 {stock_code} 实时行情作为今日数据...")
                 quote = fetcher_manager.get_realtime_quote(stock_code)
-                
                 if quote is not None:
-                    logger.info(f"将 {stock_code} 实时行情整合到 K线数据中...")
                     realtime_kline = _convert_realtime_quote_to_kline(quote)
                     kline_data.append(realtime_kline)
-                    logger.info(f"成功整合 {stock_code} 实时行情数据")
+                    has_today_data = True
+                    logger.info(f"成功整合 {stock_code} 实时行情作为今日K线数据")
                 else:
-                    logger.warning(f"{stock_code} 获取实时行情失败，尝试其他方法...")
-                    # 这里可以添加其他获取实时行情的方法
-        except Exception as e:
-            logger.warning(f"获取或整合 {stock_code} 实时行情失败: {e}，继续使用历史数据")
+                    logger.warning(f"{stock_code} 实时行情无数据，今日数据将不纳入指标计算")
+            except Exception as e:
+                logger.warning(f"获取 {stock_code} 实时行情作为今日数据失败: {e}")
         
-        # 获取股票名称 - 如果不需要整合实时行情，则跳过实时行情获取
-        should_add = _should_add_realtime_quote(kline_data, force_update=force_update)
+        # 获取股票名称 - 已整合今日数据的可以跳过实时行情
         # 大盘指数名称映射（代码带 sh/sz 前缀）
         _INDEX_NAME_MAP = {
             "sh000001": "上证指数", "sz399001": "深证成指",
@@ -380,7 +306,7 @@ class VisualizationService:
         if stock_code_lower in _INDEX_NAME_MAP:
             stock_name = _INDEX_NAME_MAP[stock_code_lower]
         else:
-            stock_name = fetcher_manager.get_stock_name(stock_code, skip_realtime=not should_add)
+            stock_name = fetcher_manager.get_stock_name(stock_code, skip_realtime=has_today_data)
         
         # 计算指标（不保存到数据库，直接计算）
         indicators_data = []
