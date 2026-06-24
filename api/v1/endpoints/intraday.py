@@ -178,13 +178,78 @@ router = APIRouter()
 
 @router.get("/config")
 def get_intraday_config() -> dict:
-    """返回分时页面前端所需配置（轮询间隔等），前端启动时调用一次"""
+    """返回分时页面前端所需配置（轮询间隔、交易状态等），前端启动时调用一次"""
     config = get_config()
+    trading_status = _get_trading_status()
     return {
         "polling_interval_ms": config.intraday_polling_interval * 1000,
         "batch_download_polling_interval_ms": config.batch_download_polling_interval * 1000,
         "screen_async_polling_interval_ms": config.screen_async_polling_interval * 1000,
+        "trading_status": trading_status,
     }
+
+
+def _get_trading_status() -> dict:
+    """
+    获取当前交易状态，供前端判断是否启动轮询及自动启动时机。
+
+    返回字段：
+    - is_trading_day: 今日是否为交易日（基于交易日历）
+    - is_trading_time: 当前是否在盘中交易时段（9:30-11:30 或 13:00-15:00，排除午休）
+    - next_session_start: 下一个交易时段开始时间（ISO格式），若无需等待则为 null
+
+    前端使用场景：
+    - is_trading_day=true → startPolling() 的交易日守卫，防止节假日误启动
+    - is_trading_time=false 且 next_session_start 不为 null → 设定时器到该时间再启动
+    - 定时器触发时前端更新 is_trading_day=true，确保轮询在正确的交易日启动
+    """
+    now = datetime.now()
+    today = now.date()
+
+    is_td = _is_trading_day(today)
+    is_tt = _is_in_trading_window(now)
+
+    next_start = _calc_next_session_start(now, today, is_td, is_tt)
+
+    return {
+        "is_trading_day": is_td,
+        "is_trading_time": is_tt,
+        "next_session_start": next_start.isoformat() if next_start else None,
+    }
+
+
+def _calc_next_session_start(
+    now: datetime, today: date_type, is_trading_day: bool, is_trading_time: bool
+) -> Optional[datetime]:
+    """
+    计算下一个交易时段开始时间。
+
+    逻辑：
+    - 盘中 → 返回 None（无需等待）
+    - 交易日盘前 → 返回今日 9:30
+    - 交易日午休 → 返回今日 13:00
+    - 交易日收盘后 / 非交易日 → 返回下一个交易日 9:30
+    """
+    if is_trading_time:
+        return None
+
+    # 交易日盘前
+    if is_trading_day:
+        morning_start = now.replace(hour=9, minute=30, second=0, microsecond=0)
+        afternoon_start = now.replace(hour=13, minute=0, second=0, microsecond=0)
+        if now < morning_start:
+            return morning_start
+        if now < afternoon_start:
+            return afternoon_start
+
+    # 交易日收盘后 或 非交易日：找下一个交易日
+    next_day = today + timedelta(days=1)
+    for _ in range(30):  # 最多向前找30天
+        if _is_trading_day(next_day):
+            return datetime(next_day.year, next_day.month, next_day.day, 9, 30, 0)
+        next_day = next_day + timedelta(days=1)
+
+    return None
 
 
 def _normalize_stock_code(code: str) -> str:
@@ -251,9 +316,10 @@ def _is_data_fresh(klines: list, target_date: str) -> bool:
 
 
 def _is_in_trading_window(now: datetime = None) -> bool:
-    """判断当前是否处于A股盘中交易时段（9:30-15:00）
+    """判断当前是否处于A股盘中交易时段（9:30-11:30, 13:00-15:00）
 
     使用交易日历判断，避免误判节假日。
+    排除午休时段（11:30-13:00），与前端轮询保持一致。
     返回 True 表示当前是交易日且处于盘中交易时段。
     """
     if now is None:
@@ -269,9 +335,16 @@ def _is_in_trading_window(now: datetime = None) -> bool:
         if now.weekday() >= 5:
             return False
 
-    market_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
-    market_close = now.replace(hour=15, minute=0, second=0, microsecond=0)
-    return market_open <= now <= market_close
+    # 上午盘：9:30-11:30
+    morning_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
+    morning_close = now.replace(hour=11, minute=30, second=0, microsecond=0)
+    if morning_open <= now <= morning_close:
+        return True
+
+    # 下午盘：13:00-15:00
+    afternoon_open = now.replace(hour=13, minute=0, second=0, microsecond=0)
+    afternoon_close = now.replace(hour=15, minute=0, second=0, microsecond=0)
+    return afternoon_open <= now <= afternoon_close
 
 
 def _is_trading_day(target_date):

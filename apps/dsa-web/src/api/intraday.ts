@@ -193,10 +193,17 @@ export interface SimulationReportResponse {
   trades: SimulatedTradeItem[];
 }
 
+export interface TradingStatus {
+  is_trading_day: boolean;
+  is_trading_time: boolean;
+  next_session_start: string | null;
+}
+
 export interface IntradayConfig {
   polling_interval_ms: number;
   batch_download_polling_interval_ms: number;
   screen_async_polling_interval_ms: number;
+  trading_status: TradingStatus;
 }
 
 // ============================================================
@@ -204,12 +211,18 @@ export interface IntradayConfig {
 // ============================================================
 
 export async function getIntradayConfig(): Promise<IntradayConfig> {
-  const resp = await fetch(`${API_BASE}/config`);
-  if (!resp.ok) return {
+  const defaultConfig: IntradayConfig = {
     polling_interval_ms: 30000,
     batch_download_polling_interval_ms: 1000,
     screen_async_polling_interval_ms: 1000,
+    trading_status: {
+      is_trading_day: false,
+      is_trading_time: false,
+      next_session_start: null,
+    },
   };
+  const resp = await fetch(`${API_BASE}/config`);
+  if (!resp.ok) return defaultConfig;
   return resp.json();
 }
 

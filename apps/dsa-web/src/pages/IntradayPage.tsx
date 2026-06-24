@@ -23,6 +23,7 @@ import {
   type SimulationReportResponse,
   type StockSnapshot,
   type BatchDownloadStatus,
+  type TradingStatus,
 } from '../api/intraday';
 import type { WeightContribution, IntradaySignal } from '../api/intraday';
 import { validateStockCode } from '../utils/validation';
@@ -614,18 +615,59 @@ const IntradayPage: React.FC = () => {
   }, [searchHistory.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── 搜索历史股票实时行情轮询（仅盘中） ──
+  //
+  // 轮询架构说明：
+  // ┌─────────────────────────────────────────────────────────────────┐
+  // │ 页面加载 → getIntradayConfig() 获取后端交易状态 ────────────────│
+  // │   ├─ isTradingTime()=true  → startPolling() 立即启动轮询       │
+  // │   └─ isTradingTime()=false                                     │
+  // │       ├─ next_session_start 不为 null → setTimeout 到该时间     │
+  // │       │   定时器触发 → 更新 is_trading_day & tradingDayDateRef  │
+  // │       │     ├─ 标签页可见 → startPolling() 立即启动轮询         │
+  // │       │     └─ 标签页隐藏 → 跳过启动（等待 visibility 恢复）    │
+  // │       └─ next_session_start 为 null → 不启动（收盘后/非交易日）  │
+  // │                                                                 │
+  // │ 轮询运行时：setInterval 每 N 秒 → fetchAndUpdate(true)         │
+  // │   └─ 每次 tick 检查 isTradingTime()（本地时间）→ false →       │
+  // │      stopPolling() + 午休定时器（13:00 自动恢复）              │
+  // │      收盘后不上定时器（次日需手动刷新）                          │
+  // │                                                                 │
+  // │ 交易日守卫：startPolling() 入口三重检查                              │
+  // │   ├─ isTradingTime() 本地时间（9:30-11:30 / 13:00-15:00）          │
+  // │   ├─ is_trading_day 后端交易日历（节假日为 false）                  │
+  // │   └─ tradingDayDateRef 确认日期 = 今日（防跨天过期）                │
+  // │      （页面加载 / 定时器触发时更新，次日自动失效）                    │
+  // │                                                                 │
+  // │ 标签页切换：visibilitychange → hidden=stopPolling              │
+  // │   └─ visible 且 isTradingTime() 且 is_trading_day →            │
+  // │      restartPolling                                            │
+  // │                                                                 │
+  // │ 组件卸载：clearTimeout(autoStartTimerRef)                      │
+  // └─────────────────────────────────────────────────────────────────┘
+  //
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollingIntervalRef = useRef(30000);      // 从后端配置动态获取
   const batchPollingIntervalRef = useRef(1000);  // 批量下载进度轮询间隔
+  const autoStartTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);  // 自动启动轮询的定时器
   const searchHistoryRef = useRef<SearchHistoryItem[]>([]);
   searchHistoryRef.current = searchHistory;
 
+  // 交易状态从后端 /config 接口获取，基于交易日历
+  // - is_trading_day: 仅当日有效，与 tradingDayDateRef 配合防跨天过期
+  // - next_session_start: 用于自动启动定时器
+  const tradingStatusRef = useRef<TradingStatus>({
+    is_trading_day: false,
+    is_trading_time: false,
+    next_session_start: null,
+  });
+  // 交易日确认的日期（YYYY-MM-DD），防止 is_trading_day 跨天后误判
+  const tradingDayDateRef = useRef<string>('');
+
+  // 运行时判断是否在交易时段（本地时间 9:30-11:30 或 13:00-15:00）
+  // 交易日判断由 tradingStatusRef.is_trading_day 负责（基于后端交易日历），此处不重复
   const isTradingTime = useCallback(() => {
     const now = new Date();
-    const day = now.getDay();
-    if (day === 0 || day === 6) return false;
     const totalMinutes = now.getHours() * 60 + now.getMinutes();
-    // 9:30-11:30 和 13:00-15:00，排除午休
     return (totalMinutes >= 570 && totalMinutes <= 690) || (totalMinutes >= 780 && totalMinutes <= 900);
   }, []);
 
@@ -647,14 +689,28 @@ const IntradayPage: React.FC = () => {
       }
 
       if (resp.current_updated && resp.current_full_data && requestedCode) {
+        // ── 检测数据日期是否跨天变化 ──
+        // 场景：交易日开始前图表展示的是上一交易日数据，开盘后轮询返回当日数据。
+        // 若直接用增量更新（setData），图表的时间轴/数据范围仍基于旧日期，
+        // 会导致当日数据错误地追加在旧数据之后。需走全量 renderData 重建图表。
+        const newDate = resp.current_full_data.date;
+        const currentDate = intradayData?.date || todayDateStr;
+        const isDateChanged = newDate !== currentDate;
+
         let didIncrementalUpdate = false;
-        if (chartRef.current) {
+        if (chartRef.current && !isDateChanged) {
           updateChartIncrementalRef.current(resp.current_full_data, todayDateStr);
           didIncrementalUpdate = true;
         }
         // 记录增量更新的股票代码，用于区分"同股票增量更新"和"跨股票切换"
         if (didIncrementalUpdate) {
           lastIncrementalStockCodeRef.current = requestedCode;
+        } else if (isDateChanged) {
+          // 日期变化时清除增量标记，确保 useEffect 触发全量 renderData 重建图表
+          console.log(
+            `[Polling] 检测到日期变化: ${currentDate} → ${newDate}，将触发全量渲染`,
+          );
+          lastIncrementalStockCodeRef.current = null;
         }
         // ── intradayData 去重：仅在数据实质变化时更新 React 状态 ──
         const fullDataJson = JSON.stringify(resp.current_full_data);
@@ -702,20 +758,60 @@ const IntradayPage: React.FC = () => {
   const fetchAndUpdateRef = useRef(fetchAndUpdate);
   fetchAndUpdateRef.current = fetchAndUpdate;
 
-  const stopPolling = useCallback(() => {
+  const stopPolling = useCallback((reason?: string) => {
     if (pollingRef.current) {
       clearInterval(pollingRef.current);
       pollingRef.current = null;
+      console.log(`[Polling] 轮询已停止${reason ? ` (${reason})` : ''}`);
     }
+    // 注意：不在此处清除 autoStartTimerRef，因为 stopPolling 在标签页切换时也会调用
+    // 若清除了定时器，用户切回标签页时将无法自动恢复轮询
+    // 定时器仅在触发后自动清除，或在组件卸载时由专门的清理 effect 清除
   }, []);
 
   const startPolling = useCallback(() => {
     stopPolling();
-    if (!isTradingTime()) return; // 非交易时间不启动轮询
-    console.log('[Polling] 启动行情轮询, 间隔:', pollingIntervalRef.current + 'ms');
+    // 双重检查：本地时间判断交易时段 + 后端交易日历判断交易日
+    if (!isTradingTime()) {
+      console.log('[Polling] 跳过快启动：非交易时段');
+      return;
+    }
+    if (!tradingStatusRef.current.is_trading_day) {
+      console.log('[Polling] 跳过快启动：非交易日');
+      return;
+    }
+    // 交易日确认已过期（跨天且未刷新），拒绝启动
+    const today = new Date().toISOString().split('T')[0];
+    if (tradingDayDateRef.current !== today) {
+      console.log(`[Polling] 跳过快启动：交易日确认已过期 (${tradingDayDateRef.current} !== ${today})`);
+      return;
+    }
+    console.log(`[Polling] 启动行情轮询 (间隔 ${pollingIntervalRef.current}ms)`);
     pollingRef.current = setInterval(() => {
+      // 每次 tick 检查是否已收盘/午休，自动停止
       if (!isTradingTime()) {
-        stopPolling(); // 收盘后自动停止
+        stopPolling('非交易时段');
+        // 午休期间（11:30-13:00）设置下午开盘定时器，自动恢复轮询
+        const now = new Date();
+        const hours = now.getHours();
+        if (hours >= 11 && hours < 13) {
+          const nextSession = new Date(now);
+          nextSession.setHours(13, 0, 0, 0);
+          const delay = nextSession.getTime() - now.getTime();
+          if (delay > 0) {
+            clearTimeout(autoStartTimerRef.current);
+            autoStartTimerRef.current = setTimeout(() => {
+              console.log('[Polling] 午休结束，启动下午轮询');
+              // 同一交易日，is_trading_day 仍然有效
+              tradingStatusRef.current = { ...tradingStatusRef.current, is_trading_day: true };
+              tradingDayDateRef.current = new Date().toISOString().split('T')[0];
+              if (!document.hidden) {
+                startPolling();
+              }
+            }, delay);
+            console.log(`[Polling] 午休定时器已设置，${Math.round(delay / 1000)}s 后启动`);
+          }
+        }
         return;
       }
       fetchAndUpdateRef.current(true);
@@ -762,41 +858,89 @@ const IntradayPage: React.FC = () => {
     }
   }, [searchHistory.length, intradayData, todayDateStr, isTradingTime, warmupEnabled]);
 
-  // 从后端获取轮询配置（页面加载时调用一次）
+  // 从后端 /config 接口获取轮询配置和交易状态（页面加载时调用一次）
+  //
+  // 该 effect 的核心职责：
+  // 1. 获取轮询间隔配置（pollingIntervalMs 等）
+  // 2. 获取交易状态（is_trading_day / is_trading_time / next_session_start）
+  // 3. 若当前非交易时间但有下一个交易时段，设定时器自动启动轮询
+  //
+  // 示例场景：
+  // - 周一 8:00 打开页面 → next_session_start = 今日 9:30 → 设 90 分钟定时器
+  // - 周一 12:00 打开页面 → next_session_start = 今日 13:00 → 设 60 分钟定时器
+  // - 周一 10:00 打开页面 → is_trading_time=true → 不设定时器，直接启动轮询
+  // - 周一 16:00 打开页面 → next_session_start = 周二 9:30 → 设定时器
+  // - 周六 10:00 打开页面 → is_trading_day=false → next_session_start = 周一 9:30
   useEffect(() => {
     getIntradayConfig().then(cfg => {
       pollingIntervalRef.current = cfg.polling_interval_ms;
       batchPollingIntervalRef.current = cfg.batch_download_polling_interval_ms;
+      // 保存交易状态到 ref，仅用于 next_session_start 自动启动定时器
+      tradingStatusRef.current = cfg.trading_status;
+      if (cfg.trading_status.is_trading_day) {
+        tradingDayDateRef.current = new Date().toISOString().split('T')[0];
+      }
       console.log('[PollingConfig] 从后端获取轮询配置:', {
         polling: cfg.polling_interval_ms + 'ms',
         batchDownload: cfg.batch_download_polling_interval_ms + 'ms',
         screenAsync: cfg.screen_async_polling_interval_ms + 'ms',
+        tradingStatus: cfg.trading_status,
       });
+
+      // 非交易时间但有下一个交易时段 → 设定时器自动启动
+      if (!cfg.trading_status.is_trading_time && cfg.trading_status.next_session_start) {
+        const nextTime = new Date(cfg.trading_status.next_session_start).getTime();
+        const delay = nextTime - Date.now();
+        if (delay > 0) {
+          console.log(`[PollingConfig] 将在 ${new Date(nextTime).toLocaleTimeString()} 自动启动轮询 (${Math.round(delay / 1000)}s)`);
+          autoStartTimerRef.current = setTimeout(() => {
+            console.log('[PollingConfig] 定时器触发');
+            // 更新交易日状态（始终执行，供 visibility 恢复时使用）
+            tradingStatusRef.current = { ...tradingStatusRef.current, is_trading_day: true };
+            tradingDayDateRef.current = new Date().toISOString().split('T')[0];
+            // 仅标签页可见时启动轮询，避免后台浪费资源
+            if (!document.hidden) {
+              console.log('[PollingConfig] 标签页可见，启动轮询');
+              startPolling();
+            } else {
+              console.log('[PollingConfig] 标签页隐藏，跳过轮询启动（等待 visibility 恢复）');
+            }
+          }, delay);
+        }
+      }
     }).catch((err) => {
       // 降级使用默认值，已在 ref 初始化时设置
       console.warn('[PollingConfig] 获取后端配置失败，使用默认值:', err);
     }).finally(() => {
+      console.log('[PollingConfig] 配置加载完成');
       setConfigLoaded(true);
     });
   }, []);
 
-  // 盘中轮询（等待配置加载完毕后才启动）
+  // 盘中轮询主 effect（等待配置加载完毕后才启动，避免使用未初始化的配置值）
   useEffect(() => {
     if (!configLoaded) return;
 
+    console.log('[Polling] 配置就绪，检查是否需要启动轮询');
+    // 配置加载完成后，若当前已是交易时间则立即启动轮询
     startPolling();
 
+    // 标签页可见性变化处理：隐藏时停轮询节省资源，恢复时重新启动
     const handleVisibility = () => {
       if (document.hidden) {
-        stopPolling();
-      } else if (isTradingTime()) {
+        console.log('[Polling] 标签页隐藏，停止轮询');
+        stopPolling('标签页隐藏');
+      } else if (isTradingTime() && tradingStatusRef.current.is_trading_day) {
+        console.log('[Polling] 标签页恢复可见，尝试恢复轮询');
         fetchAndUpdateRef.current(true); // 恢复时立即刷新含信号
-        startPolling(); // 仅盘中会启动
+        startPolling(); // 仅交易日盘中会启动
+      } else {
+        console.log(`[Polling] 标签页恢复可见，但条件不满足 (isTradingTime=${isTradingTime()}, is_trading_day=${tradingStatusRef.current.is_trading_day})`);
       }
     };
     document.addEventListener('visibilitychange', handleVisibility);
     return () => {
-      stopPolling();
+      stopPolling('组件卸载');
       document.removeEventListener('visibilitychange', handleVisibility);
     };
   }, [startPolling, stopPolling, configLoaded]);
@@ -3755,6 +3899,17 @@ const IntradayPage: React.FC = () => {
     }
     seriesMarkersRef.current = createSeriesMarkers(series, markers as any);
   }, [filteredSignals]);
+
+  // ── 组件卸载时清理自动启动定时器 ──
+  useEffect(() => {
+    return () => {
+      if (autoStartTimerRef.current) {
+        clearTimeout(autoStartTimerRef.current);
+        console.log('[Polling] 组件卸载，清除自动启动定时器');
+        autoStartTimerRef.current = undefined;
+      }
+    };
+  }, []);
 
   // ── 侧边栏 ──
   const sidebarContent = (
