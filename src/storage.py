@@ -12,6 +12,7 @@ A股自选股智能分析系统 - 存储层
 """
 
 import atexit
+import time
 from contextlib import contextmanager
 import hashlib
 import json
@@ -837,7 +838,7 @@ class DatabaseManager:
         def _set_sqlite_pragma(dbapi_connection, connection_record):
             cursor = dbapi_connection.cursor()
             cursor.execute("PRAGMA journal_mode=WAL")
-            cursor.execute("PRAGMA busy_timeout=5000")
+            cursor.execute("PRAGMA busy_timeout=30000")
             cursor.execute("PRAGMA synchronous=NORMAL")
             cursor.close()
 
@@ -934,6 +935,38 @@ class DatabaseManager:
             raise
         finally:
             session.close()
+
+    def _commit_session_with_retry(self, session: Session, max_retries: int = 3, base_delay: float = 1.0) -> None:
+        """带重试的 session.commit()，处理 SQLite 并发写入锁冲突
+
+        SQLite 只支持单一写入者，多线程并发写入时可能触发 database is locked，
+        通过指数退避重试机制来缓解此问题。
+
+        Args:
+            session: SQLAlchemy Session 对象
+            max_retries: 最大重试次数（默认 3 次）
+            base_delay: 基础延迟秒数（默认 1.0 秒，指数退避: 1s, 2s, 4s）
+        """
+        from sqlalchemy.exc import OperationalError
+
+        for attempt in range(max_retries):
+            try:
+                session.commit()
+                return
+            except OperationalError as e:
+                error_msg = str(e)
+                if "database is locked" in error_msg.lower():
+                    if attempt < max_retries - 1:
+                        delay = base_delay * (2 ** attempt)
+                        logger.warning(
+                            f"数据库写入锁冲突，第 {attempt + 1}/{max_retries} 次重试，等待 {delay:.1f}s"
+                        )
+                        time.sleep(delay)
+                    else:
+                        logger.error(f"数据库写入锁冲突，已达最大重试次数 {max_retries}，放弃")
+                        raise
+                else:
+                    raise
 
     def has_today_data(self, code: str, target_date: Optional[date] = None) -> bool:
         """
@@ -3193,7 +3226,7 @@ class DatabaseManager:
                     logger.warning(f"保存K线记录失败 {code} {date_obj} {t}: {e}")
 
             try:
-                session.commit()
+                self._commit_session_with_retry(session)
             except Exception as e:
                 session.rollback()
                 logger.error(f"提交K线数据失败 {code} {date_obj}: {e}")
@@ -3290,7 +3323,7 @@ class DatabaseManager:
                     },
                 )
                 session.execute(stmt)
-                session.commit()
+                self._commit_session_with_retry(session)
                 logger.debug(f"保存每日快照: {code} {date_obj}, 价格={last_k.get('Close')}, K线数={len(klines)}")
                 return True
             except Exception as e:
@@ -3493,7 +3526,7 @@ class DatabaseManager:
                         updated_at=datetime.now(),
                     )
                     session.add(record)
-                session.commit()
+                self._commit_session_with_retry(session)
             except Exception as e:
                 session.rollback()
                 logger.warning(f"记录批量下载失败标记失败 {code} {date_obj}: {e}")
@@ -3511,7 +3544,7 @@ class DatabaseManager:
                     BatchDownloadFailed.code == code,
                     BatchDownloadFailed.date == date_obj,
                 ).delete()
-                session.commit()
+                self._commit_session_with_retry(session)
             except Exception as e:
                 session.rollback()
                 logger.warning(f"清除批量下载失败记录失败 {code} {date_obj}: {e}")

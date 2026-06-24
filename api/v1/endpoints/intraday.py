@@ -1813,6 +1813,20 @@ def _compute_reference_lines(klines: list, code: str, db_manager=None, query_dat
                                         style='dashed',
                                         base_weight=1.0,
                                     ))
+
+                                bbi_val = latest.get('td_bbi')
+                                if (bbi_val is not None
+                                        and not (isinstance(bbi_val, float) and math.isnan(bbi_val))
+                                        and bbi_val > 0):
+                                    ref_lines.append(ReferenceLine(
+                                        id='tiandao_bbi',
+                                        label='BBI',
+                                        price=round(float(bbi_val), 2),
+                                        category='tiandao',
+                                        color='#FFFFFF',
+                                        style='dashed',
+                                        base_weight=1.0,
+                                    ))
                         except Exception as tiandao_err:
                             logger.warning(f"天道指标参考线计算失败: {tiandao_err}")
 
