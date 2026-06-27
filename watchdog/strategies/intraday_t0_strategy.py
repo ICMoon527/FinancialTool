@@ -115,6 +115,10 @@ class IndicatorSnapshot:
     mfi_bottom_divergence: bool = False
     mfi_top_divergence: bool = False
 
+    # MACD 柱高统计（RL 训练特征）
+    macd_bar_sum: float = 0.0      # 近期 MACD 柱高累计和（近10根）
+    macd_bar_diff: float = 0.0     # 柱高变化率 (当前柱 - 前一根柱) / 前一根柱
+
 
 @dataclass
 class T0Signal:

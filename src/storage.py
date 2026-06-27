@@ -3588,6 +3588,91 @@ class DatabaseManager:
                 logger.warning(f"清除旧失败记录失败: {e}")
 
 
+# ============================================================
+    # RL 模块数据查询方法
+    # ============================================================
+
+    def load_prev_day_klines(
+        self, code: str, current_date: date, limit: int = 30
+    ) -> Optional[List[Dict]]:
+        """加载指定股票在当前日期之前最近一个交易日的最后 N 根K线。
+
+        Args:
+            code: 股票代码
+            current_date: 当前交易日
+            limit: 需要的K线数量（默认30根）
+
+        Returns:
+            List[Dict]: 前一日最后 N 根K线，按时间升序；无数据时返回 None
+        """
+        with self.get_session() as session:
+            # 查询当前日期之前最近一个交易日
+            prev_date = (
+                session.query(IntradayKline1Min.date)
+                .filter(
+                    IntradayKline1Min.code == code,
+                    IntradayKline1Min.date < current_date,
+                )
+                .distinct()
+                .order_by(IntradayKline1Min.date.desc())
+                .first()
+            )
+            if prev_date is None:
+                return None
+
+            prev_date = prev_date[0]
+            records = (
+                session.query(IntradayKline1Min)
+                .filter(
+                    IntradayKline1Min.code == code,
+                    IntradayKline1Min.date == prev_date,
+                )
+                .order_by(IntradayKline1Min.time.desc())
+                .limit(limit)
+                .all()
+            )
+            if not records:
+                return None
+
+            # 按时间升序返回
+            records = sorted(records, key=lambda r: r.time)
+            logger.debug(
+                f"加载前一日K线: {code} prev_date={prev_date}, {len(records)} 条"
+            )
+            return [r.to_dict() for r in records]
+
+    def get_all_intraday_dates(self, code: str) -> List[date]:
+        """获取指定股票所有有分时数据的交易日列表。
+
+        Returns:
+            List[date]: 交易日列表，按日期升序
+        """
+        with self.get_session() as session:
+            dates = (
+                session.query(IntradayKline1Min.date)
+                .filter(IntradayKline1Min.code == code)
+                .distinct()
+                .order_by(IntradayKline1Min.date.asc())
+                .all()
+            )
+            return [d[0] for d in dates]
+
+    def get_all_stocks_with_intraday(self) -> List[str]:
+        """获取所有有分时数据的股票代码列表。
+
+        Returns:
+            List[str]: 股票代码列表
+        """
+        with self.get_session() as session:
+            codes = (
+                session.query(IntradayKline1Min.code)
+                .distinct()
+                .order_by(IntradayKline1Min.code.asc())
+                .all()
+            )
+            return [c[0] for c in codes]
+
+
 # 便捷函数
 def get_db() -> DatabaseManager:
     """获取数据库管理器实例的快捷方式"""

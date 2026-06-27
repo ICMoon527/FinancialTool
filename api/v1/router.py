@@ -11,7 +11,7 @@ API v1 路由聚合
 
 from fastapi import APIRouter
 
-from api.v1.endpoints import health, analysis, auth, history, stocks, backtest, system_config, agent, stock_selector, stock_search, visualization, intraday
+from api.v1.endpoints import health, analysis, auth, history, stocks, backtest, system_config, agent, stock_selector, stock_search, visualization, intraday, rl
 
 # 创建 v1 版本主路由
 router = APIRouter(prefix="/api/v1")
@@ -83,4 +83,10 @@ router.include_router(
     intraday.router,
     prefix="/intraday",
     tags=["Intraday"]
+)
+
+router.include_router(
+    rl.router,
+    prefix="/rl",
+    tags=["RL Training"]
 )
