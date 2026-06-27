@@ -15,7 +15,7 @@ class SystemConfigFieldSchema(BaseModel):
     title: Optional[str] = Field(None, description="Display title")
     description: Optional[str] = Field(None, description="Field description")
     group: Optional[str] = Field(None, description="Sub-group name for folding UI")
-    category: Literal["home", "chat", "stock_selector", "visualization", "intraday", "backtest", "settings", "uncategorized"]
+    category: Literal["home", "chat", "stock_selector", "visualization", "intraday", "backtest", "rl", "settings", "uncategorized"]
     data_type: Literal["string", "integer", "number", "boolean", "array", "json", "time"]
     ui_control: Literal["text", "password", "number", "select", "textarea", "switch", "time"]
     is_sensitive: bool

@@ -27,6 +27,7 @@ const CATEGORY_DISPLAY_ORDER: Record<string, number> = {
   visualization: 40,
   intraday: 50,
   backtest: 60,
+  rl: 65,
   settings: 70,
   uncategorized: 99,
 };

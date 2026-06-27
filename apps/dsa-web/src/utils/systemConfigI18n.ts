@@ -7,6 +7,7 @@ const categoryTitleMap: Record<SystemConfigCategory, string> = {
   visualization: '可视化',
   intraday: '分时',
   backtest: '回测',
+  rl: 'RL训练',
   settings: '设置',
   uncategorized: '其他',
 };
@@ -18,6 +19,7 @@ const categoryDescriptionMap: Partial<Record<SystemConfigCategory, string>> = {
   visualization: '管理技术指标参数与图表显示设置。',
   intraday: '管理实时行情数据源、轮询与限流参数。',
   backtest: '管理回测引擎开关、评估窗口与引擎参数。',
+  rl: '管理强化学习训练参数与模型设置。',
   settings: '管理系统、通知渠道、数据提供者与监控配置。',
   uncategorized: '其他未归类的配置项。',
 };

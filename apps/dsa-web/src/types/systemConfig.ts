@@ -5,6 +5,7 @@ export type SystemConfigCategory =
   | 'visualization'
   | 'intraday'
   | 'backtest'
+  | 'rl'
   | 'settings'
   | 'uncategorized';
 
