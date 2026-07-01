@@ -134,23 +134,29 @@ def main():
                     # 从窗口数据中提取各关键日期
                     le = details.get("left_eye", {})
                     re = details.get("right_eye", {})
-                    tl = details.get("toad_leg", {})
+                    lc = details.get("left_claw", {})
+                    rc = details.get("right_claw", {})
                     bp1 = details.get("buy_point_1", {})
                     bp2 = details.get("buy_point_2", {})
+                    rsi_check = details.get("rsi_check", {})
+                    leg_check = details.get("leg_check", {})
 
                     left_eye_date = None
                     right_eye_date = None
-                    toad_leg_date = None
+                    left_claw_date = None
+                    right_claw_date = None
                     breakout_date = None
 
                     if le.get("found") and le["position"] >= 0:
                         left_eye_date = window_df["date"].iloc[le["position"]]
                     if re.get("found") and re["position"] >= 0:
                         right_eye_date = window_df["date"].iloc[re["position"]]
-                    if tl.get("found") and tl["low_position"] >= 0:
-                        toad_leg_date = window_df["date"].iloc[tl["low_position"]]
+                    if lc.get("found") and lc["position"] >= 0:
+                        left_claw_date = window_df["date"].iloc[lc["position"]]
+                    if rc.get("found") and rc["low_position"] >= 0:
+                        right_claw_date = window_df["date"].iloc[rc["low_position"]]
                     if bp2.get("triggered"):
-                        breakout_date = window_end  # 买点2突破颈线发生在窗口末尾
+                        breakout_date = window_end
 
                     print_separator("找到金蛤蟆上车点！")
                     print(f"  标的名称: {stock_name}")
@@ -159,24 +165,56 @@ def main():
                     print(f"  窗口结束日期: {window_end}")
                     print(f"  上车价格: {entry_price:.2f}")
                     print(f"  原始得分: {match.raw_score:.1f} / 100")
-                    print(f"  必要条件得分: {details.get('essential_score', 0):.0f} / 80")
-                    print(f"  加分项得分: {details.get('bonus_score', 0):.0f} / 30")
+                    print(f"  必要条件得分: {details.get('essential_score', 0):.0f} / 100")
+                    print(f"  加分项得分: {details.get('bonus_score', 0):.0f} / 25")
+
+                    # 铁律检查结果
+                    iron_pass = details.get("iron_rules_pass", [])
+                    iron_fail = details.get("iron_rules_fail", [])
+                    if iron_pass:
+                        print(f"\n  [铁律检查 - 全部通过 {len(iron_pass)}/{len(iron_pass) + len(iron_fail)}]")
+                        for rule in iron_pass:
+                            print(f"    {rule}")
 
                     # 买点信息
                     if bp1.get("triggered"):
-                        print(f"  买点: 买点1（缩量回踩）")
+                        print(f"\n  买点: 买点1（右爪缩量低吸）")
                     if bp2.get("triggered"):
                         print(f"  买点: 买点2（放量突破颈线）")
 
                     # 形态详情（含日期）
+                    print(f"\n  [形态详情]")
+                    if lc.get("found") and left_claw_date is not None:
+                        print(f"  左爪日期: {left_claw_date}  close={lc['close_price']:.2f}  "
+                              f"缩量={lc.get('volume_ratio', 0):.2f}  "
+                              f"距MA60={lc.get('ma60_dist_pct', 0):.1f}%")
                     if le.get("found") and left_eye_date is not None:
-                        print(f"  左眼高点日期: {left_eye_date}  价格: {le['price']:.2f}")
+                        print(f"  左眼高点日期: {left_eye_date}  high={le['price']:.2f}  "
+                              f"量比={le.get('volume_ratio', 0):.2f}  "
+                              f"上升{le.get('uptrend_days', 0)}天/回踩{le.get('pullback_days', 0)}天")
                     if re.get("found") and right_eye_date is not None:
-                        print(f"  右眼高点日期: {right_eye_date}  价格: {re['price']:.2f}")
-                    if tl.get("found") and toad_leg_date is not None:
-                        print(f"  回踩低点日期: {toad_leg_date}  价格: {tl['low_price']:.2f}")
+                        print(f"  右眼高点日期: {right_eye_date}  high={re['price']:.2f}  "
+                              f"上影线={re.get('upper_shadow_ratio', 0):.1%}  "
+                              f"量比={re.get('volume_ratio', 0):.2f}  "
+                              f"上升{re.get('uptrend_days', 0)}天/回踩{re.get('pullback_days', 0)}天")
+                    if rc.get("found") and right_claw_date is not None:
+                        print(f"  右爪低点日期: {right_claw_date}  close={rc.get('close_price', 0):.2f}  "
+                              f"缩量={rc.get('volume_ratio', 0):.2f}  "
+                              f"悬空={rc.get('above_ma60', False)}  回升={rc.get('recovery_pct', 0):.1f}%")
                     if bp2.get("triggered") and breakout_date is not None:
                         print(f"  突破颈线日期: {breakout_date}")
+
+                    # RSI检查
+                    if rsi_check:
+                        print(f"\n  [RSI检查] 左眼RSI={rsi_check.get('left_rsi', 0):.1f}  "
+                              f"右眼RSI={rsi_check.get('right_rsi', 0):.1f}  "
+                              f"差异={rsi_check.get('diff_ratio', 0):.1%}  "
+                              f"通过={rsi_check.get('ok', False)}")
+
+                    # 腿长检查
+                    if leg_check:
+                        print(f"  [腿长检查] 左腿={leg_check.get('left_leg_days', 0)}天  "
+                              f"右腿={leg_check.get('right_leg_days', 0)}天")
 
                     print(f"\n  总扫描: {total_checked} 只标的，{total_windows} 个窗口")
                     print(f"{'=' * 60}")

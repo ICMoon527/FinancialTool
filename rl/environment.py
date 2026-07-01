@@ -92,6 +92,9 @@ class T0Environment:
         self._current_stock_code: str = ""
         self._current_date: str = ""
 
+        # 预热数据计数（用于 MACD_Bar_Sum 从当日第一根K线开始累加）
+        self._warmup_bar_count: int = 0
+
     # ═══════════════════════════════════════════════
     #  公开接口
     # ═══════════════════════════════════════════════
@@ -146,8 +149,10 @@ class T0Environment:
 
         # 预热指标
         self._data_buffer = IntradayDataBuffer(max_window=200)
+        self._warmup_bar_count = 0
         if prev_day_klines:
             self._data_buffer.warmup(prev_day_klines)
+            self._warmup_bar_count = len(prev_day_klines)
             self._is_warmup = False  # 有前日数据，无需 episode 内预热
             # 用前日数据预计算指标初始状态
             self._precompute_indicators_from_buffer()
@@ -598,11 +603,16 @@ class T0Environment:
                 ind.dea = float(dea.iloc[-1])
                 ind.macd_bar = float(macd_bar.iloc[-1])
 
-                # MACD 柱高统计
-                recent_bars = macd_bar.iloc[-10:] if len(macd_bar) >= 10 else macd_bar
-                ind.macd_bar_sum = float(recent_bars.sum())
-                if len(recent_bars) >= 2 and recent_bars.iloc[-2] != 0:
-                    ind.macd_bar_diff = float((recent_bars.iloc[-1] - recent_bars.iloc[-2]) / recent_bars.iloc[-2])
+                # 统一前后端 MACD_Bar_Sum 计算逻辑：从当日第一根K线开始累加，预热数据不参与
+                # 预热数据（prev_day_klines）仅用于 EMA 初始化，不参与柱高和累加
+                if self._warmup_bar_count > 0 and len(macd_bar) > self._warmup_bar_count:
+                    current_day_bars = macd_bar.iloc[self._warmup_bar_count:]
+                    ind.macd_bar_sum = float(current_day_bars.sum())
+                else:
+                    # 无预热数据或 episode 内预热：从第一根K线开始累加
+                    ind.macd_bar_sum = float(macd_bar.sum())
+                if len(macd_bar) >= 2 and macd_bar.iloc[-2] != 0:
+                    ind.macd_bar_diff = float((macd_bar.iloc[-1] - macd_bar.iloc[-2]) / macd_bar.iloc[-2])
                 else:
                     ind.macd_bar_diff = 0.0
 
