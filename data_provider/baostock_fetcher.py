@@ -16,6 +16,7 @@ BaostockFetcher - 备用数据源 2 (Priority 3)
 
 import logging
 import re
+import socket
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Optional, Generator
@@ -100,6 +101,9 @@ class BaostockFetcher(BaseFetcher):
         bs = self._get_baostock()
         login_result = None
         
+        # 设置 socket 超时，避免网络异常时长时间阻塞（默认 70s+）
+        old_timeout = socket.getdefaulttimeout()
+        socket.setdefaulttimeout(10)
         try:
             # 登录 Baostock
             login_result = bs.login()
@@ -112,6 +116,8 @@ class BaostockFetcher(BaseFetcher):
             yield bs
             
         finally:
+            # 恢复 socket 超时设置
+            socket.setdefaulttimeout(old_timeout)
             # 确保登出，防止连接泄露
             try:
                 logout_result = bs.logout()

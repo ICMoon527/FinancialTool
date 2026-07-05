@@ -877,6 +877,9 @@ class AkshareFetcher(BaseFetcher):
         elif _is_hk_code(stock_code):
             return self._get_hk_realtime_quote(stock_code)
         elif _is_etf_code(stock_code):
+            # ETF 实时行情：优先使用腾讯单只查询接口（快速），其他数据源使用全量接口
+            if source == "tencent":
+                return self._get_stock_realtime_quote_tencent(stock_code)
             return self._get_etf_realtime_quote(stock_code)
         else:
             # 普通 A 股：根据 source 选择数据源

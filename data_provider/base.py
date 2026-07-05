@@ -759,7 +759,7 @@ class DataFetcherManager:
                         primary_quote = quote
                         logger.info(f"[实时行情] {stock_code} 成功获取 (来源: {source})")
                         # If all key supplementary fields are present, return early
-                        if not self._quote_needs_supplement(primary_quote):
+                        if not self._quote_needs_supplement(primary_quote, stock_code):
                             return primary_quote
                         # Otherwise, continue to try later sources for missing fields
                         logger.debug(f"[实时行情] {stock_code} 部分字段缺失，尝试从后续数据源补充")
@@ -774,7 +774,7 @@ class DataFetcherManager:
                         if merged:
                             logger.info(f"[实时行情] {stock_code} 从 {source} 补充了缺失字段: {merged}")
                         # Stop supplementing once all key fields are filled
-                        if not self._quote_needs_supplement(primary_quote):
+                        if not self._quote_needs_supplement(primary_quote, stock_code):
                             break
                     
             except Exception as e:
@@ -803,10 +803,23 @@ class DataFetcherManager:
         'amplitude',
     ]
 
+    # ETF 不适用字段：ETF 基金没有市盈率/市净率，补充检查时跳过
+    _ETF_SKIP_SUPPLEMENT_FIELDS = {'pe_ratio', 'pb_ratio'}
+
     @classmethod
-    def _quote_needs_supplement(cls, quote) -> bool:
-        """Check if any key supplementary field is still None."""
+    def _is_etf_code(cls, stock_code: str) -> bool:
+        """判断代码是否为 ETF 基金（上交所 51/52/56/58 开头，深交所 15/16/18 开头）"""
+        etf_prefixes = ('51', '52', '56', '58', '15', '16', '18')
+        code = stock_code.strip().split('.')[0]
+        return code.startswith(etf_prefixes) and len(code) == 6
+
+    @classmethod
+    def _quote_needs_supplement(cls, quote, stock_code: str = "") -> bool:
+        """Check if any key supplementary field is still None. ETF 跳过 pe_ratio/pb_ratio 检查。"""
+        skip_fields = cls._ETF_SKIP_SUPPLEMENT_FIELDS if cls._is_etf_code(stock_code) else set()
         for f in cls._SUPPLEMENT_FIELDS:
+            if f in skip_fields:
+                continue
             if getattr(quote, f, None) is None:
                 return True
         return False
