@@ -261,6 +261,21 @@ def _normalize_stock_code(code: str) -> str:
     return code
 
 
+# 沪市 ETF 代码前缀
+_SH_ETF_PREFIXES = ("51", "52", "56", "58")
+
+
+def _get_market_prefix(code: str) -> str:
+    """根据股票代码判断交易所前缀（sh/sz），兼容 ETF 代码规则
+
+    沪市：6xxxxx（A股）、51xxxx/52xxxx/56xxxx/58xxxx（ETF）
+    深市：0xxxxx/3xxxxx（A股）、15xxxx/16xxxx/18xxxx（ETF）
+    """
+    if code.startswith("6") or code.startswith(_SH_ETF_PREFIXES):
+        return "sh"
+    return "sz"
+
+
 def _extract_date_from_klines(klines: list, fallback: str = "") -> str:
     """从K线数据提取实际日期，避免请求参数与实际数据日期不一致"""
     if klines and len(klines) > 0:
@@ -466,7 +481,7 @@ def _get_intraday_klines(stock_code: str, date_str: Optional[str] = None) -> lis
                 symbol = code
                 market_prefix = code[:2]
             else:
-                market_prefix = "sh" if code.startswith("6") else "sz"
+                market_prefix = _get_market_prefix(code)
                 symbol = f"{market_prefix}{code}"
             url = f"https://ifzq.gtimg.cn/appstock/app/minute/query?code={symbol}"
             r = requests.get(url, timeout=8)
@@ -518,7 +533,7 @@ def _get_intraday_klines(stock_code: str, date_str: Optional[str] = None) -> lis
         def fetch_sina_5min():
             import pandas as pd
 
-            symbol_str = code if is_index_code else f"{'sh' if code.startswith('6') else 'sz'}{code}"
+            symbol_str = code if is_index_code else f"{_get_market_prefix(code)}{code}"
             url = (
                 "https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/"
                 "CN_MarketData.getKLineData"
