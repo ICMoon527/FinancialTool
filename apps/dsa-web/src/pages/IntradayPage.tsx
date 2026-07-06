@@ -3657,9 +3657,13 @@ const IntradayPage: React.FC = () => {
       // 保存搜索历史
       try {
         await saveSearchHistory(code, data.stock_name || '', todayDateStr);
-        await loadHistory();
       } catch (e) {
         console.warn('保存搜索历史失败:', e);
+      }
+      try {
+        await loadHistory();
+      } catch (e) {
+        console.warn('加载搜索历史失败:', e);
       }
     } catch (err: any) {
       console.error('获取分时数据失败:', err);

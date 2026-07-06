@@ -265,40 +265,51 @@ class AkshareFetcher(BaseFetcher):
         try:
             import akshare as ak
 
+            # ETF 通过腾讯实时行情接口单股查询名称（轻量，~1KB 响应）
+            if _is_etf_code(stock_code):
+                try:
+                    import requests as _req
+                    _SH_PREFIXES = ("6", "51", "52", "56", "58")
+                    market = "sh" if stock_code.startswith(_SH_PREFIXES) else "sz"
+                    symbol = f"{market}{stock_code}"
+                    url = f"http://qt.gtimg.cn/q={symbol}"
+                    r = _req.get(url, timeout=5)
+                    r.encoding = "gbk"
+                    # 腾讯返回格式: v_sh512760="1~芯片ETF~512760~..."
+                    for line in r.text.strip().split(";"):
+                        if "~" in line:
+                            fields = line.split('"')[1].split("~") if '"' in line else []
+                            if len(fields) >= 2 and fields[1]:
+                                name = fields[1].strip()
+                                self._stock_name_cache[stock_code] = name
+                                logger.debug(f"Akshare 获取ETF名称成功 (tencent: {stock_code} -> {name})")
+                                return name
+                except Exception as e:
+                    logger.debug(f"腾讯接口获取ETF名称失败 {stock_code}: {e}")
+
             self._enforce_rate_limit()
 
-            # 尝试 1: 使用 stock_individual_info_em
-            try:
-                df = ak.stock_individual_info_em(symbol=stock_code)
-                if df is not None and not df.empty:
-                    name_row = df[df['item'] == '股票简称']
-                    if not name_row.empty:
-                        name = str(name_row['value'].values[0]).strip()
-                        if name:
-                            self._stock_name_cache[stock_code] = name
-                            logger.debug(f"Akshare 获取股票名称成功 (info_em: {stock_code} -> {name}")
-                            return name
-            except Exception as e:
-                logger.debug(f"  info_em 失败: {e}")
+            # 尝试 1: 使用 stock_individual_info_em（仅个股，ETF 会跳过）
+            if not _is_etf_code(stock_code):
+                try:
+                    df = ak.stock_individual_info_em(symbol=stock_code)
+                    if df is not None and not df.empty:
+                        name_row = df[df['item'] == '股票简称']
+                        if not name_row.empty:
+                            name = str(name_row['value'].values[0]).strip()
+                            if name:
+                                self._stock_name_cache[stock_code] = name
+                                logger.debug(f"Akshare 获取股票名称成功 (info_em: {stock_code} -> {name}")
+                                return name
+                except Exception as e:
+                    logger.debug(f"  info_em 失败: {e}")
 
-            # 尝试 2: 从实时行情中获取
+            # 尝试 2: stock_individual_basic_info_xq（单股查询，兼容 ETF）
+            # 沪市：6xxxxx（A股）、51/52/56/58xxxx（ETF）
+            # 深市：0xxxxx/3xxxxx（A股）、15/16/18xxxx（ETF）
             try:
-                # 获取全部实时行情
-                df_spot = ak.stock_zh_a_spot_em()
-                if df_spot is not None and not df_spot.empty:
-                    stock_info = df_spot[df_spot['代码'] == stock_code]
-                    if not stock_info.empty:
-                        name = str(stock_info['名称'].values[0]).strip()
-                        if name:
-                            self._stock_name_cache[stock_code] = name
-                            logger.debug(f"Akshare 获取股票名称成功 (spot_em: {stock_code} -> {name}")
-                            return name
-            except Exception as e:
-                logger.debug(f"  spot_em 失败: {e}")
-
-            # 尝试 3: stock_individual_basic_info_xq
-            try:
-                xq_code = f"SH{stock_code}" if stock_code.startswith('6') else f"SZ{stock_code}"
+                _SH_PREFIXES = ("6", "51", "52", "56", "58")
+                xq_code = f"SH{stock_code}" if stock_code.startswith(_SH_PREFIXES) else f"SZ{stock_code}"
                 df_xq = ak.stock_individual_basic_info_xq(symbol=xq_code)
                 if df_xq is not None and not df_xq.empty:
                     if '股票名称' in df_xq.columns:
