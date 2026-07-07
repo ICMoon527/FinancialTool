@@ -57,6 +57,9 @@ RealtimeQuote = UnifiedRealtimeQuote
 
 logger = logging.getLogger(__name__)
 
+# 沪市股票代码前缀（A股: 6xxxxx, ETF: 51/52/56/58xxxx）
+_SH_PREFIXES = ("6", "51", "52", "56", "58")
+
 
 # User-Agent 池，用于随机轮换
 USER_AGENTS = [
@@ -268,8 +271,11 @@ class AkshareFetcher(BaseFetcher):
             # ETF 通过腾讯实时行情接口单股查询名称（轻量，~1KB 响应）
             if _is_etf_code(stock_code):
                 try:
-                    import requests as _req
-                    _SH_PREFIXES = ("6", "51", "52", "56", "58")
+                    try:
+                        import requests as _req
+                    except ImportError as e:
+                        logger.debug(f"导入requests失败，无法使用腾讯接口获取ETF名称: {e}")
+                        raise
                     market = "sh" if stock_code.startswith(_SH_PREFIXES) else "sz"
                     symbol = f"{market}{stock_code}"
                     url = f"http://qt.gtimg.cn/q={symbol}"
@@ -299,7 +305,7 @@ class AkshareFetcher(BaseFetcher):
                             name = str(name_row['value'].values[0]).strip()
                             if name:
                                 self._stock_name_cache[stock_code] = name
-                                logger.debug(f"Akshare 获取股票名称成功 (info_em: {stock_code} -> {name}")
+                                logger.debug(f"Akshare 获取股票名称成功 (info_em: {stock_code} -> {name})")
                                 return name
                 except Exception as e:
                     logger.debug(f"  info_em 失败: {e}")
@@ -308,7 +314,6 @@ class AkshareFetcher(BaseFetcher):
             # 沪市：6xxxxx（A股）、51/52/56/58xxxx（ETF）
             # 深市：0xxxxx/3xxxxx（A股）、15/16/18xxxx（ETF）
             try:
-                _SH_PREFIXES = ("6", "51", "52", "56", "58")
                 xq_code = f"SH{stock_code}" if stock_code.startswith(_SH_PREFIXES) else f"SZ{stock_code}"
                 df_xq = ak.stock_individual_basic_info_xq(symbol=xq_code)
                 if df_xq is not None and not df_xq.empty:
@@ -316,7 +321,7 @@ class AkshareFetcher(BaseFetcher):
                         name = str(df_xq['股票名称'].iloc[0]).strip()
                         if name:
                             self._stock_name_cache[stock_code] = name
-                            logger.debug(f"Akshare 获取股票名称成功 (xq: {stock_code} -> {name}")
+                            logger.debug(f"Akshare 获取股票名称成功 (xq: {stock_code} -> {name})")
                             return name
             except Exception as e:
                 logger.debug(f"  xq 失败: {e}")
