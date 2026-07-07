@@ -4791,9 +4791,8 @@ const IntradayPage: React.FC = () => {
                           ?.lines?.find((l: any) => l.name === 'ma5_dev_pct')
                           ?.data?.slice(-1)[0]?.value ?? null);
                     if (ma5DevPct == null) return null;
-                    const ma5DevAbs = Math.abs(ma5DevPct);
                     const ma5textColor =
-                      ma5DevAbs > 7.5 ? '#44FF44' : ma5DevAbs >= 5 ? '#FFAA00' : '#d1d4dc';
+                      ma5DevPct > 7.5 ? '#44FF44' : ma5DevPct >= 5 ? '#FFAA00' : '#d1d4dc';
                     return (
                       <span className="text-[10px] font-mono font-medium px-1.5 py-px rounded"
                         style={{ color: ma5textColor, backgroundColor: 'rgba(26,26,46,0.85)' }}>

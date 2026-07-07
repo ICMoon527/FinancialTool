@@ -2,17 +2,24 @@
 """
 金蛤蟆形态选股策略 - Python 实现。
 
-识别日K线金蛤蟆形态（6条铁律版本）：
+识别日K线金蛤蟆形态（改进版）：
   铁律1: 右眼价格必须高于左眼（右眼≤左眼直接排除）
   铁律2: 右爪价格必须高于左爪（低点逐步抬高）
   铁律3: 左爪和右爪必须缩量（芝麻点）
-  铁律4: 左腿长（吸筹时间长）> 右腿短（洗盘时间短）
-  铁律5: 右爪悬空在60日线上方（强势股特征）
-  铁律6: 左右眼RSI接近（排除顶背离的假M头）
+  铁律5: 右爪在MA60附近（±5%范围内）
+  铁律7: 右眼上影线≤50%（排除冲高回落假突破）
+  铁律8: 左眼必须放量（量比>1.5）
+  铁律9: 右眼必须放量（量比>1.2）
+
+非铁律加分项（不满足不排除）：
+  - 腿长比例（左腿≥右腿）
+  - 左右眼RSI一致（排除顶背离）
+  - 左眼到右眼之间MA60支撑比例（≥70%）
+  - 买点触发（买点1/买点2）
 
 完整结构：
-  左爪（缩量低点，60日线附近）→ 左眼（放量波段高点）→ 塌背（缩量洗盘）
-  → 右眼（放量波段高点，>左眼）→ 右爪（缩量低点，60日线上方，>左爪）
+  左爪（缩量低点，60日线附近）→ 左眼（放量局部高点）→ 塌背（缩量洗盘）
+  → 右眼（放量局部高点，>左眼）→ 右爪（缩量低点，60日线附近，>左爪）
 
 两个买点：
   - 买点1（右爪缩量低吸）：右爪缩量企稳，左侧低吸
@@ -40,12 +47,9 @@ LEFT_EYE_SEARCH_END = 0.60  # 左眼搜索区间结束（数据比例）
 LOCAL_HIGH_WINDOW = 5  # 局部高点检测窗口（前后各N天）
 LEFT_EYE_VOL_RATIO = 1.5  # 左眼量能阈值（> 前20日均量的倍数）
 RIGHT_EYE_VOL_RATIO = 1.2  # 右眼量能阈值
-RIGHT_EYE_UPPER_SHADOW_MAX = 0.40  # 右眼上影线占比上限（避免冲高回落的假突破）
+RIGHT_EYE_UPPER_SHADOW_MAX = 0.50  # 右眼上影线占比上限（避免冲高回落的假突破）
 MIN_EYE_DISTANCE = 15  # 左右眼最小间隔（交易日）
 RIGHT_EYE_HEIGHT_RATIO = 0.90  # 右眼不低于左眼的最低比例（量能/上影线等其他条件通过时的宽松阈值）
-EYE_UPTREND_MIN_DAYS = 5  # 眼睛波段：上升段最少天数
-EYE_TOP_ZONE_PCT = 2.0  # 眼睛波段：筑顶区价格范围（%）
-EYE_PULLBACK_MIN_DAYS = 3  # 眼睛波段：回踩最少天数
 MA60_TREND_SLOPE_PCT = -1.0  # MA60趋势斜率阈值（%）
 MA60_SLOPE_LOOKBACK = 20  # MA60斜率计算回看天数
 MA60_ABOVE_RATIO_MIN = 0.70  # 左眼到右眼之间，收盘价在MA60上方的最小比例
@@ -212,128 +216,9 @@ class GoldenToadStrategy(StockSelectorStrategy):
         trend_ok = slope_pct >= MA60_TREND_SLOPE_PCT
         return trend_ok, slope_pct, ma60_latest
 
-    def _detect_eye_wave(
-        self,
-        df: pd.DataFrame,
-        search_start: int,
-        search_end: int,
-        ma60: pd.Series,
-    ) -> Optional[Dict[str, Any]]:
-        """
-        在指定区间内搜索完整的眼睛波段：上升趋势 → 筑顶 → 回踩。
-
-        算法：
-        1. 找局部高点候选
-        2. 对每个候选，验证：上升段（≥EYE_UPTREND_MIN_DAYS）→
-           筑顶区（峰值±EYE_TOP_ZONE_PCT内）→ 回踩段（≥EYE_PULLBACK_MIN_DAYS，在MA60上方）
-
-        Returns:
-            None 表示未找到，否则返回眼睛信息字典（含 uptrend_start 用于左爪检测）。
-        """
-        n = len(df)
-
-        # Step 1: 找候选局部高点
-        local_highs = self._find_local_highs(df["high"], LOCAL_HIGH_WINDOW)  # type: ignore[arg-type]
-        candidates = [i for i in local_highs if search_start <= i <= search_end]
-
-        if not candidates:
-            return None
-
-        # 按价格从高到低排序，优先验证高价候选
-        candidates.sort(key=lambda i: float(df["high"].iloc[i]), reverse=True)
-
-        for cand_idx in candidates:
-            cand_high = float(df["high"].iloc[cand_idx])
-
-            # ----------------------------------------------------------
-            # Step 2: 验证上升趋势（从 cand_idx 往前找连续走高的起点）
-            # ----------------------------------------------------------
-            uptrend_start = cand_idx
-            for i in range(cand_idx - 1, max(0, cand_idx - 30), -1):
-                prev_close = float(df["close"].iloc[i])
-                curr_close = float(df["close"].iloc[i + 1])
-                prev_high = float(df["high"].iloc[i])
-                curr_high = float(df["high"].iloc[i + 1])
-                if prev_close <= curr_close or prev_high <= curr_high:
-                    uptrend_start = i
-                else:
-                    break
-
-            uptrend_days = cand_idx - uptrend_start
-            if uptrend_days < EYE_UPTREND_MIN_DAYS:
-                continue
-
-            # ----------------------------------------------------------
-            # Step 3: 验证筑顶区（峰值附近在 EYE_TOP_ZONE_PCT 范围内）
-            # ----------------------------------------------------------
-            top_zone_start = cand_idx
-            top_zone_end = cand_idx
-            for i in range(cand_idx - 1, max(0, cand_idx - 3), -1):
-                if float(df["high"].iloc[i]) >= cand_high * (1 - EYE_TOP_ZONE_PCT / 100):
-                    top_zone_start = i
-                else:
-                    break
-            for i in range(cand_idx + 1, min(n, cand_idx + 3)):
-                if float(df["high"].iloc[i]) >= cand_high * (1 - EYE_TOP_ZONE_PCT / 100):
-                    top_zone_end = i
-                else:
-                    break
-
-            eye_position = top_zone_end
-
-            # ----------------------------------------------------------
-            # Step 4: 验证回踩段（筑顶区后至少 EYE_PULLBACK_MIN_DAYS 天收盘价走低，且在 MA60 上方）
-            # ----------------------------------------------------------
-            pullback_start = top_zone_end + 1
-            if pullback_start >= n - EYE_PULLBACK_MIN_DAYS:
-                continue
-
-            down_count = 0
-            pullback_low_close = float("inf")
-            pullback_low_pos = pullback_start
-            pullback_low_low = float("inf")
-
-            for i in range(pullback_start, min(n, pullback_start + 20)):
-                close_i = float(df["close"].iloc[i])
-                low_i = float(df["low"].iloc[i])
-
-                if i == pullback_start or close_i < float(df["close"].iloc[i - 1]):
-                    down_count += 1
-                    if close_i < pullback_low_close:
-                        pullback_low_close = close_i
-                        pullback_low_low = low_i
-                        pullback_low_pos = i
-                else:
-                    break
-
-                ma60_val = float(ma60.iloc[i]) if pd.notna(ma60.iloc[i]) else 0.0
-                if ma60_val > 0 and close_i <= ma60_val:
-                    down_count = 0
-                    break
-
-            if down_count < EYE_PULLBACK_MIN_DAYS:
-                continue
-
-            # 眼睛有效！
-            return {
-                "eye_position": eye_position,
-                "eye_price": cand_high,
-                "eye_close": float(df["close"].iloc[eye_position]),
-                "pullback_low_close": pullback_low_close,
-                "pullback_low_low": pullback_low_low,
-                "pullback_position": pullback_low_pos,
-                "uptrend_days": uptrend_days,
-                "pullback_days": down_count,
-                "top_zone_start": top_zone_start,
-                "top_zone_end": top_zone_end,
-                "uptrend_start": uptrend_start,  # 用于左爪检测
-            }
-
-        return None
-
     def _detect_left_eye(self, df: pd.DataFrame, ma60: pd.Series) -> Dict[str, Any]:
         """
-        识别左眼波段：上升趋势 → 筑顶 → 回踩在 MA60 上方。
+        识别左眼：在搜索区间内找局部高点，验证量能。
 
         Returns:
             {
@@ -347,8 +232,10 @@ class GoldenToadStrategy(StockSelectorStrategy):
         start_idx = int(n * LEFT_EYE_SEARCH_START)
         end_idx = int(n * LEFT_EYE_SEARCH_END)
 
-        wave = self._detect_eye_wave(df, start_idx, end_idx, ma60)
-        if wave is None:
+        local_highs = self._find_local_highs(df["high"], LOCAL_HIGH_WINDOW)  # type: ignore[arg-type]
+        candidates = [i for i in local_highs if start_idx <= i <= end_idx]
+
+        if not candidates:
             return {
                 "found": False, "position": -1, "price": 0.0,
                 "volume_ratio": 0.0, "pullback_position": -1,
@@ -356,10 +243,12 @@ class GoldenToadStrategy(StockSelectorStrategy):
                 "uptrend_days": 0, "uptrend_start": -1, "ok": False,
             }
 
-        best_idx = wave["eye_position"]
-        best_price = wave["eye_price"]
+        candidates.sort(key=lambda i: float(df["high"].iloc[i]), reverse=True)
 
         vol_ma = self._calc_vol_ma(df)
+        best_idx = candidates[0]
+        best_price = float(df["high"].iloc[best_idx])
+
         vol_ma_val = float(vol_ma.iloc[best_idx]) if best_idx < len(vol_ma) else 0.0
         if vol_ma_val > 0:
             vol_ratio = float(df["volume"].iloc[best_idx]) / vol_ma_val
@@ -374,25 +263,24 @@ class GoldenToadStrategy(StockSelectorStrategy):
             "position": best_idx,
             "price": best_price,
             "volume_ratio": round(vol_ratio, 2),
-            "pullback_position": wave["pullback_position"],
-            "pullback_close": round(wave["pullback_low_close"], 2),
-            "pullback_days": wave["pullback_days"],
-            "uptrend_days": wave["uptrend_days"],
-            "uptrend_start": wave["uptrend_start"],
+            "pullback_position": -1,
+            "pullback_close": 0.0,
+            "pullback_days": 0,
+            "uptrend_days": 0,
+            "uptrend_start": best_idx,  # 保留用于左爪检测（取眼睛位置前一段的低点）
             "ok": ok,
         }
 
     def _detect_left_claw(
         self,
         df: pd.DataFrame,
-        left_eye_uptrend_start: int,
+        left_eye_pos: int,
         ma60: pd.Series,
     ) -> Dict[str, Any]:
         """
-        识别左爪：左眼上升段起点附近，靠近60日线的缩量低点。
+        识别左爪：左眼位置之前，靠近60日线的缩量低点。
 
         铁律3: 左爪必须缩量（量芝麻点）
-        铁律4: 左爪位置用于计算左腿长度
 
         Returns:
             {
@@ -402,8 +290,9 @@ class GoldenToadStrategy(StockSelectorStrategy):
             }
         """
         n = len(df)
-        search_start = max(0, left_eye_uptrend_start - 3)
-        search_end = min(n - 1, left_eye_uptrend_start + 3)
+        # 在左眼位置前搜索（从数据开头到左眼位置）
+        search_start = 0
+        search_end = max(0, left_eye_pos - 1)
 
         if search_start > search_end:
             return {
@@ -412,19 +301,37 @@ class GoldenToadStrategy(StockSelectorStrategy):
                 "ma60_dist_pct": 0.0, "ok": False,
             }
 
-        # 在搜索区间内找收盘价最低点（代表左爪）
-        best_idx = search_start
-        best_close = float("inf")
+        # 在搜索区间内找距MA60最近且缩量的低点
+        vol_ma = self._calc_vol_ma(df)
+        best_idx = -1
+        best_score = float("inf")  # 综合考虑MA60距离和价格低位
+
         for i in range(search_start, search_end + 1):
             close_i = float(df["close"].iloc[i])
-            if close_i < best_close:
-                best_close = close_i
+            ma60_val = float(ma60.iloc[i]) if pd.notna(ma60.iloc[i]) else 0.0
+            if ma60_val <= 0:
+                continue
+
+            ma60_dist_pct = abs(close_i - ma60_val) / ma60_val * 100.0
+            if ma60_dist_pct > LEFT_CLAW_MA_DIST_PCT:
+                continue
+
+            # 优先选择：距MA60近 + 价格低
+            score = ma60_dist_pct + (close_i / ma60_val) * 10
+            if score < best_score:
+                best_score = score
                 best_idx = i
 
+        if best_idx == -1:
+            return {
+                "found": False, "position": -1, "close_price": 0.0,
+                "low_price": 0.0, "volume_ratio": 0.0,
+                "ma60_dist_pct": 0.0, "ok": False,
+            }
+
+        best_close = float(df["close"].iloc[best_idx])
         low_price = float(df["low"].iloc[best_idx])
 
-        # 量能确认（缩量 = 芝麻点）
-        vol_ma = self._calc_vol_ma(df)
         vol_ma_val = float(vol_ma.iloc[best_idx]) if best_idx < len(vol_ma) else 0.0
         if vol_ma_val > 0:
             vol_ratio = float(df["volume"].iloc[best_idx]) / vol_ma_val
@@ -433,7 +340,6 @@ class GoldenToadStrategy(StockSelectorStrategy):
 
         vol_ok = vol_ratio < LEFT_CLAW_VOL_RATIO
 
-        # 距60日线距离
         ma60_val = float(ma60.iloc[best_idx]) if pd.notna(ma60.iloc[best_idx]) else 0.0
         if ma60_val > 0:
             ma60_dist_pct = abs(best_close - ma60_val) / ma60_val * 100.0
@@ -441,7 +347,6 @@ class GoldenToadStrategy(StockSelectorStrategy):
             ma60_dist_pct = 100.0
 
         near_ma60 = ma60_dist_pct <= LEFT_CLAW_MA_DIST_PCT
-
         ok = vol_ok and near_ma60
 
         return {
@@ -462,10 +367,9 @@ class GoldenToadStrategy(StockSelectorStrategy):
         ma60: pd.Series,
     ) -> Dict[str, Any]:
         """
-        识别右眼波段：上升趋势 → 筑顶 → 回踩在 MA60 上方。
+        识别右眼：在左眼之后找局部高点，验证量能、上影线、高度比。
 
-        在左眼之后搜索，使用与左眼相同的波段检测算法。
-        额外检查：上影线占比、高度比例、量能。
+        使用与左眼相同的局部高点检测算法。
 
         Returns:
             {
@@ -489,8 +393,10 @@ class GoldenToadStrategy(StockSelectorStrategy):
                 "uptrend_days": 0, "ok": False,
             }
 
-        wave = self._detect_eye_wave(df, search_start, search_end, ma60)
-        if wave is None:
+        local_highs = self._find_local_highs(df["high"], LOCAL_HIGH_WINDOW)  # type: ignore[arg-type]
+        candidates = [i for i in local_highs if search_start <= i <= search_end]
+
+        if not candidates:
             return {
                 "found": False, "position": -1, "price": 0.0,
                 "volume_ratio": 0.0, "height_ratio": 0.0,
@@ -499,8 +405,10 @@ class GoldenToadStrategy(StockSelectorStrategy):
                 "uptrend_days": 0, "ok": False,
             }
 
-        best_idx = wave["eye_position"]
-        best_price = wave["eye_price"]
+        candidates.sort(key=lambda i: float(df["high"].iloc[i]), reverse=True)
+
+        best_idx = candidates[0]
+        best_price = float(df["high"].iloc[best_idx])
 
         height_ratio = best_price / left_eye_price if left_eye_price > 0 else 0.0
 
@@ -536,10 +444,10 @@ class GoldenToadStrategy(StockSelectorStrategy):
             "volume_ratio": round(vol_ratio, 2),
             "height_ratio": round(height_ratio, 2),
             "upper_shadow_ratio": round(upper_shadow_ratio, 2),
-            "pullback_position": wave["pullback_position"],
-            "pullback_close": round(wave["pullback_low_close"], 2),
-            "pullback_days": wave["pullback_days"],
-            "uptrend_days": wave["uptrend_days"],
+            "pullback_position": -1,
+            "pullback_close": 0.0,
+            "pullback_days": 0,
+            "uptrend_days": 0,
             "ok": ok,
         }
 
@@ -651,9 +559,9 @@ class GoldenToadStrategy(StockSelectorStrategy):
 
         vol_ok = vol_ratio < RIGHT_CLAW_VOL_RATIO
 
-        # Step 4: 悬空确认（收盘价在 MA60 上方）
+        # Step 4: MA60附近确认（允许在MA60±5%范围内）
         ma60_val = float(ma60.iloc[low_idx]) if low_idx < len(ma60) else 0.0
-        above_ma60 = low_close > ma60_val if ma60_val > 0 else False
+        near_ma60 = abs(low_close - ma60_val) / ma60_val <= RIGHT_CLAW_MA_DIST_PCT / 100.0 if ma60_val > 0 else False
 
         # 左眼到右眼之间的最低收盘价，代表支撑位
         segment_low = df["close"].iloc[left_eye_pos:right_eye_pos].min()
@@ -668,7 +576,7 @@ class GoldenToadStrategy(StockSelectorStrategy):
 
         recovery_ok = recovery_pct >= RIGHT_CLAW_RECOVERY_PCT and current_close > low_close
 
-        ok = vol_ok and above_ma60 and above_left_eye_low and recovery_ok and below_right_eye_close
+        ok = vol_ok and near_ma60 and above_left_eye_low and recovery_ok and below_right_eye_close
 
         return {
             "found": True,
@@ -676,7 +584,7 @@ class GoldenToadStrategy(StockSelectorStrategy):
             "low_price": low_low,
             "close_price": round(low_close, 2),
             "volume_ratio": round(vol_ratio, 2),
-            "above_ma60": above_ma60,
+            "above_ma60": near_ma60,
             "recovery_pct": round(recovery_pct, 2),
             "below_right_eye_close": below_right_eye_close,
             "ok": ok,
@@ -900,7 +808,7 @@ class GoldenToadStrategy(StockSelectorStrategy):
 
             if left_eye["found"]:
                 left_claw = self._detect_left_claw(
-                    daily_data, left_eye["uptrend_start"], ma60
+                    daily_data, left_eye["position"], ma60
                 )
                 match_details["left_claw"] = left_claw
 
@@ -1058,7 +966,7 @@ class GoldenToadStrategy(StockSelectorStrategy):
                                 f">= {daily_data['close'].iloc[right_eye['position']]:.2f}）"
                             )
                         elif not right_claw["above_ma60"]:
-                            conditions_failed.append("右爪跌破60日线（未悬空）")
+                            conditions_failed.append("右爪偏离MA60过远（未在±5%范围内）")
                         elif right_claw.get("recovery_pct", 0) < RIGHT_CLAW_RECOVERY_PCT:
                             conditions_failed.append(
                                 f"右爪回踩后未充分回升"
@@ -1099,12 +1007,12 @@ class GoldenToadStrategy(StockSelectorStrategy):
                         f"铁律2违反：右爪({right_claw['close_price']:.2f}) <= 左爪({left_claw['close_price']:.2f})，排除"
                     )
 
-            # 铁律5: 右爪悬空在MA60上方
+            # 铁律5: 右爪在MA60附近（±5%范围内）
             if right_claw["found"]:
                 if right_claw["above_ma60"]:
-                    iron_rules_pass.append(f"铁律5通过：右爪悬空在MA60上方")
+                    iron_rules_pass.append(f"铁律5通过：右爪在MA60附近（±{RIGHT_CLAW_MA_DIST_PCT:.0f}%）")
                 else:
-                    iron_rules_fail.append(f"铁律5违反：右爪未悬空（跌破MA60），排除")
+                    iron_rules_fail.append(f"铁律5违反：右爪偏离MA60过远（>{RIGHT_CLAW_MA_DIST_PCT:.0f}%），排除")
 
             # 铁律7: 右眼上影线不能过长（排除冲高回落的假右眼）
             if right_eye["found"]:
@@ -1177,7 +1085,7 @@ class GoldenToadStrategy(StockSelectorStrategy):
                     )
 
             # ----------------------------------------------------------
-            # Step 6.6: 左腿长/右腿短检查（铁律4）
+            # Step 6.6: 左腿长/右腿短检查（加分项，非铁律）
             # ----------------------------------------------------------
             leg_check_ok = False
             if left_claw["found"] and right_claw["found"] and left_eye["found"] and right_eye["found"]:
@@ -1197,13 +1105,13 @@ class GoldenToadStrategy(StockSelectorStrategy):
                 leg_check_ok = leg_ratio >= LEFT_LEG_RIGHT_LEG_MIN_RATIO
 
                 if leg_check_ok:
-                    iron_rules_pass.append(
-                        f"铁律4通过：左腿({left_leg_days}天) >= 右腿({right_leg_days}天)，"
+                    conditions_met.append(
+                        f"腿长比例合理：左腿({left_leg_days}天) >= 右腿({right_leg_days}天)，"
                         f"吸筹时间长于洗盘"
                     )
                 else:
-                    iron_rules_fail.append(
-                        f"铁律4违反：左腿({left_leg_days}天) < 右腿({right_leg_days}天)，"
+                    conditions_failed.append(
+                        f"腿长比例欠佳：左腿({left_leg_days}天) < 右腿({right_leg_days}天)，"
                         f"吸筹时间短于洗盘"
                     )
 

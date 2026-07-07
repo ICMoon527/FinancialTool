@@ -9,11 +9,13 @@ Phase 3: 统计涨幅 ≥30% 的胜率。
 
 import sys
 import logging
+import pickle
 import time
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
 import pandas as pd
 
 # 确保项目根目录在 sys.path 中
@@ -39,6 +41,19 @@ DEDUP_TRADING_DAYS = 20  # 去重间隔（交易日）
 TRACK_TRADING_DAYS = 44  # 后市追踪周期（交易日 ≈ 2 个月）
 GAIN_THRESHOLD = 30.0  # 涨幅阈值（%）
 MAX_DATA_ROWS = 1000  # 单只股票最大处理数据行数（取最近N行，避免超长历史卡死）
+
+# 成交量确认参数
+VOL_CONFIRM_RATIO = 1.2  # 买入日成交量 > 近5日均量 * 1.2
+VOL_CONFIRM_DAYS = 5     # 均量计算周期
+
+# 大盘过滤参数
+INDEX_MA_PERIOD = 60      # 大盘均线周期
+INDEX_MA_SLOPE_DAYS = 20  # 计算MA60斜率的天数
+INDEX_CACHE_DIR = project_root / "data" / "cache"
+INDEX_FILES = {
+    "sh000001": INDEX_CACHE_DIR / "market_sh000001.pkl",
+    "sz399001": INDEX_CACHE_DIR / "market_sz399001.pkl",
+}
 
 
 def print_separator(title: str) -> None:
@@ -109,6 +124,51 @@ def build_daily_dataframe(records) -> pd.DataFrame:
     return df
 
 
+def load_market_index(index_name: str = "sh000001") -> pd.DataFrame:
+    """从缓存加载大盘指数数据，返回含 MA60 的 DataFrame。"""
+    filepath = INDEX_FILES.get(index_name)
+    if filepath is None or not filepath.exists():
+        raise FileNotFoundError(f"大盘指数缓存文件不存在: {filepath}")
+    df = pd.read_pickle(filepath)
+    df["date"] = pd.to_datetime(df["date"]).dt.date
+    df["ma60"] = df["close"].rolling(window=INDEX_MA_PERIOD).mean()
+    df["ma60_slope"] = df["ma60"].diff(INDEX_MA_SLOPE_DAYS) / INDEX_MA_SLOPE_DAYS
+    return df
+
+
+def is_market_uptrend(index_df: pd.DataFrame, target_date: date) -> bool:
+    """
+    判断指定日期大盘是否处于上升趋势。
+
+    条件：
+      1. 指数收盘价在 MA60 上方
+      2. MA60 斜率 > 0（近20天MA60在上升）
+    """
+    row = index_df[index_df["date"] == target_date]
+    if len(row) == 0:
+        return False
+    r = row.iloc[0]
+    if pd.isna(r["ma60"]) or pd.isna(r["ma60_slope"]):
+        return False
+    return r["close"] > r["ma60"] and r["ma60_slope"] > 0
+
+
+def check_volume_confirmation(window_df: pd.DataFrame) -> bool:
+    """
+    检查买入日成交量是否确认。
+
+    条件：买入日（窗口最后一天）成交量 > 近5日均量 * VOL_CONFIRM_RATIO
+    """
+    if len(window_df) < VOL_CONFIRM_DAYS + 1:
+        return False
+    recent_vol = window_df["volume"].iloc[-(VOL_CONFIRM_DAYS + 1):-1]
+    entry_vol = window_df["volume"].iloc[-1]
+    avg_vol = recent_vol.mean()
+    if pd.isna(avg_vol) or pd.isna(entry_vol) or avg_vol <= 0:
+        return False
+    return entry_vol > avg_vol * VOL_CONFIRM_RATIO
+
+
 # ======================================================================
 # Phase 1: 样本采集
 # ======================================================================
@@ -119,17 +179,20 @@ def collect_samples(
     code_to_name: Dict[str, str],
     db,
     trading_days_sorted: List[date],
-) -> Tuple[List[Dict[str, Any]], int, int]:
+    index_df: pd.DataFrame,
+) -> Tuple[List[Dict[str, Any]], int, int, Dict[str, int]]:
     """
     遍历全市场标的，滑动窗口扫描，收集 TARGET_SAMPLES 个买入信号。
 
     Returns:
-        (samples, total_checked, total_windows)
+        (samples, total_checked, total_windows, filter_stats)
     """
     samples: List[Dict[str, Any]] = []
     total_checked = 0
     total_windows = 0
     last_entry_dates: Dict[str, date] = {}  # per-stock 去重记录
+
+    filter_stats = {"volume_filtered": 0, "market_filtered": 0}
 
     with db.get_session() as session:
         for stock_code in stock_codes:
@@ -196,6 +259,16 @@ def collect_samples(
 
                 last_entry_dates[stock_code] = entry_date
 
+                # 成交量确认：买入日成交量必须放量
+                if not check_volume_confirmation(window_df):
+                    filter_stats["volume_filtered"] += 1
+                    continue
+
+                # 大盘趋势过滤：买入日大盘必须处于上升趋势
+                if not is_market_uptrend(index_df, entry_date):
+                    filter_stats["market_filtered"] += 1
+                    continue
+
                 entry_price = float(window_df["close"].iloc[-1])
                 details = match.match_details
 
@@ -229,7 +302,7 @@ def collect_samples(
                 if len(samples) >= TARGET_SAMPLES:
                     break
 
-    return samples, total_checked, total_windows
+    return samples, total_checked, total_windows, filter_stats
 
 
 def _extract_date(df: pd.DataFrame, component: Dict[str, Any], pos_key: str) -> Optional[date]:
@@ -336,6 +409,198 @@ def track_performance(
     }
 
 
+def track_performance_with_rules(
+    session,
+    sample: Dict[str, Any],
+    trading_days_sorted: List[date],
+) -> Dict[str, Any]:
+    """
+    追踪单个样本的后市表现，应用分级止盈止损规则。
+
+    默认模式：
+      1. 初始止损 -12%
+      2. 涨幅达到 +10% → 止损上移至保本价
+      3. 涨幅达到 +20% → 卖出 50% 仓位，剩余 50% 启动 10% 移动止盈
+      4. 44 个交易日到期 → 市价平仓
+
+    大赢家模式（买入后 10 个交易日内收盘价涨幅 ≥15% 触发）：
+      1. 初始止损 -15%（给更多波动空间）
+      2. 涨幅达到 +10% → 保本止损（不变）
+      3. 不触发 +20% 部分止盈（全部仓位保留）
+      4. 15% 移动止盈（给强势股更多回撤空间）
+
+    Returns:
+        {
+            "exit_date": Optional[date],
+            "exit_price": float,
+            "exit_reason": str,
+            "total_return_pct": float,
+            "max_close": float,
+            "max_gain_pct": float,
+            "days_held": int,
+            "invalid": bool,
+            "tier": str,  # "default" 或 "big_winner"
+        }
+    """
+    entry_date = sample["entry_date"]
+    entry_price = sample["entry_price"]
+    stock_code = sample["stock_code"]
+
+    target_date = get_nth_trading_day_after(trading_days_sorted, entry_date, TRACK_TRADING_DAYS)
+    if target_date is None:
+        return {
+            "exit_date": None, "exit_price": 0.0, "exit_reason": "数据不足",
+            "total_return_pct": 0.0, "max_close": 0.0, "max_gain_pct": 0.0,
+            "days_held": 0, "invalid": True, "tier": "default",
+        }
+
+    rows = session.execute(
+        select(StockDaily)
+        .where(
+            and_(
+                StockDaily.code == stock_code,
+                StockDaily.date > entry_date,
+                StockDaily.date <= target_date,
+            )
+        )
+        .order_by(StockDaily.date)
+    ).scalars().all()
+
+    if len(rows) == 0:
+        return {
+            "exit_date": None, "exit_price": 0.0, "exit_reason": "无后市数据",
+            "total_return_pct": 0.0, "max_close": 0.0, "max_gain_pct": 0.0,
+            "days_held": 0, "invalid": True, "tier": "default",
+        }
+
+    # 大赢家模式触发条件
+    BIG_WINNER_DAYS = 10       # 窗口期
+    BIG_WINNER_TRIGGER = 1.15  # 10个交易日内涨幅达到15%
+
+    # 默认模式参数
+    DEFAULT_STOP_LOSS = 0.88
+    DEFAULT_TRAILING_DD = 0.10
+    BREAKEVEN_TRIGGER = 1.10
+    PARTIAL_TAKE_PROFIT = 1.20  # +20%止盈50%
+
+    # 大赢家模式参数
+    BIG_WINNER_STOP_LOSS = 0.85
+    BIG_WINNER_TRAILING_DD = 0.15
+
+    # 状态
+    tier = "default"
+    breakeven_activated = False
+    partial_sold = False
+    partial_sold_price = 0.0
+    partial_sold_date = None
+    peak_after_partial = 0.0
+    big_winner_peak = 0.0  # 大赢家模式下的最高价
+    max_close = float(rows[0].close)
+    max_gain_pct = 0.0
+
+    exit_date = None
+    exit_price = 0.0
+    exit_reason = "到期平仓"
+
+    for i, r in enumerate(rows):
+        c = float(r.close)
+        h = float(r.high)
+        l = float(r.low)
+        r_date = r.date if hasattr(r.date, "__str__") else r.date
+
+        # 更新最高价
+        if c > max_close:
+            max_close = c
+        gain_pct = (c - entry_price) / entry_price * 100.0
+        if gain_pct > max_gain_pct:
+            max_gain_pct = gain_pct
+
+        # 大赢家模式检测：10个交易日内收盘价涨幅 ≥15%
+        if tier == "default" and i < BIG_WINNER_DAYS and c >= entry_price * BIG_WINNER_TRIGGER:
+            tier = "big_winner"
+            big_winner_peak = c
+            breakeven_activated = True  # 已触发保本
+
+        if tier == "default":
+            # ----------------------------------------------------------
+            # 默认模式
+            # ----------------------------------------------------------
+            current_stop = entry_price * DEFAULT_STOP_LOSS
+            if breakeven_activated:
+                current_stop = entry_price
+
+            if c >= entry_price * PARTIAL_TAKE_PROFIT:
+                partial_sold = True
+                partial_sold_price = c
+                partial_sold_date = r_date
+                peak_after_partial = c
+                breakeven_activated = True
+                continue
+
+            if c >= entry_price * BREAKEVEN_TRIGGER and not breakeven_activated:
+                breakeven_activated = True
+
+            if l <= current_stop:
+                exit_date = r_date
+                exit_price = current_stop
+                exit_reason = "保本出局" if breakeven_activated else "止损出局"
+                break
+        else:
+            # ----------------------------------------------------------
+            # 大赢家模式：全仓持有，宽松移动止盈
+            # ----------------------------------------------------------
+            if c > big_winner_peak:
+                big_winner_peak = c
+
+            # 止损线：大赢家模式的止损（-15%）
+            stop_line = entry_price * BIG_WINNER_STOP_LOSS
+            # 保本止损
+            if breakeven_activated and entry_price > stop_line:
+                stop_line = entry_price
+
+            # 移动止盈线
+            trailing_stop = big_winner_peak * (1 - BIG_WINNER_TRAILING_DD)
+            actual_stop = max(stop_line, trailing_stop)
+
+            if l <= actual_stop:
+                exit_date = r_date
+                exit_price = actual_stop
+                if actual_stop == stop_line:
+                    exit_reason = "大赢家保本出局" if breakeven_activated else "大赢家止损出局"
+                else:
+                    exit_reason = "大赢家移动止盈"
+                break
+
+    # 计算总收益率
+    if partial_sold:
+        # 默认模式 50%止盈
+        if exit_price == 0.0:
+            exit_price = float(rows[-1].close)
+            exit_date = rows[-1].date if hasattr(rows[-1].date, "__str__") else rows[-1].date
+        pct_1 = (partial_sold_price - entry_price) / entry_price * 100.0
+        pct_2 = (exit_price - entry_price) / entry_price * 100.0
+        total_return_pct = pct_1 * 0.5 + pct_2 * 0.5
+    else:
+        if exit_price == 0.0:
+            exit_price = float(rows[-1].close)
+            exit_date = rows[-1].date if hasattr(rows[-1].date, "__str__") else rows[-1].date
+        total_return_pct = (exit_price - entry_price) / entry_price * 100.0
+
+    days_held = len(rows) if exit_reason == "到期平仓" else i + 1
+
+    return {
+        "exit_date": exit_date,
+        "exit_price": round(exit_price, 2),
+        "exit_reason": exit_reason,
+        "total_return_pct": round(total_return_pct, 2),
+        "max_close": round(max_close, 2),
+        "max_gain_pct": round(max_gain_pct, 2),
+        "days_held": days_held,
+        "invalid": False,
+        "tier": tier,
+    }
+
+
 def track_all_samples(
     db,
     samples: List[Dict[str, Any]],
@@ -361,6 +626,115 @@ def track_all_samples(
         print(f"  注意: {invalid_count} 个样本因后市数据不足被排除")
 
     return results
+
+
+def track_all_samples_with_rules(
+    db,
+    samples: List[Dict[str, Any]],
+    trading_days_sorted: List[date],
+) -> List[Dict[str, Any]]:
+    """对所有样本应用止盈止损规则追踪。"""
+    results = []
+    invalid_count = 0
+
+    with db.get_session() as session:
+        for i, sample in enumerate(samples):
+            if (i + 1) % 20 == 0:
+                print(f"  规则追踪进度: {i + 1}/{len(samples)} 个样本...")
+
+            perf = track_performance_with_rules(session, sample, trading_days_sorted)
+            if perf["invalid"]:
+                invalid_count += 1
+                continue
+
+            results.append({**sample, **perf})
+
+    if invalid_count > 0:
+        print(f"  注意: {invalid_count} 个样本因后市数据不足被排除")
+
+    return results
+
+
+def print_comparison(hold_results: List[Dict[str, Any]], rule_results: List[Dict[str, Any]]) -> None:
+    """对比持有策略 vs 止盈止损策略。"""
+    print_separator("Phase 4: 持有策略 vs 止盈止损策略 对比")
+
+    # 只对比两者都有效的样本
+    hold_map = {r["stock_code"] + str(r["entry_date"]): r for r in hold_results}
+    rule_map = {r["stock_code"] + str(r["entry_date"]): r for r in rule_results}
+    common_keys = set(hold_map.keys()) & set(rule_map.keys())
+
+    hold_returns = []
+    rule_returns = []
+    exit_reasons: Dict[str, int] = {}
+
+    for key in common_keys:
+        h = hold_map[key]
+        r = rule_map[key]
+        hold_ret = (h["close_after_2m"] - h["entry_price"]) / h["entry_price"] * 100.0
+        hold_returns.append(hold_ret)
+        rule_returns.append(r["total_return_pct"])
+        reason = r["exit_reason"]
+        exit_reasons[reason] = exit_reasons.get(reason, 0) + 1
+
+    n = len(hold_returns)
+    if n == 0:
+        print("  无有效对比样本")
+        return
+
+    # 持有策略统计
+    hold_avg = sum(hold_returns) / n
+    hold_median = sorted(hold_returns)[n // 2]
+    hold_win = sum(1 for r in hold_returns if r > 0)
+    hold_loss = sum(1 for r in hold_returns if r < 0)
+
+    # 规则策略统计
+    rule_avg = sum(rule_returns) / n
+    rule_median = sorted(rule_returns)[n // 2]
+    rule_win = sum(1 for r in rule_returns if r > 0)
+    rule_loss = sum(1 for r in rule_returns if r < 0)
+
+    print(f"\n  对比样本数: {n}")
+    print(f"\n  {'指标':<16} {'持有到期':<14} {'止盈止损':<14}")
+    print(f"  {'-' * 44}")
+    print(f"  {'平均收益率':<16} {hold_avg:>+8.2f}%      {rule_avg:>+8.2f}%")
+    print(f"  {'中位数收益率':<16} {hold_median:>+8.2f}%      {rule_median:>+8.2f}%")
+    print(f"  {'盈利样本数':<16} {hold_win:>8}        {rule_win:>8}")
+    print(f"  {'亏损样本数':<16} {hold_loss:>8}        {rule_loss:>8}")
+    print(f"  {'胜率':<16} {hold_win / n * 100:>7.1f}%        {rule_win / n * 100:>7.1f}%")
+    print(f"  {'最大单笔盈利':<16} {max(hold_returns):>+8.2f}%      {max(rule_returns):>+8.2f}%")
+    print(f"  {'最大单笔亏损':<16} {min(hold_returns):>+8.2f}%      {min(rule_returns):>+8.2f}%")
+
+    # 分级统计
+    big_winner_count = sum(1 for r in rule_results if r.get("tier") == "big_winner")
+    default_count = n - big_winner_count
+    print(f"\n  分级统计: 大赢家模式 {big_winner_count} 个 | 默认模式 {default_count} 个")
+
+    print(f"\n  止盈止损出局原因分布:")
+    for reason in ["止损出局", "保本出局", "止盈50%+移动止盈", "移动止盈", "大赢家移动止盈", "大赢家保本出局", "大赢家止损出局", "到期平仓"]:
+        count = exit_reasons.get(reason, 0)
+        if count > 0:
+            print(f"    {reason}: {count} 个 ({count / n * 100:.1f}%)")
+
+    # 逐一对比前 10 个样本
+    print(f"\n  [样本逐个对比 - 前15个]")
+    print(f"  {'代码':<8} {'买入日期':<12} {'买入价':<8} {'持有收益':<10} {'规则收益':<10} {'出局原因':<12}")
+    print(f"  {'-' * 70}")
+
+    # 用规则收益排序
+    sorted_pairs = sorted(
+        [(key, hold_map[key], rule_map[key]) for key in common_keys],
+        key=lambda x: x[2]["total_return_pct"],
+        reverse=True,
+    )
+    for key, h, r in sorted_pairs[:15]:
+        entry_date_str = str(h["entry_date"]) if h["entry_date"] else "N/A"
+        hold_ret = (h["close_after_2m"] - h["entry_price"]) / h["entry_price"] * 100.0
+        print(
+            f"  {h['stock_code']:<8} {entry_date_str:<12} "
+            f"{h['entry_price']:<8.2f} {hold_ret:>+8.2f}%    {r['total_return_pct']:>+8.2f}%    "
+            f"{r['exit_reason']:<12}"
+        )
 
 
 # ======================================================================
@@ -475,15 +849,21 @@ def main():
     code_to_name = {code: name for code, name in stock_pairs}
     print(f"股票池共 {len(stock_codes)} 只标的")
 
+    # 加载大盘指数数据
+    print("正在加载大盘指数数据...")
+    index_df = load_market_index("sh000001")
+    print(f"  上证指数: {len(index_df)} 条日线数据")
+
     # ----------------------------------------------------------------
     # Phase 1: 样本采集
     # ----------------------------------------------------------------
     print_separator("Phase 1: 样本采集")
     print(f"目标: 收集 {TARGET_SAMPLES} 个有效买入信号（去重间隔 {DEDUP_TRADING_DAYS} 交易日）")
+    print(f"过滤条件: 成交量放量确认(>5日均量{VOL_CONFIRM_RATIO:.1f}倍) | 大盘上升趋势(MA60上方+MA60斜率>0)")
 
     t0 = time.time()
-    samples, total_checked, total_windows = collect_samples(
-        strategy, stock_codes, code_to_name, db, trading_days_sorted
+    samples, total_checked, total_windows, filter_stats = collect_samples(
+        strategy, stock_codes, code_to_name, db, trading_days_sorted, index_df
     )
     t1 = time.time()
 
@@ -491,6 +871,7 @@ def main():
     print(f"  扫描标的: {total_checked} 只")
     print(f"  扫描窗口: {total_windows} 个")
     print(f"  收集样本: {len(samples)} 个")
+    print(f"  过滤统计: 成交量不足 {filter_stats['volume_filtered']} 个 | 大盘弱势 {filter_stats['market_filtered']} 个")
     print(f"  采样耗时: {t1 - t0:.1f} 秒")
 
     if len(samples) == 0:
@@ -514,7 +895,21 @@ def main():
     # ----------------------------------------------------------------
     print_statistics(results)
 
-    print(f"\n  总耗时: {t3 - t0:.1f} 秒")
+    # ----------------------------------------------------------------
+    # Phase 4: 持有策略 vs 止盈止损策略 对比
+    # ----------------------------------------------------------------
+    print_separator("Phase 4: 分级止盈止损规则追踪")
+    print(f"规则: 默认(-12%止损/+10%保本/+20%止盈50%/10%移动止盈)")
+    print(f"      大赢家模式(10日内涨≥15%触发→-15%止损/全仓持有/15%移动止盈)")
+
+    t4 = time.time()
+    rule_results = track_all_samples_with_rules(db, samples, trading_days_sorted)
+    t5 = time.time()
+    print(f"规则追踪耗时: {t5 - t4:.1f} 秒")
+
+    print_comparison(results, rule_results)
+
+    print(f"\n  总耗时: {t5 - t0:.1f} 秒")
     print(f"{'=' * 70}")
 
 
