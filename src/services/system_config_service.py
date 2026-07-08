@@ -24,6 +24,7 @@ _MANAGED_YAML_FILES = [
     "config/scorer_config.yaml",
     "config/industry_percentiles.yaml",
     "stock_selector/backtest_config.yaml",
+    "watchdog/strategies/intraday_t0_config.yaml",
 ]
 
 
