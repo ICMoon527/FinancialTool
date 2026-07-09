@@ -291,7 +291,7 @@ def _is_data_fresh(klines: list, target_date: str) -> bool:
     校验规则:
       1. klines 为空 → 陈旧
       2. 数据日期 ≠ 目标日期 → 陈旧
-      3. 非交易时段: 最后一条K线时间戳为 15:00（收盘）→ 新鲜，否则 → 陈旧
+      3. 非交易时段: 最后一条K线时间戳在 15:00-15:30（收盘及尾盘集合竞价）→ 新鲜，否则 → 陈旧
       4. 交易时段内: 最后一根K线距今 ≤ 30秒 → 新鲜，否则 → 陈旧
     """
     if not klines or len(klines) == 0:
@@ -323,8 +323,8 @@ def _is_data_fresh(klines: list, target_date: str) -> bool:
             match = re.search(r'(\d{2}):(\d{2})', last_ts)
             if match:
                 hh, mm = int(match.group(1)), int(match.group(2))
-                if hh != 15 or mm > 1:
-                    logger.debug(f"非交易时段，最后一条K线时间 {last_ts} 非15:00收盘，标记为陈旧")
+                if hh != 15 or mm > 30:
+                    logger.debug(f"非交易时段，最后一条K线时间 {last_ts} 非15:00-15:30收盘范围，标记为陈旧")
                     return False
 
     return True
@@ -2013,16 +2013,18 @@ def get_intraday_data(
                 logger.debug(f"[手动查询] {_format_stock_display(code)}: 缓存未命中(is_today=True)")
 
         klines = None
-        # 优先从数据库获取（包括当日：收盘后轮询停止，缓存过期时DB是最快路径）
-        klines = db_manager.load_intraday_klines(code, q_date)
-        if klines:
-            # 校验DB数据新鲜度（防止存储了错误日期或盘中断数据）
-            if _is_data_fresh(klines, date_str):
-                logger.info(f"[手动查询] {_format_stock_display(code)}: 命中数据库，共 {len(klines)} 条K线")
-            else:
-                logger.info(f"[手动查询] {_format_stock_display(code)}: 数据库数据已陈旧，丢弃并重新获取")
-                klines = None
+        # 先从数据库获取请求日期的数据（保留作为备选，不预判丢弃）
+        db_klines = db_manager.load_intraday_klines(code, q_date)
+        db_is_fresh = db_klines and _is_data_fresh(db_klines, date_str)
 
+        if db_klines:
+            if db_is_fresh:
+                logger.info(f"[手动查询] {_format_stock_display(code)}: 命中数据库，共 {len(db_klines)} 条K线")
+                klines = db_klines
+            else:
+                logger.info(f"[手动查询] {_format_stock_display(code)}: 数据库数据不完整，保留作为备选")
+
+        # DB数据新鲜则直接使用，否则尝试内存缓存
         if not klines:
             klines = _get_cached_klines(code)
             if klines:
@@ -2051,7 +2053,16 @@ def get_intraday_data(
         if not klines:
             klines = _get_intraday_klines(code, date_str)
             if klines:
-                logger.info(f"[手动查询] {_format_stock_display(code)}: 通过API联网获取，共 {len(klines)} 条K线")
+                api_actual_date = _extract_date_from_klines(klines, date_str)
+                if api_actual_date == date_str:
+                    logger.info(f"[手动查询] {_format_stock_display(code)}: 通过API联网获取，共 {len(klines)} 条K线")
+                else:
+                    # API 返回日期与请求日期不一致（如盘前请求昨日数据，API 返回今日第一根K线）
+                    # 使用 API 返回的最新日期数据展示，DB 中请求日期的数据保留不覆盖
+                    logger.info(
+                        f"[手动查询] {_format_stock_display(code)}: API返回日期({api_actual_date})与请求日期({date_str})不一致，"
+                        f"使用API最新数据展示，DB中{date_str}的数据保留不覆盖，共 {len(klines)} 条K线"
+                    )
         if not klines:
             raise HTTPException(status_code=404, detail={"error": "no_data", "message": "未获取到分时K线数据"})
 
