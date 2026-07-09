@@ -43,6 +43,7 @@ class StrategyBacktestRunAsyncRequest(BaseModel):
     start_date: str = Field(..., description="开始日期 (YYYY-MM-DD)")
     end_date: str = Field(..., description="结束日期 (YYYY-MM-DD)")
     max_positions: int = Field(3, ge=1, description="最高持仓数（例如：3表示最多同时持有3只股票）")
+    exit_strategy: Optional[Dict[str, Any]] = Field(None, description="退出策略配置，包含 strategy（策略类型）和 params（参数）")
 
 
 class StrategyBacktestRunAsyncResponse(BaseModel):

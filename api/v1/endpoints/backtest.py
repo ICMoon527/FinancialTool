@@ -248,8 +248,9 @@ def get_backtest_config():
             start_date = config.get("start_date")
             end_date = config.get("end_date")
             max_positions = config.get("max_positions")
+            exit_strategy = config.get("exit_strategy")
             
-            logger.info(f"提取到的配置: start_date={start_date}, end_date={end_date}, max_positions={max_positions}")
+            logger.info(f"提取到的配置: start_date={start_date}, end_date={end_date}, max_positions={max_positions}, exit_strategy={exit_strategy is not None}")
                 
             # 返回前端需要的配置项
             return {
@@ -258,6 +259,7 @@ def get_backtest_config():
                     "start_date": start_date,
                     "end_date": end_date,
                     "max_positions": max_positions,
+                    "exit_strategy": exit_strategy,
                 }
             }
         else:
@@ -272,6 +274,54 @@ def get_backtest_config():
             status_code=500,
             detail={"error": "internal_error", "message": f"获取配置失败: {str(exc)}"},
         )
+
+@router.get(
+    "/exit-strategies",
+    summary="获取退出策略列表",
+    description="获取所有可用的退出策略及其预设配置",
+)
+def get_exit_strategies():
+    """获取退出策略列表和预设"""
+    try:
+        from pathlib import Path
+        import yaml
+        from src.core.strategy_backtest.exit_strategies import ExitStrategy
+        
+        project_root = _get_project_root()
+        config_path = project_root / "stock_selector" / "backtest_config.yaml"
+        
+        # 获取已注册的策略元信息
+        registry = ExitStrategy.get_registry()
+        available_strategies = []
+        for key, cls in registry.items():
+            available_strategies.append({
+                "key": key,
+                "name": getattr(cls, "display_name", key),
+                "description": getattr(cls, "description", ""),
+            })
+        
+        presets = {}
+        active = "conservative"
+        if config_path.exists():
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = yaml.safe_load(f)
+            exit_cfg = config.get("exit_strategy", {})
+            presets = exit_cfg.get("presets", {})
+            active = exit_cfg.get("active", "conservative")
+        
+        return {
+            "success": True,
+            "strategies": available_strategies,
+            "presets": presets,
+            "active": active,
+        }
+    except Exception as exc:
+        logger.error(f"获取退出策略列表失败: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"获取退出策略列表失败: {str(exc)}"},
+        )
+
 
 @router.get(
     "/strategies",
@@ -378,6 +428,7 @@ def run_strategy_backtest_async(
             start_date=request.start_date,
             end_date=request.end_date,
             max_positions=request.max_positions,
+            exit_strategy=request.exit_strategy,
             on_complete=lambda: _update_running_state(False),
             on_error=lambda: _update_running_state(False),
         )

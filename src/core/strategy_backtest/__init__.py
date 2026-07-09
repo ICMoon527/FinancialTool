@@ -40,11 +40,20 @@ from .metrics import PerformanceMetrics
 from .quantstats_visualization import QuantStatsVisualizer
 from .report import BacktestReportGenerator
 from .sensitivity import ParameterSensitivityTest
-from .orchestrator import BacktestOrchestrator
+from .exit_strategies import (
+    ExitStrategy,
+    ExitSignal,
+    SimpleExitStrategy,
+    register_exit_strategy,
+)
 
 __all__ = [
     "TimeIsolatedDataProvider",
     "StrategyBacktestEngine",
+    "ExitStrategy",
+    "ExitSignal",
+    "SimpleExitStrategy",
+    "register_exit_strategy",
     "Portfolio",
     "Position",
     "Trade",

@@ -278,6 +278,7 @@ class BacktestOrchestrator:
         trading_dates: List[date] = None,
         stock_pool: Optional[List[str]] = None,
         max_positions: Optional[int] = None,
+        exit_strategy: Optional[Dict[str, Any]] = None,
     ):
         """
         阶段2: 策略执行。
@@ -285,8 +286,11 @@ class BacktestOrchestrator:
         Args:
             data_provider: 数据提供器
             strategy: 策略对象
+            strategies: 策略对象列表（多策略）
             trading_dates: 交易日列表
             stock_pool: 股票池
+            max_positions: 最大持仓数
+            exit_strategy: 退出策略配置（含 strategy 和 params）
 
         Returns:
             投资组合
@@ -305,6 +309,28 @@ class BacktestOrchestrator:
         db_manager = DatabaseManager.get_instance()
         db_first_provider = DatabaseFirstDataProvider(data_provider, db_manager)
         
+        # 构建退出策略实例
+        exit_strategy_instance = None
+        if exit_strategy and isinstance(exit_strategy, dict):
+            strategy_name_cfg = exit_strategy.get("strategy", "simple")
+            params = exit_strategy.get("params", {})
+            from .exit_strategies import ExitStrategy
+            exit_strategy_instance = ExitStrategy.create(strategy_name_cfg, params)
+            logger.info("使用退出策略: %s, 参数: %s", strategy_name_cfg, params)
+        else:
+            # 从配置文件读取 exit_strategy 节
+            exit_cfg = self.config.get("exit_strategy")
+            if exit_cfg and isinstance(exit_cfg, dict):
+                active_key = exit_cfg.get("active", "conservative")
+                presets = exit_cfg.get("presets", {})
+                preset = presets.get(active_key, {})
+                if preset:
+                    strategy_name_cfg = preset.get("strategy", "simple")
+                    params = preset.get("params", {})
+                    from .exit_strategies import ExitStrategy
+                    exit_strategy_instance = ExitStrategy.create(strategy_name_cfg, params)
+                    logger.info("使用配置文件退出策略预设: %s (%s)", active_key, preset.get("name", ""))
+        
         self.engine = StrategyBacktestEngine(
             data_provider=db_first_provider,
             initial_capital=self.config.get("initial_capital", 1000000.0),
@@ -316,6 +342,7 @@ class BacktestOrchestrator:
             take_profit_pct=self.config.get("take_profit_pct"),
             max_positions=final_max_positions,
             max_holding_days=self.config.get("max_holding_days", 5),
+            exit_strategy=exit_strategy_instance,
         )
 
         # 设置策略（支持多策略）
@@ -552,6 +579,7 @@ class BacktestOrchestrator:
         start_date: Optional[date] = None,
         end_date: Optional[date] = None,
         max_positions: Optional[int] = None,
+        exit_strategy: Optional[Dict[str, Any]] = None,
         strategy_name: str = "六维选股策略",
     ):
         """
@@ -560,9 +588,12 @@ class BacktestOrchestrator:
         Args:
             data_provider: 数据提供器
             strategy: 策略对象
+            strategies: 策略对象列表（多策略）
             stock_pool: 股票池
             start_date: 开始日期
             end_date: 结束日期
+            max_positions: 最大持仓数
+            exit_strategy: 退出策略配置（含 strategy 和 params）
             strategy_name: 策略名称
 
         Returns:
@@ -585,6 +616,7 @@ class BacktestOrchestrator:
             strategies=strategies,
             trading_dates=trading_dates,
             max_positions=max_positions,
+            exit_strategy=exit_strategy,
         )
 
         results = self.record_results()

@@ -111,14 +111,53 @@ end_date: "2024-09-01"
 # 注：如果设置为空列表[]，回测系统将自动从stock_pool获取完整的沪A+深A主板股票列表
 stock_pool: []
 
-# 止盈止损配置
+# 止盈止损配置（旧版，保留向后兼容）
 # 说明：
 # - stop_loss_pct: 止损百分比（例如：0.05 表示 5% 止损）
 # - take_profit_pct: 止盈百分比（例如：0.10 表示 10% 止盈）
 # - 优先级：如果设置了百分比，则使用百分比计算止盈止损价；
-#   如果没有设置（为null），则使用AI分析生成的具体价格
+# - 如果没有设置exit_strategy节，则使用此处的旧字段
 stop_loss_pct: 0.05
 take_profit_pct: 0.30
 # 最高持仓数
 max_positions: 1
 max_holding_days: 1000
+
+# 退出策略配置
+# 说明：
+# - presets: 预设的退出策略方案，用户在UI中可选择并调整参数
+# - active: 默认选中的预设（key名）
+# - 策略类型说明：
+#   - simple: 固定止盈止损，设定固定比例，触及即卖出
+#   - tiered: 动态分级止盈，根据持仓表现自动切换模式（默认严格 + 强势股放宽）
+exit_strategy:
+  presets:
+    conservative:
+      name: "保守型"
+      strategy: "simple"
+      params:
+        stop_loss_pct: 0.05
+        take_profit_pct: 0.10
+        max_holding_days: 20
+    aggressive:
+      name: "激进型"
+      strategy: "simple"
+      params:
+        stop_loss_pct: 0.15
+        take_profit_pct: 0.30
+        max_holding_days: 60
+    dynamic_tiered:
+      name: "动态分级止盈"
+      strategy: "tiered"
+      params:
+        default_stop_loss_pct: 0.12
+        default_breakeven_trigger_pct: 0.10
+        default_partial_take_profit_pct: 0.20
+        default_partial_ratio: 0.50
+        default_trailing_stop_pct: 0.10
+        big_winner_trigger_days: 10
+        big_winner_trigger_pct: 0.15
+        big_winner_stop_loss_pct: 0.15
+        big_winner_trailing_stop_pct: 0.15
+        time_stop_days: 44
+  active: "conservative"

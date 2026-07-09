@@ -6,6 +6,8 @@ import { BacktestChartsContainer } from '../components/charts';
 import type {
   StrategyInfo,
   StrategyBacktestTaskStatusResponse,
+  StrategyBacktestRunAsyncRequest,
+  ExitStrategiesResponse,
 } from '../types/backtest';
 
 // 星星图标组件
@@ -140,6 +142,13 @@ const BacktestPage: React.FC = () => {
 
   // 最高持仓数状态
   const [maxPositions, setMaxPositions] = useState<number | ''>(3);
+
+  // 退出策略状态
+  const [exitStrategiesData, setExitStrategiesData] = useState<ExitStrategiesResponse | null>(null);
+  const [selectedExitPreset, setSelectedExitPreset] = useState<string>('');
+  const [editedExitParams, setEditedExitParams] = useState<Record<string, number>>({});
+  const [isExitStrategyListOpen, setIsExitStrategyListOpen] = useState(false);
+  const exitStrategyContainerRef = useRef<HTMLDivElement>(null);
 
   // 运行状态
   const [isRunning, setIsRunning] = useState(false);
@@ -377,6 +386,20 @@ const BacktestPage: React.FC = () => {
         setMaxPositions(3);
       }
     };
+
+    const loadExitStrategies = async () => {
+      try {
+        const data = await backtestApi.getExitStrategies();
+        setExitStrategiesData(data);
+        // 设置默认选中
+        if (data.active && data.presets[data.active]) {
+          setSelectedExitPreset(data.active);
+          setEditedExitParams({ ...data.presets[data.active].params });
+        }
+      } catch (error) {
+        console.error('加载退出策略失败:', error);
+      }
+    };
     
     // 尝试从localStorage读取之前的taskId
     const savedTaskId = localStorage.getItem('backtest_task_id');
@@ -390,6 +413,7 @@ const BacktestPage: React.FC = () => {
     
     loadDefaults();
     fetchStrategies();
+    loadExitStrategies();
   }, [fetchLatestBacktestResults, fetchStrategies]);
 
   // 当有taskId时，获取任务状态
@@ -407,6 +431,12 @@ const BacktestPage: React.FC = () => {
         !strategyContainerRef.current.contains(event.target as Node)
       ) {
         setIsStrategyListOpen(false);
+      }
+      if (
+        exitStrategyContainerRef.current &&
+        !exitStrategyContainerRef.current.contains(event.target as Node)
+      ) {
+        setIsExitStrategyListOpen(false);
       }
     };
 
@@ -451,12 +481,23 @@ const BacktestPage: React.FC = () => {
     }
 
     try {
-      const response = await backtestApi.runStrategyBacktestAsync({
+      const requestBody: StrategyBacktestRunAsyncRequest = {
         strategyIds: selectedStrategyIds,
         startDate: startDate,
         endDate: endDate,
         maxPositions: typeof maxPositions === 'number' ? maxPositions : 3,
-      });
+      };
+      
+      // 添加退出策略配置
+      if (selectedExitPreset && exitStrategiesData?.presets[selectedExitPreset]) {
+        const preset = exitStrategiesData.presets[selectedExitPreset];
+        requestBody.exitStrategy = {
+          strategy: preset.strategy,
+          params: editedExitParams,
+        };
+      }
+      
+      const response = await backtestApi.runStrategyBacktestAsync(requestBody);
       
       console.log('=== API 响应完整数据 ===');
       console.log('response:', response);
@@ -538,6 +579,31 @@ const BacktestPage: React.FC = () => {
     return `${selected.length} 个策略`;
   }, [selectedStrategyIds, strategies]);
 
+  // 获取已选退出策略的显示文本
+  const getSelectedExitStrategyText = useCallback(() => {
+    if (!selectedExitPreset || !exitStrategiesData?.presets[selectedExitPreset]) {
+      return '止盈止损策略';
+    }
+    return exitStrategiesData.presets[selectedExitPreset].name;
+  }, [selectedExitPreset, exitStrategiesData]);
+
+  // 切换退出策略预设
+  const handleExitPresetSelect = useCallback((presetKey: string) => {
+    setSelectedExitPreset(presetKey);
+    setIsExitStrategyListOpen(false);
+    if (exitStrategiesData?.presets[presetKey]) {
+      setEditedExitParams({ ...exitStrategiesData.presets[presetKey].params });
+    }
+  }, [exitStrategiesData]);
+
+  // 更新退出策略参数
+  const handleExitParamChange = useCallback((paramKey: string, value: string) => {
+    setEditedExitParams(prev => ({
+      ...prev,
+      [paramKey]: parseFloat(value) || 0,
+    }));
+  }, []);
+
   return (
     <div className="min-h-screen flex flex-col">
       {/* 页面头部 */}
@@ -580,6 +646,45 @@ const BacktestPage: React.FC = () => {
                     />
                   ))
                 )}
+              </div>
+            )}
+          </div>
+
+          {/* 退出策略选择 */}
+          <div ref={exitStrategyContainerRef} className="relative">
+            <button
+              type="button"
+              onClick={() => setIsExitStrategyListOpen(!isExitStrategyListOpen)}
+              disabled={isRunning}
+              className="input-terminal text-xs py-2 px-3 min-w-48 flex items-center justify-between"
+            >
+              <span>{getSelectedExitStrategyText()}</span>
+              <svg
+                className={`w-4 h-4 transition-transform ${isExitStrategyListOpen ? 'rotate-180' : ''}`}
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+            {isExitStrategyListOpen && exitStrategiesData && (
+              <div className="absolute top-full left-0 mt-1 w-56 bg-elevated border border-white/15 rounded-xl shadow-2xl z-[9999] max-h-80 overflow-y-auto">
+                {Object.entries(exitStrategiesData.presets).map(([key, preset]) => (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => handleExitPresetSelect(key)}
+                    className={`w-full text-left px-3 py-2.5 hover:bg-white/10 transition-colors border-b border-white/5 last:border-0 ${
+                      selectedExitPreset === key ? 'bg-white/10' : ''
+                    }`}
+                  >
+                    <div className="text-sm text-white">{preset.name}</div>
+                    <div className="text-xs text-muted">
+                      {preset.strategy === 'simple' ? '固定止盈止损' : '动态分级止盈'}
+                    </div>
+                  </button>
+                ))}
               </div>
             )}
           </div>
@@ -679,6 +784,28 @@ const BacktestPage: React.FC = () => {
             }`}>
               {taskStatus.status}
             </span>
+          </div>
+        )}
+
+        {/* 退出策略参数编辑面板 */}
+        {selectedExitPreset && exitStrategiesData?.presets[selectedExitPreset] && Object.keys(editedExitParams).length > 0 && (
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <span className="text-xs text-muted">参数:</span>
+            {Object.entries(editedExitParams).map(([key, value]) => (
+              <div key={key} className="flex items-center gap-1">
+                <span className="text-xs text-secondary">{key.replace(/_/g, ' ')}</span>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  max="1"
+                  value={value}
+                  onChange={(e) => handleExitParamChange(key, e.target.value)}
+                  disabled={isRunning}
+                  className="input-terminal text-xs py-1 px-2 w-20"
+                />
+              </div>
+            ))}
           </div>
         )}
       </header>

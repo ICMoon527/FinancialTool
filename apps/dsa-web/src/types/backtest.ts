@@ -126,6 +126,31 @@ export interface StrategyBacktestRunAsyncRequest {
   startDate: string;
   endDate: string;
   maxPositions: number;
+  exitStrategy?: ExitStrategyConfig;  // 退出策略配置
+}
+
+export interface ExitStrategyConfig {
+  strategy: string;  // 策略类型: "simple" | "tiered"
+  params: Record<string, number>;  // 策略参数
+}
+
+export interface ExitStrategyInfo {
+  key: string;
+  name: string;
+  description: string;
+}
+
+export interface ExitStrategyPreset {
+  name: string;
+  strategy: string;
+  params: Record<string, number>;
+}
+
+export interface ExitStrategiesResponse {
+  success: boolean;
+  strategies: ExitStrategyInfo[];
+  presets: Record<string, ExitStrategyPreset>;
+  active: string;
 }
 
 export interface StrategyBacktestRunAsyncResponse {

@@ -73,7 +73,9 @@ class SystemConfigService:
                 full_key = f"{yaml_path}:{yaml_key}"
                 config_map[full_key] = yaml_value
 
-        all_keys = set(config_map.keys()) | registered_keys
+        all_keys = set(config_map.keys()) | {
+            k for k in registered_keys if k.lower() not in {ck.lower() for ck in config_map}
+        }
 
         category_orders = {
             item["category"]: item["display_order"]

@@ -1571,8 +1571,8 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "display_order": 150,
     },
     "RETRY_BASE_DELAY": {
-        "title": "Retry Base Delay",
-        "description": "重试基础延迟（秒）。",
+        "title": "重试基础延迟",
+        "description": "API请求失败后的重试基础延迟（秒）。",
         "category": "intraday",
         "data_type": "number",
         "ui_control": "number",
@@ -1585,8 +1585,8 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "display_order": 160,
     },
     "RETRY_MAX_DELAY": {
-        "title": "Retry Max Delay",
-        "description": "重试最大延迟（秒）。",
+        "title": "重试最大延迟",
+        "description": "API请求失败后的重试最大延迟（秒）。",
         "category": "intraday",
         "data_type": "number",
         "ui_control": "number",
@@ -4861,7 +4861,7 @@ def _infer_group(key: str) -> str:
     if key.startswith("BOT_"):
         return "机器人"
     if key.startswith(("RETRY_", "CB_", "CACHE_", "RATE_LIMIT_", "TIMEOUT_")):
-        return "数据提供者"
+        return "数据源"
     if key.startswith("WATCHDOG_"):
         return "监控"
     if key.startswith("MARKDOWN_TO_IMAGE_"):

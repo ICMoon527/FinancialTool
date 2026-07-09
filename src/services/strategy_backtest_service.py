@@ -237,6 +237,7 @@ class StrategyBacktestService:
         start_date_obj: date,
         end_date_obj: date,
         max_positions: int,
+        exit_strategy: Optional[Dict[str, Any]] = None,
         on_complete: Optional[callable] = None,
         on_error: Optional[callable] = None,
     ) -> None:
@@ -251,6 +252,7 @@ class StrategyBacktestService:
             start_date_obj: 开始日期
             end_date_obj: 结束日期
             max_positions: 最大持仓数
+            exit_strategy: 退出策略配置
             on_complete: 完成回调
             on_error: 错误回调
         """
@@ -302,6 +304,7 @@ class StrategyBacktestService:
                 start_date=start_date_obj,
                 end_date=end_date_obj,
                 max_positions=max_positions,
+                exit_strategy=exit_strategy,
                 strategy_name=strategy_name,
             )
             
@@ -343,6 +346,7 @@ class StrategyBacktestService:
         start_date: str = None,
         end_date: str = None,
         max_positions: int = 3,
+        exit_strategy: Optional[Dict[str, Any]] = None,
         on_complete: Optional[callable] = None,
         on_error: Optional[callable] = None,
     ) -> str:
@@ -355,6 +359,7 @@ class StrategyBacktestService:
             start_date: 开始日期 (YYYY-MM-DD)
             end_date: 结束日期 (YYYY-MM-DD)
             max_positions: 最大持仓数
+            exit_strategy: 退出策略配置
             on_complete: 完成回调
             on_error: 错误回调
             
@@ -442,6 +447,7 @@ class StrategyBacktestService:
                 start_date_obj,
                 end_date_obj,
                 max_positions,
+                exit_strategy,
                 on_complete,
                 on_error,
             ),

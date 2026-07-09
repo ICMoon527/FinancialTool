@@ -189,6 +189,7 @@ class StrategyBacktestEngine:
         take_profit_pct: Optional[float] = None,
         max_positions: Optional[int] = None,
         max_holding_days: int = 5,
+        exit_strategy: Optional["ExitStrategy"] = None,
     ):
         """
         初始化回测引擎。
@@ -200,10 +201,11 @@ class StrategyBacktestEngine:
             slippage_rate: 滑点率
             start_date: 回测开始日期
             end_date: 回测结束日期
-            stop_loss_pct: 止损百分比（例如：0.05 表示 5%）
-            take_profit_pct: 止盈百分比（例如：0.10 表示 10%）
-            max_positions: 最大持仓数量（例如：3 表示最多同时持有3只股票）
-            max_holding_days: 最长持股时间（交易日，例如：5 表示最多持有5个交易日）
+            stop_loss_pct: 止损百分比（已弃用，请使用 exit_strategy）
+            take_profit_pct: 止盈百分比（已弃用，请使用 exit_strategy）
+            max_positions: 最大持仓数量
+            max_holding_days: 最长持股时间（已弃用，请使用 exit_strategy）
+            exit_strategy: 退出策略实例（推荐使用）
         """
         self._original_data_provider = data_provider
         self._data_provider = TimeIsolatedDataProvider(data_provider)
@@ -217,19 +219,23 @@ class StrategyBacktestEngine:
         self._strategy = None
         self._strategies: List[Any] = []  # 多策略支持
         self._stock_pool: List[str] = []
-        self.stop_loss_pct = stop_loss_pct
-        self.take_profit_pct = take_profit_pct
         self.max_positions = max_positions
-        self.max_holding_days = max_holding_days
-        self._entry_prices: Dict[str, float] = {}  # 记录每个股票的入场价
-        self._stop_loss_prices: Dict[str, float] = {}  # 记录每个股票的止损价
-        self._take_profit_prices: Dict[str, float] = {}  # 记录每个股票的止盈价
-        self._entry_dates: Dict[str, date] = {}  # 记录每个股票的买入日期
-        self._pending_orders: List[Dict[str, Any]] = []  # 挂单列表，第二天以开盘价买入
-        # 终止标志
+        self._pending_orders: List[Dict[str, Any]] = []  # 挂单列表
         self._should_stop = False
-        
-        # 初始化随机种子，确保随机性
+
+        # 退出策略
+        if exit_strategy is not None:
+            self.exit_strategy = exit_strategy
+        else:
+            # 向后兼容：从旧参数构造 SimpleExitStrategy
+            from .exit_strategies import SimpleExitStrategy
+            self.exit_strategy = SimpleExitStrategy(
+                stop_loss_pct=stop_loss_pct,
+                take_profit_pct=take_profit_pct,
+                max_holding_days=max_holding_days,
+            )
+
+        # 初始化随机种子
         random.seed()
 
     def set_strategy(self, strategy: Any) -> None:
@@ -446,19 +452,8 @@ class StrategyBacktestEngine:
                 logger.warning(f"资金不足，无法买入 {stock_code}")
                 return None
             
-            # 记录入场价并计算止盈止损价
-            self._entry_prices[stock_code] = adjusted_price
-            # 记录买入日期
-            self._entry_dates[stock_code] = current_date
-            logger.info(f"记录买入日期: {stock_code} @ {current_date}")
-            # 计算止损价
-            if self.stop_loss_pct is not None:
-                self._stop_loss_prices[stock_code] = adjusted_price * (1 - self.stop_loss_pct)
-                logger.info(f"设置止损价: {stock_code} @ {self._stop_loss_prices[stock_code]:.2f} ({self.stop_loss_pct*100:.1f}%)")
-            # 计算止盈价
-            if self.take_profit_pct is not None:
-                self._take_profit_prices[stock_code] = adjusted_price * (1 + self.take_profit_pct)
-                logger.info(f"设置止盈价: {stock_code} @ {self._take_profit_prices[stock_code]:.2f} ({self.take_profit_pct*100:.1f}%)")
+            # 记录入场价并初始化退出策略的状态
+            self.exit_strategy.initialize_position(stock_code, adjusted_price, current_date)
 
         trade = Trade(
             trade_id=f"trade_{datetime.now().strftime('%Y%m%d%H%M%S%f')}",
@@ -839,25 +834,32 @@ class StrategyBacktestEngine:
                     change_pct = (open_price - pos.avg_cost) / pos.avg_cost * 100
                     logger.info(f"  {stock_code}: 开盘价={open_price:.2f}, 成本={pos.avg_cost:.2f}, 涨跌={change_pct:+.2f}%")
         
-        stocks_to_sell_open = self._check_stop_loss_take_profit(price_type="open")
+        # 价格提供函数（绑定当前日期）
+        def price_provider(stock_code: str, price_type: str) -> Optional[float]:
+            return self._get_stock_price(stock_code, current_date, price_type)
+        
+        stocks_to_sell_open = self.exit_strategy.check_exits(
+            current_date=current_date,
+            positions=self.portfolio.positions,
+            price_provider=price_provider,
+            trading_dates=self.trading_dates,
+            current_date_index=self.current_date_index,
+            phase="open",
+        )
         sold_stocks = set()
-        for sell_info in stocks_to_sell_open:
-            stock_code = sell_info["stock_code"]
-            sell_price = sell_info["sell_price"]
+        for signal in stocks_to_sell_open:
+            stock_code = signal.stock_code
+            sell_price = signal.sell_price
             pos = self.portfolio.get_position(stock_code)
             if pos:
-                logger.info(f"以开盘价执行止盈止损卖出: {stock_code} {pos.quantity} 股 @ {sell_price:.2f}")
-                self.place_order(stock_code, OrderType.SELL, pos.quantity, price=sell_price, price_type="open")
-                sold_stocks.add(stock_code)
-                # 清理记录
-                if stock_code in self._entry_prices:
-                    del self._entry_prices[stock_code]
-                if stock_code in self._entry_dates:
-                    del self._entry_dates[stock_code]
-                if stock_code in self._stop_loss_prices:
-                    del self._stop_loss_prices[stock_code]
-                if stock_code in self._take_profit_prices:
-                    del self._take_profit_prices[stock_code]
+                sell_qty = pos.quantity if signal.exit_type == "full" else int(pos.quantity * signal.exit_ratio / 100) * 100
+                if sell_qty <= 0:
+                    sell_qty = pos.quantity
+                logger.info(f"以开盘价执行卖出: {stock_code} {sell_qty} 股 @ {sell_price:.2f} ({signal.reason})")
+                self.place_order(stock_code, OrderType.SELL, sell_qty, price=sell_price, price_type="open")
+                if signal.exit_type == "full":
+                    sold_stocks.add(stock_code)
+                    self.exit_strategy.cleanup_position(stock_code)
         
         # 步骤 3：检查今天最高价和最低价，如果触发止盈/止损则按照止盈/止损价卖出
         logger.info("检查盘中最高价和最低价是否触发止盈止损...")
@@ -872,26 +874,29 @@ class StrategyBacktestEngine:
                 if high_price and low_price:
                     logger.info(f"  {stock_code}: 最高价={high_price:.2f}, 最低价={low_price:.2f}, 成本={pos.avg_cost:.2f}")
         
-        stocks_to_sell_intraday = self._check_intraday_stop_loss_take_profit()
-        for sell_info in stocks_to_sell_intraday:
-            stock_code = sell_info["stock_code"]
+        stocks_to_sell_intraday = self.exit_strategy.check_exits(
+            current_date=current_date,
+            positions=self.portfolio.positions,
+            price_provider=price_provider,
+            trading_dates=self.trading_dates,
+            current_date_index=self.current_date_index,
+            phase="intraday",
+        )
+        for signal in stocks_to_sell_intraday:
+            stock_code = signal.stock_code
             if stock_code in sold_stocks:
                 continue
-            sell_price = sell_info["sell_price"]
+            sell_price = signal.sell_price
             pos = self.portfolio.get_position(stock_code)
             if pos:
-                logger.info(f"以盘中止盈止损价执行卖出: {stock_code} {pos.quantity} 股 @ {sell_price:.2f}")
-                self.place_order(stock_code, OrderType.SELL, pos.quantity, price=sell_price, price_type="intraday")
-                sold_stocks.add(stock_code)
-                # 清理记录
-                if stock_code in self._entry_prices:
-                    del self._entry_prices[stock_code]
-                if stock_code in self._entry_dates:
-                    del self._entry_dates[stock_code]
-                if stock_code in self._stop_loss_prices:
-                    del self._stop_loss_prices[stock_code]
-                if stock_code in self._take_profit_prices:
-                    del self._take_profit_prices[stock_code]
+                sell_qty = pos.quantity if signal.exit_type == "full" else int(pos.quantity * signal.exit_ratio / 100) * 100
+                if sell_qty <= 0:
+                    sell_qty = pos.quantity
+                logger.info(f"以盘中止盈止损价执行卖出: {stock_code} {sell_qty} 股 @ {sell_price:.2f} ({signal.reason})")
+                self.place_order(stock_code, OrderType.SELL, sell_qty, price=sell_price, price_type="intraday")
+                if signal.exit_type == "full":
+                    sold_stocks.add(stock_code)
+                    self.exit_strategy.cleanup_position(stock_code)
         
         # 步骤 4：更新持仓价格到今天收盘价
         logger.info("更新持仓价格到今天收盘价...")
@@ -900,8 +905,8 @@ class StrategyBacktestEngine:
             if price:
                 self.portfolio.update_position_price(stock_code, price)
         
-        # 步骤 5：如果达到最长持股时间，在收盘时卖出
-        logger.info(f"检查是否持股超时（最长持股: {self.max_holding_days} 个交易日）...")
+        # 步骤 5：检查持股超时等收盘条件
+        logger.info("检查持股超时等收盘条件...")
         # 先记录所有持仓的收盘价和涨跌幅
         for stock_code in list(self.portfolio.positions.keys()):
             if stock_code in sold_stocks:
@@ -913,25 +918,28 @@ class StrategyBacktestEngine:
                     change_pct = (close_price - pos.avg_cost) / pos.avg_cost * 100
                     logger.info(f"  {stock_code}: 收盘价={close_price:.2f}, 成本={pos.avg_cost:.2f}, 涨跌={change_pct:+.2f}%")
         
-        stocks_to_sell_timeout = self._check_hold_timeout_only()
-        for sell_info in stocks_to_sell_timeout:
-            stock_code = sell_info["stock_code"]
+        stocks_to_sell_timeout = self.exit_strategy.check_exits(
+            current_date=current_date,
+            positions=self.portfolio.positions,
+            price_provider=price_provider,
+            trading_dates=self.trading_dates,
+            current_date_index=self.current_date_index,
+            phase="close",
+        )
+        for signal in stocks_to_sell_timeout:
+            stock_code = signal.stock_code
             if stock_code in sold_stocks:
                 continue
-            sell_price = sell_info["sell_price"]
+            sell_price = signal.sell_price
             pos = self.portfolio.get_position(stock_code)
             if pos:
-                logger.info(f"以收盘价执行持股超时卖出: {stock_code} {pos.quantity} 股 @ {sell_price:.2f}")
-                self.place_order(stock_code, OrderType.SELL, pos.quantity, price=sell_price, price_type="close")
-                # 清理记录
-                if stock_code in self._entry_prices:
-                    del self._entry_prices[stock_code]
-                if stock_code in self._entry_dates:
-                    del self._entry_dates[stock_code]
-                if stock_code in self._stop_loss_prices:
-                    del self._stop_loss_prices[stock_code]
-                if stock_code in self._take_profit_prices:
-                    del self._take_profit_prices[stock_code]
+                sell_qty = pos.quantity if signal.exit_type == "full" else int(pos.quantity * signal.exit_ratio / 100) * 100
+                if sell_qty <= 0:
+                    sell_qty = pos.quantity
+                logger.info(f"以收盘价执行卖出: {stock_code} {sell_qty} 股 @ {sell_price:.2f} ({signal.reason})")
+                self.place_order(stock_code, OrderType.SELL, sell_qty, price=sell_price, price_type="close")
+                if signal.exit_type == "full":
+                    self.exit_strategy.cleanup_position(stock_code)
         
         # 步骤 6：判断是否需要跑策略选股
         need_run_strategy = False
@@ -1044,8 +1052,5 @@ class StrategyBacktestEngine:
         self.portfolio = Portfolio(self.portfolio.initial_capital)
         self.current_date_index = 0
         self._data_provider.clear_cache()
-        self._entry_prices.clear()
-        self._entry_dates.clear()
-        self._stop_loss_prices.clear()
-        self._take_profit_prices.clear()
+        self.exit_strategy.reset()
         self._pending_orders.clear()

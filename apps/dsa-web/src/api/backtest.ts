@@ -14,6 +14,7 @@ import type {
   StrategyBacktestRunAsyncResponse,
   StrategyBacktestTaskStatusResponse,
   StrategyBacktestStopByTaskIdRequest,
+  ExitStrategiesResponse,
 } from '../types/backtest';
 
 // ============ API ============
@@ -48,6 +49,10 @@ export const backtestApi = {
         start_date?: string;
         end_date?: string;
         max_positions?: number;
+        exit_strategy?: {
+            presets: Record<string, any>;
+            active: string;
+        };
     }> => {
         const response = await apiClient.get<{
             success: boolean;
@@ -55,12 +60,26 @@ export const backtestApi = {
                 start_date?: string;
                 end_date?: string;
                 max_positions?: number;
+                exit_strategy?: {
+                    presets: Record<string, any>;
+                    active: string;
+                };
             };
         }>('/api/v1/backtest/config');
         if (response.data.success) {
             return response.data.config;
         }
         return {};
+    },
+
+    /**
+     * 获取退出策略列表和预设
+     */
+    getExitStrategies: async (): Promise<ExitStrategiesResponse> => {
+        const response = await apiClient.get<Record<string, unknown>>(
+            '/api/v1/backtest/exit-strategies',
+        );
+        return toCamelCase(response.data) as ExitStrategiesResponse;
     },
 
     /**
@@ -109,6 +128,9 @@ export const backtestApi = {
     requestData.start_date = params.startDate;
     requestData.end_date = params.endDate;
     requestData.max_positions = params.maxPositions;
+    if (params.exitStrategy) {
+      requestData.exit_strategy = params.exitStrategy;
+    }
 
     const response = await strategyBacktestApiClient.post<Record<string, unknown>>(
       '/api/v1/backtest/strategy/run-async',
