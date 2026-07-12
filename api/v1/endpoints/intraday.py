@@ -34,6 +34,7 @@ from api.v1.schemas.intraday import (
     BatchStatusRequest,
     BatchStatusResponse,
     DeleteHistoryResponse,
+    FiveMinKlinePoint,
     IndicatorLine,
     IndicatorLinePoint,
     IndicatorSubChart,
@@ -43,9 +44,12 @@ from api.v1.schemas.intraday import (
     SearchHistoryItem,
     SearchHistoryRequest,
     SearchHistoryResponse,
+    SignalAlert,
     SimulatedTradeItem,
     SimulationReportResponse,
     StockSnapshot,
+    TiandaoSignal,
+    TiandaoSubChart,
     WeightContribution,
 )
 from api.v1.schemas.common import ErrorResponse
@@ -55,6 +59,10 @@ from watchdog.strategies.intraday_t0_strategy import IntradayIndicatorEngine
 from src.config import get_config
 
 logger = logging.getLogger(__name__)
+
+# ── 天道5分钟信号缓存：key=(code, date)，value=已生成的信号列表 ──
+# 确保信号按时间顺序产生，仅使用评估时刻的历史数据，避免XMA未来数据泄露
+_tiandao_5min_signals_cache: dict = {}
 
 # ── 股票名称缓存 ──
 _stock_display_cache: Dict[str, str] = {}
@@ -1057,6 +1065,356 @@ def _compute_mfi_signal(result, overbought: float = 80, oversold: float = 20) ->
     if last.get("mfi_top_divergence"):
         signals.append("顶背离")
     return "、".join(signals)
+
+
+def _synthesize_5min_klines(klines_1min: list) -> list:
+    """将1分钟K线合成为5分钟K线
+
+    腾讯1分钟数据每点 Open=High=Low=Close=同一价格，合成为标准OHLC 5分钟K线。
+    最后一个桶不足5根K线时仍然输出（用已有数据）。
+
+    Args:
+        klines_1min: 1分钟K线字典列表，每项含 Open/High/Low/Close/Volume/timestamp
+
+    Returns:
+        5分钟K线字典列表，每项含 Open/High/Low/Close/Volume/timestamp
+    """
+    if not klines_1min:
+        return []
+
+    from collections import defaultdict
+
+    # 按5分钟桶分组
+    buckets: dict[str, list] = defaultdict(list)
+    for k in klines_1min:
+        ts = k.get("timestamp", "")
+        if not ts:
+            continue
+        ts_str = str(ts)
+        if "T" in ts_str:
+            date_part, time_part = ts_str.split("T", 1)
+        elif " " in ts_str:
+            date_part, time_part = ts_str.split(" ", 1)
+        else:
+            continue
+        time_str = time_part.strip()[:5]  # "HH:MM"
+        try:
+            hour, minute = time_str.split(":")
+            h, m = int(hour), int(minute)
+        except (ValueError, IndexError):
+            continue
+        # 过滤 15:00 及之后的集合竞价数据（无价格浮动，对指标计算无意义）
+        if h >= 15:
+            continue
+        bucket_minute = (m // 5) * 5
+        bucket_time = f"{date_part}T{h:02d}:{bucket_minute:02d}:00"
+        buckets[bucket_time].append(k)
+
+    # 聚合每个桶
+    result = []
+    for bucket_time in sorted(buckets.keys()):
+        bucket_klines = buckets[bucket_time]
+        prices = [float(k["Close"]) for k in bucket_klines]
+        volumes = [float(k.get("Volume", 0)) for k in bucket_klines]
+        result.append({
+            "timestamp": bucket_time,
+            "Open": prices[0],
+            "High": max(prices),
+            "Low": min(prices),
+            "Close": prices[-1],
+            "Volume": sum(volumes),
+        })
+
+    return result
+
+
+def _compute_xma_truncated(series: 'np.ndarray', n: int) -> 'np.ndarray':
+    """计算XMA，仅使用当前位置及之前的数据（右对齐截断），无未来数据泄露。
+
+    与标准XMA（居中对称窗口）不同，此版本将窗口右边界截断到当前位置 i，
+    模拟真实交易中只能看到历史数据的约束。
+
+    Args:
+        series: 输入序列
+        n: XMA周期（默认25，窗口半宽h=12）
+
+    Returns:
+        与输入等长的截断XMA序列
+    """
+    import numpy as np
+    length = len(series)
+    h = n // 2
+    result = np.full(length, np.nan)
+    for i in range(length):
+        left = max(0, i - h)
+        right = i  # 仅使用当前及之前的数据
+        result[i] = np.mean(series[left:right + 1])
+    return result
+
+
+def _evaluate_signals_incremental(full_df: 'pd.DataFrame', prev_len: int) -> list:
+    """逐bar评估天道信号，每根bar仅使用当时可用的历史数据。
+
+    模拟真实交易中信号按时间顺序产生的场景：
+    - 对每根当日bar，基于prev_day + 当日bar[0..i] 的数据计算截断XMA
+    - 判断收盘价与金钻线/金牛线的关系，产生买入/卖出信号
+    - 无未来数据泄露
+
+    Args:
+        full_df: 包含前日+当日完整数据的DataFrame
+        prev_len: 前日数据长度
+
+    Returns:
+        TiandaoSignal列表，按时间顺序排列
+    """
+    import pandas as pd
+    import numpy as np
+
+    n = 25
+    signals = []
+
+    high_all = full_df["High"].values.astype(np.float64)
+    low_all = full_df["Low"].values.astype(np.float64)
+    close_all = full_df["Close"].values.astype(np.float64)
+
+    # 提取时间标签
+    def _extract_ts(row):
+        ts_str = str(row.get("timestamp", "")).strip()
+        match = re.search(r"(\d{4}-\d{2}-\d{2})[T\s](\d{1,2}):(\d{2})", ts_str)
+        if match:
+            return f"{match.group(1)}T{match.group(2).zfill(2)}:{match.group(3)}"
+        return ""
+
+    # 逐bar评估（仅当日数据）
+    for i in range(prev_len, len(full_df)):
+        # 使用prev_day + 当日bar[0..i]的数据
+        end_idx = i + 1  # 切片不包含end，所以+1
+
+        # 计算截断双重XMA（仅使用end_idx之前的数据）
+        xma1_high = _compute_xma_truncated(high_all[:end_idx], n)
+        xma1_low = _compute_xma_truncated(low_all[:end_idx], n)
+        xma2_high = _compute_xma_truncated(xma1_high, n)
+        xma2_low = _compute_xma_truncated(xma1_low, n)
+
+        # 金牛线（上轨）和金钻趋势线（下轨）
+        jinniu_val = 2 * xma2_high[-1] - xma2_low[-1]
+        jinzuan_val = 2 * xma2_low[-1] - xma2_high[-1]
+        close_val = close_all[i]
+
+        if np.isnan(jinzuan_val) or np.isnan(jinniu_val) or np.isnan(close_val):
+            continue
+
+        tl = _extract_ts(full_df.iloc[i])
+        close_f = float(close_val)
+        jinzuan_f = float(jinzuan_val)
+        jinniu_f = float(jinniu_val)
+
+        if close_f < jinzuan_f:
+            signals.append(
+                TiandaoSignal(
+                    signal_type="buy",
+                    trigger_time=tl,
+                    price=round(close_f, 2),
+                    reason="价格跌破金钻趋势线",
+                )
+            )
+        elif close_f > jinniu_f:
+            signals.append(
+                TiandaoSignal(
+                    signal_type="sell",
+                    trigger_time=tl,
+                    price=round(close_f, 2),
+                    reason="价格突破金牛线",
+                )
+            )
+
+    return signals
+
+
+def _compute_tiandao_5min(klines_5min: list, prev_day_klines: list = None,
+                         cache_key: str = None) -> dict:
+    """对5分钟K线计算天道指标并生成信号
+
+    【重要】整个天道子图的指标线和信号均使用截断XMA（右对齐），不使用未来数据：
+    - 指标线（金牛/金钻）：每个位置 i 的 XMA 窗口为 [i-12, i]，不包含 i 之后的未来数据
+    - 首次加载信号：逐bar评估，每根bar仅使用当时可用的历史数据
+    - 后续轮询信号：仅评估最新bar，历史信号从缓存累积
+
+    信号生成策略：
+    - 首次加载（缓存为空）：逐bar评估，模拟真实交易中信号按时间顺序产生
+    - 后续轮询（缓存非空）：仅评估最新一根K线，历史信号从缓存获取
+
+    Args:
+        klines_5min: 当前日5分钟K线列表
+        prev_day_klines: 前一日5分钟K线列表（用于指标预热和显示）
+        cache_key: 信号缓存键（格式: "code_date"），用于累积历史信号
+
+    Returns:
+        {
+            "jinzuan_line": [IndicatorLinePoint],   # 金钻趋势线（截断XMA，无未来数据）
+            "jinniu_line": [IndicatorLinePoint],    # 金牛线（截断XMA，无未来数据）
+            "signals": [TiandaoSignal],             # 当前日天道信号（从缓存累积）
+        }
+    """
+    import pandas as pd
+    import numpy as np
+
+    if not klines_5min:
+        return {"jinzuan_line": [], "jinniu_line": [], "signals": []}
+
+    # 构造当日DataFrame
+    today_df = pd.DataFrame(klines_5min)
+    for col in ["Open", "High", "Low", "Close"]:
+        if col in today_df.columns:
+            today_df[col] = today_df[col].astype(float)
+
+    # 预热：拼接前一日数据
+    if prev_day_klines:
+        prev_df = pd.DataFrame(prev_day_klines)
+        for col in ["Open", "High", "Low", "Close"]:
+            if col in prev_df.columns:
+                prev_df[col] = prev_df[col].astype(float)
+        full_df = pd.concat([prev_df, today_df], ignore_index=True)
+        prev_len = len(prev_df)
+    else:
+        full_df = today_df.copy()
+        prev_len = 0
+
+    # 计算天道指标
+    try:
+        from indicators.indicators.tiandao import Tiandao
+        tiandao = Tiandao(n=25)
+        result = tiandao.calculate(full_df)
+    except Exception as e:
+        logger.warning(f"天道指标计算失败: {e}")
+        return {"jinzuan_line": [], "jinniu_line": [], "signals": []}
+
+    today_result = result.iloc[prev_len:]
+
+    # 提取时间标签（前日+当日完整数据，用于画线）
+    def _extract_datetime_label(ts_val):
+        """从时间戳提取 YYYY-MM-DDTHH:MM 格式"""
+        ts_str = str(ts_val).strip()
+        match = re.search(r"(\d{4}-\d{2}-\d{2})[T\s](\d{1,2}):(\d{2})", ts_str)
+        if match:
+            return f"{match.group(1)}T{match.group(2).zfill(2)}:{match.group(3)}"
+        return ""
+
+    # 完整数据的时间标签（前日+当日），含日期
+    full_time_labels = [_extract_datetime_label(row.get("timestamp", "")) for _, row in full_df.iterrows()]
+
+    # 计算截断天道指标线（每个位置仅使用历史数据，无未来数据泄露）
+    # 与标准XMA（居中对称窗口）不同，截断XMA将窗口右边界限制在当前位置
+    high_all = full_df["High"].values.astype(np.float64)
+    low_all = full_df["Low"].values.astype(np.float64)
+
+    xma1_high = _compute_xma_truncated(high_all, 25)
+    xma1_low = _compute_xma_truncated(low_all, 25)
+    xma2_high = _compute_xma_truncated(xma1_high, 25)
+    xma2_low = _compute_xma_truncated(xma1_low, 25)
+
+    jinniu_truncated = 2 * xma2_high - xma2_low
+    jinzuan_truncated = 2 * xma2_low - xma2_high
+
+    # 金钻趋势线（截断，无未来数据）
+    jinzuan_line = []
+    for i in range(len(full_df)):
+        v = jinzuan_truncated[i]
+        if not np.isnan(v):
+            jinzuan_line.append(
+                IndicatorLinePoint(
+                    time=full_time_labels[i] if i < len(full_time_labels) else "",
+                    value=round(float(v), 4),
+                )
+            )
+
+    # 金牛线（截断，无未来数据）
+    jinniu_line = []
+    for i in range(len(full_df)):
+        v = jinniu_truncated[i]
+        if not np.isnan(v):
+            jinniu_line.append(
+                IndicatorLinePoint(
+                    time=full_time_labels[i] if i < len(full_time_labels) else "",
+                    value=round(float(v), 4),
+                )
+            )
+
+    # 当日截断值（用于信号评估）
+    today_jinzuan_truncated = jinzuan_truncated[prev_len:]
+    today_jinniu_truncated = jinniu_truncated[prev_len:]
+
+    # 生成天道信号
+    # - 首次加载（缓存为空）：逐bar评估，使用右对齐截断XMA，模拟真实信号产生顺序
+    # - 后续轮询（缓存非空）：仅评估最新bar，历史信号从缓存获取
+    signals: list = []
+    is_first_load = cache_key and cache_key not in _tiandao_5min_signals_cache
+
+    if is_first_load:
+        # 首次加载：逐bar评估所有历史信号（无未来数据泄露）
+        signals = _evaluate_signals_incremental(full_df, prev_len)
+        if cache_key:
+            _tiandao_5min_signals_cache[cache_key] = signals
+            logger.info(
+                f"[天道信号-首次] 共评估{len(today_result)}根K线, 产生{len(signals)}个信号"
+            )
+    else:
+        # 后续轮询：从缓存加载历史信号，仅评估最新bar（使用截断值）
+        if cache_key and cache_key in _tiandao_5min_signals_cache:
+            signals = list(_tiandao_5min_signals_cache[cache_key])
+
+        last_i = len(today_result) - 1
+        if last_i >= 0 and last_i < len(today_jinzuan_truncated):
+            close_val = today_result["Close"].iloc[last_i] if "Close" in today_result.columns else None
+            jinzuan_val = today_jinzuan_truncated[last_i]
+            jinniu_val = today_jinniu_truncated[last_i]
+            if not (np.isnan(jinzuan_val) or np.isnan(jinniu_val) or close_val is None or pd.isna(close_val)):
+                tl = _extract_datetime_label(today_result.iloc[last_i].get("timestamp", ""))
+                close_f = float(close_val)
+                jinzuan_f = float(jinzuan_val)
+                jinniu_f = float(jinniu_val)
+
+                # 检查是否已有相同时刻的信号，避免重复
+                existing_times = set()
+                for s in signals:
+                    if hasattr(s, 'trigger_time'):
+                        existing_times.add(s.trigger_time)
+
+                if tl not in existing_times:
+                    if close_f < jinzuan_f:
+                        new_signal = TiandaoSignal(
+                            signal_type="buy",
+                            trigger_time=tl,
+                            price=round(close_f, 2),
+                            reason="价格跌破金钻趋势线",
+                        )
+                        signals.append(new_signal)
+                        logger.info(
+                            f"[天道信号] {tl} 买入: close={close_f:.2f} < jinzuan={jinzuan_f:.2f}, "
+                            f"jinniu={jinniu_f:.2f}, 差值={jinzuan_f - close_f:.2f}"
+                        )
+                    elif close_f > jinniu_f:
+                        new_signal = TiandaoSignal(
+                            signal_type="sell",
+                            trigger_time=tl,
+                            price=round(close_f, 2),
+                            reason="价格突破金牛线",
+                        )
+                        signals.append(new_signal)
+                        logger.info(
+                            f"[天道信号] {tl} 卖出: close={close_f:.2f} > jinniu={jinniu_f:.2f}, "
+                            f"jinzuan={jinzuan_f:.2f}, 差值={close_f - jinniu_f:.2f}"
+                        )
+
+        # 更新缓存
+        if cache_key:
+            _tiandao_5min_signals_cache[cache_key] = signals
+
+    return {
+        "jinzuan_line": jinzuan_line,
+        "jinniu_line": jinniu_line,
+        "signals": signals,
+    }
 
 
 def _generate_indicator_sub_charts(klines: list, warmup_klines: list = None,
@@ -2115,6 +2473,36 @@ def get_intraday_data(
             ma5_price=ma5_price,
         )
 
+        # 5分钟K线合成 + 天道指标计算
+        tiandao_sub_chart = None
+        try:
+            klines_5min = _synthesize_5min_klines(klines)
+            # 前一日5分钟K线（加载完整前日数据用于图表显示，与预热用的80根不同）
+            prev_day_5min = []
+            if warmup_enabled:
+                full_prev_data = db_manager.load_previous_day_klines(code, q_date, limit=0)
+                full_prev_klines = full_prev_data.get("klines", []) if full_prev_data else []
+                prev_day_5min = _synthesize_5min_klines(full_prev_klines)
+            tiandao_result = _compute_tiandao_5min(
+                klines_5min, prev_day_5min,
+                cache_key=f"{code}_{q_date}",
+            )
+            tiandao_sub_chart = TiandaoSubChart(
+                klines=[FiveMinKlinePoint(**k) for k in klines_5min],
+                prev_day_klines=[FiveMinKlinePoint(**k) for k in prev_day_5min],
+                jinzuan_line=tiandao_result["jinzuan_line"],
+                jinniu_line=tiandao_result["jinniu_line"],
+                signals=tiandao_result["signals"],
+            )
+            logger.info(
+                f"[天道5分钟] {_format_stock_display(code)}: "
+                f"合成{len(klines_5min)}根5分钟K线, "
+                f"前日{len(prev_day_5min)}根, "
+                f"天道信号{len(tiandao_result['signals'])}个"
+            )
+        except Exception as e:
+            logger.warning(f"[天道5分钟] {_format_stock_display(code)}: 计算失败: {e}")
+
         # 构建K线响应
         kline_points = [IntradayKlinePoint(**k) for k in klines]
 
@@ -2146,6 +2534,7 @@ def get_intraday_data(
             signals=signals,
             reference_lines=reference_lines,
             indicator_sub_charts=indicator_sub_charts,
+            tiandao_sub_chart=tiandao_sub_chart,
             signal_summary=summary,
             warm_up_summary=None,
             warmup_info=warmup_info,
@@ -2742,6 +3131,28 @@ def get_batch_status(
                         klines, batch_warmup_klines, precomputed_result, precomputed_engine,
                         ma5_price=batch_ma5_price,
                     )
+                    # 5分钟K线合成 + 天道指标
+                    batch_tiandao_sub_chart = None
+                    try:
+                        batch_5min = _synthesize_5min_klines(klines)
+                        # 前一日5分钟K线（加载完整前日数据用于图表显示）
+                        batch_prev_5min = []
+                        batch_full_prev = db_manager.load_previous_day_klines(code, actual_date, limit=0)
+                        batch_full_prev_klines = batch_full_prev.get("klines", []) if batch_full_prev else []
+                        batch_prev_5min = _synthesize_5min_klines(batch_full_prev_klines)
+                        batch_td_result = _compute_tiandao_5min(
+                            batch_5min, batch_prev_5min,
+                            cache_key=f"{code}_{actual_date}",
+                        )
+                        batch_tiandao_sub_chart = TiandaoSubChart(
+                            klines=[FiveMinKlinePoint(**k) for k in batch_5min],
+                            prev_day_klines=[FiveMinKlinePoint(**k) for k in batch_prev_5min],
+                            jinzuan_line=batch_td_result["jinzuan_line"],
+                            jinniu_line=batch_td_result["jinniu_line"],
+                            signals=batch_td_result["signals"],
+                        )
+                    except Exception as e:
+                        logger.warning(f"[天道5分钟-批量] {code}: 计算失败: {e}")
                     kline_points = [IntradayKlinePoint(**k) for k in klines]
                     sn = raw_snapshots.get(current_code, {})
                     stock_name = sn.get("stock_name", "")
@@ -2772,6 +3183,7 @@ def get_batch_status(
                         signals=signals,
                         reference_lines=reference_lines,
                         indicator_sub_charts=indicator_sub_charts,
+                        tiandao_sub_chart=batch_tiandao_sub_chart,
                         signal_summary=summary,
                         warm_up_summary=None,
                         warmup_info={

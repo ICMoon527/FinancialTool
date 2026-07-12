@@ -3449,7 +3449,8 @@ class DatabaseManager:
         Args:
             code: 股票代码
             current_date: 当前日期
-            limit: 加载K线数量（默认80根，与策略WARMUP_BARS保持一致）
+            limit: 加载K线数量（默认80根，与策略WARMUP_BARS保持一致）。
+                   设为0表示加载全部K线。
 
         Returns:
             {"date": date对象, "klines": [K线字典列表]} 或 None
@@ -3482,7 +3483,7 @@ class DatabaseManager:
             if not records:
                 return None
 
-            klines = [r.to_dict() for r in records[-limit:]]
+            klines = [r.to_dict() for r in records] if limit == 0 else [r.to_dict() for r in records[-limit:]]
             logger.debug(f"从K线表加载预热数据: {code} prev_date={prev_date}, {len(klines)} 根K线")
             return {"date": prev_date, "klines": klines}
 

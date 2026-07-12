@@ -557,6 +557,13 @@ const IntradayPage: React.FC = () => {
   const isTimeSyncingRef = useRef(false);
   const isInitialRenderRef = useRef(false);
   const renderDataRafIdsRef = useRef<number[]>([]);
+  // 5分钟天道子图 refs
+  const tiandao5mContainerRef = useRef<HTMLDivElement>(null);
+  const tiandao5mChartRef = useRef<lightweightCharts.IChartApi | null>(null);
+  const tiandao5mCandleRef = useRef<lightweightCharts.ISeriesApi<'Candlestick'> | null>(null);
+  const tiandao5mJinzuanRef = useRef<lightweightCharts.ISeriesApi<'Line'> | null>(null);
+  const tiandao5mJinniuRef = useRef<lightweightCharts.ISeriesApi<'Line'> | null>(null);
+  const tiandao5mMarkersRef = useRef<any>(null);
   const currentDateRef = useRef(todayDateStr);
   const priceRangeEnabledRef = useRef(false);
   const syncEngineRef = useRef(new CrosshairSyncEngine());
@@ -1143,6 +1150,12 @@ const IntradayPage: React.FC = () => {
     return () => {
       mainRo.disconnect();
       volRo.disconnect();
+      if (tiandao5mChartRef.current) {
+        const ro = (tiandao5mChartRef.current as any).__ro;
+        if (ro) ro.disconnect();
+        try { tiandao5mChartRef.current.remove(); } catch (e) { /* ignore */ }
+        tiandao5mChartRef.current = null;
+      }
       if (timeSyncSubRef.current) timeSyncSubRef.current();
       try { chart.remove(); } catch (e) { /* ignore */ }
       try { volChart.remove(); } catch (e) { /* ignore */ }
@@ -3622,6 +3635,199 @@ const IntradayPage: React.FC = () => {
     }
   }, [intradayData, renderData]);
 
+  // ── 5分钟天道K线子图更新 ──
+  const updateTiandao5mChart = useCallback((data: IntradayDataResponse) => {
+    const tdSub = data.tiandao_sub_chart;
+    if (!tdSub) return;
+
+    // 懒初始化图表（在数据首次到达时创建，确保容器div已挂载）
+    if (!tiandao5mChartRef.current && tiandao5mContainerRef.current) {
+      const td5mChart = lightweightCharts.createChart(tiandao5mContainerRef.current, {
+        width: tiandao5mContainerRef.current.clientWidth,
+        height: 200,
+        layout: {
+          background: { type: 'solid', color: '#1a1a2e' } as any,
+          textColor: '#d1d4dc',
+          attributionLogo: false,
+        },
+        grid: {
+          vertLines: { color: '#2b2b43', style: 2 },
+          horzLines: { color: '#2b2b43', style: 2 },
+        },
+        rightPriceScale: {
+          scaleMargins: { top: 0.1, bottom: 0.1 },
+          borderVisible: false,
+        },
+        crosshair: { mode: 0 },
+        localization: {
+          timeFormatter,
+        },
+        timeScale: {
+          timeVisible: true,
+          secondsVisible: false,
+          tickMarkFormatter: (time: number) => {
+            const d = new Date(time * 1000);
+            const M = String(d.getMonth() + 1).padStart(2, '0');
+            const D = String(d.getDate()).padStart(2, '0');
+            const h = String(d.getHours()).padStart(2, '0');
+            const m = String(d.getMinutes()).padStart(2, '0');
+            return `${M}-${D} ${h}:${m}`;
+          },
+          barSpacing: 8,
+          fixLeftEdge: true,
+          fixRightEdge: true,
+        },
+        handleScroll: {
+          mouseWheel: false,
+          pressedMouseMove: true,
+          horzTouchDrag: true,
+          vertTouchDrag: true,
+        },
+        handleScale: {
+          axisPressedMouseMove: false,
+        },
+      });
+
+      tiandao5mCandleRef.current = td5mChart.addSeries(lightweightCharts.CandlestickSeries, {
+        upColor: '#FF4444',
+        downColor: '#00AA00',
+        borderUpColor: '#FF4444',
+        borderDownColor: '#00AA00',
+        wickUpColor: '#FF4444',
+        wickDownColor: '#00AA00',
+      });
+
+      tiandao5mJinzuanRef.current = td5mChart.addSeries(lightweightCharts.LineSeries, {
+        color: '#FF0000',
+        lineWidth: 1,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+      });
+
+      tiandao5mJinniuRef.current = td5mChart.addSeries(lightweightCharts.LineSeries, {
+        color: '#FFFF00',
+        lineWidth: 1,
+        lineStyle: 2,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+      });
+
+      // 时间锚点
+      const td5mAnchor = td5mChart.addSeries(lightweightCharts.LineSeries, {
+        color: '#1a1a2e',
+        lineWidth: 1,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+      });
+      td5mAnchor.setData([
+        { time: (new Date('2020-01-01T09:30:00').getTime() / 1000) as any, value: 0 },
+        { time: (new Date('2020-01-01T15:00:00').getTime() / 1000) as any, value: 0 },
+      ]);
+
+      tiandao5mChartRef.current = td5mChart;
+
+      // 响应窗口尺寸
+      const td5mRo = new ResizeObserver((entries) => {
+        if (!tiandao5mChartRef.current || entries.length === 0) return;
+        const { width } = entries[0].contentRect;
+        tiandao5mChartRef.current.applyOptions({ width, height: 200 });
+      });
+      td5mRo.observe(tiandao5mContainerRef.current);
+      (tiandao5mChartRef.current as any).__ro = td5mRo;
+    }
+
+    if (!tiandao5mChartRef.current) return;
+
+    // 前一日K线数据
+    const prevKLines = tdSub.prev_day_klines.map((k) => {
+      const d = new Date(k.timestamp);
+      return {
+        time: (d.getTime() / 1000) as any,
+        open: k.Open,
+        high: k.High,
+        low: k.Low,
+        close: k.Close,
+      };
+    });
+
+    // 当日K线数据
+    const todayKLines = tdSub.klines.map((k) => {
+      const d = new Date(k.timestamp);
+      return {
+        time: (d.getTime() / 1000) as any,
+        open: k.Open,
+        high: k.High,
+        low: k.Low,
+        close: k.Close,
+      };
+    });
+
+    const allKlines = [...prevKLines, ...todayKLines];
+    if (tiandao5mCandleRef.current) {
+      tiandao5mCandleRef.current.setData(allKlines);
+    }
+
+    // 金钻趋势线（前日+当日完整数据）
+    if (tiandao5mJinzuanRef.current && tdSub.jinzuan_line.length > 0) {
+      const jinzuanData = tdSub.jinzuan_line.map((p) => {
+        const d = new Date(p.time);
+        return { time: (d.getTime() / 1000) as any, value: p.value };
+      });
+      tiandao5mJinzuanRef.current.setData(jinzuanData);
+    }
+
+    // 金牛线（前日+当日完整数据）
+    if (tiandao5mJinniuRef.current && tdSub.jinniu_line.length > 0) {
+      const jinniuData = tdSub.jinniu_line.map((p) => {
+        const d = new Date(p.time);
+        return { time: (d.getTime() / 1000) as any, value: p.value };
+      });
+      tiandao5mJinniuRef.current.setData(jinniuData);
+    }
+
+    // 信号标记：先清理旧标记，再根据当前信号创建新标记
+    if (tiandao5mMarkersRef.current) {
+      try { tiandao5mMarkersRef.current.setMarkers([]); } catch (_e) { /* ignore */ }
+      try { tiandao5mMarkersRef.current.detach(); } catch (_e) { /* ignore */ }
+      tiandao5mMarkersRef.current = null;
+    }
+
+    if (tdSub.signals.length > 0) {
+      const markers = tdSub.signals.map((sig) => {
+        const d = new Date(sig.trigger_time);
+        return {
+          time: (d.getTime() / 1000) as any,
+          position: sig.signal_type === 'buy' ? 'belowBar' as const : 'aboveBar' as const,
+          color: sig.signal_type === 'buy' ? '#FF4444' : '#44FF44',
+          shape: sig.signal_type === 'buy' ? 'arrowUp' as const : 'arrowDown' as const,
+          text: '',
+          size: 1,
+        };
+      });
+      tiandao5mMarkersRef.current = createSeriesMarkers(
+        tiandao5mCandleRef.current as any,
+        markers,
+      );
+    }
+
+    // 固定时间范围：前一日9:30 → 当日15:00
+    const prevDate = new Date(data.date);
+    prevDate.setDate(prevDate.getDate() - 1);
+    const fromTime = (new Date(`${prevDate.toISOString().slice(0, 10)}T09:30:00`).getTime() / 1000) as any;
+    const toTime = (new Date(`${data.date}T15:00:00`).getTime() / 1000) as any;
+    tiandao5mChartRef.current.timeScale().setVisibleRange({ from: fromTime, to: toTime });
+  }, []);
+
+  // 当天道子图数据变化时更新图表
+  useEffect(() => {
+    if (intradayData?.tiandao_sub_chart) {
+      updateTiandao5mChart(intradayData);
+    }
+  }, [intradayData, updateTiandao5mChart]);
+
   // ── 搜索 ──
   const handleSearch = useCallback(async (overrideWarmup?: boolean, overrideCode?: string) => {
     const code = overrideCode ?? stockCode;
@@ -4870,6 +5076,50 @@ const IntradayPage: React.FC = () => {
                   <div style={{ position: 'relative' }}>
                     <div ref={chartContainerRef} style={{ width: '100%', height: CHART_HEIGHT }} />
               </div>
+            </Card>
+
+            {/* 5分钟天道K线子图 */}
+            <Card
+              variant="default"
+              padding="none"
+              className="mb-2"
+              style={{ display: intradayData?.tiandao_sub_chart ? 'block' : 'none' }}
+            >
+              {/* 5分钟天道子图：指标线（金牛/金钻）和信号均使用截断XMA（无未来数据），
+                  每个位置的XMA窗口仅包含[i-12, i]的历史数据，不包含未来数据。
+                  信号按时间顺序产生并缓存，仅标题栏显示当前bar的信号 */}
+              {intradayData?.tiandao_sub_chart && (
+                <div className="flex items-center justify-between px-3 pt-2 pb-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-medium text-muted">5分钟K线 · 天道</span>
+                    {(() => {
+                      const tdSub = intradayData.tiandao_sub_chart;
+                      const tdSignals = tdSub?.signals;
+                      const tdKlines = tdSub?.klines;
+                      // 仅显示最新bar的信号：取最新K线时间戳，匹配信号列表
+                      const latestBarTime = tdKlines && tdKlines.length > 0
+                        ? tdKlines[tdKlines.length - 1].timestamp?.slice(0, 16) : null;
+                      const currentSignal = tdSignals && latestBarTime
+                        ? tdSignals.find((s) => s.trigger_time?.slice(0, 16) === latestBarTime) ?? null
+                        : null;
+                      if (!currentSignal) return null;
+                      const isBuy = currentSignal.signal_type === 'buy';
+                      return (
+                        <span
+                          className="text-[10px] font-semibold px-1.5 py-px rounded"
+                          style={{
+                            color: isBuy ? '#FF4444' : '#44FF44',
+                            backgroundColor: isBuy ? 'rgba(255,68,68,0.15)' : 'rgba(68,255,68,0.15)',
+                          }}
+                        >
+                          {isBuy ? '天道买入 ↑' : '天道卖出 ↓'} {currentSignal.trigger_time.slice(-5)}
+                        </span>
+                      );
+                    })()}
+                  </div>
+                </div>
+              )}
+              <div ref={tiandao5mContainerRef} style={{ width: '100%', height: 200 }} />
             </Card>
 
             {/* 成交量子图 */}

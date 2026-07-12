@@ -94,6 +94,36 @@ class IndicatorSubChart(BaseModel):
     )
 
 
+class FiveMinKlinePoint(BaseModel):
+    """5分钟K线数据点"""
+
+    Open: float
+    High: float
+    Low: float
+    Close: float
+    Volume: float
+    timestamp: str  # ISO格式，如 "2026-07-11T09:35:00"
+
+
+class TiandaoSignal(BaseModel):
+    """天道指标独立信号"""
+
+    signal_type: str  # "buy" | "sell"
+    trigger_time: str  # 触发时间 HH:MM
+    price: float
+    reason: str  # "价格跌破金钻趋势线" / "价格突破金牛线"
+
+
+class TiandaoSubChart(BaseModel):
+    """天道5分钟K线子图数据"""
+
+    klines: List[FiveMinKlinePoint] = Field(default_factory=list)  # 当前日5分钟K线
+    prev_day_klines: List[FiveMinKlinePoint] = Field(default_factory=list)  # 前一日5分钟K线
+    jinzuan_line: List[IndicatorLinePoint] = Field(default_factory=list)  # 金钻趋势线
+    jinniu_line: List[IndicatorLinePoint] = Field(default_factory=list)  # 金牛线
+    signals: List[TiandaoSignal] = Field(default_factory=list)  # 天道信号列表
+
+
 class IntradayDataResponse(BaseModel):
     """分时数据完整响应"""
 
@@ -106,6 +136,7 @@ class IntradayDataResponse(BaseModel):
     signals: List[IntradaySignal] = Field(default_factory=list)
     reference_lines: List[ReferenceLine] = Field(default_factory=list)
     indicator_sub_charts: List[IndicatorSubChart] = Field(default_factory=list)
+    tiandao_sub_chart: Optional[TiandaoSubChart] = Field(default=None, description="天道5分钟K线子图数据")
     signal_summary: Dict[str, Any] = Field(default_factory=dict)
     rsi_overbought: float = Field(default=65, description="RSI超买阈值（来自策略配置）")
     rsi_oversold: float = Field(default=20, description="RSI超卖阈值（来自策略配置）")

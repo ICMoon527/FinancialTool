@@ -78,6 +78,30 @@ export interface IndicatorSubChart {
   metadata?: Record<string, any> | null;
 }
 
+export interface FiveMinKlinePoint {
+  Open: number;
+  High: number;
+  Low: number;
+  Close: number;
+  Volume: number;
+  timestamp: string;
+}
+
+export interface TiandaoSignal {
+  signal_type: 'buy' | 'sell';
+  trigger_time: string;
+  price: number;
+  reason: string;
+}
+
+export interface TiandaoSubChart {
+  klines: FiveMinKlinePoint[];
+  prev_day_klines: FiveMinKlinePoint[];
+  jinzuan_line: IndicatorLinePoint[];
+  jinniu_line: IndicatorLinePoint[];
+  signals: TiandaoSignal[];
+}
+
 export interface IntradayDataResponse {
   stock_code: string;
   stock_name: string;
@@ -86,6 +110,7 @@ export interface IntradayDataResponse {
   signals: IntradaySignal[];
   reference_lines: ReferenceLine[];
   indicator_sub_charts: IndicatorSubChart[];
+  tiandao_sub_chart?: TiandaoSubChart | null;
   signal_summary: {
     buy_signals: number;
     sell_signals: number;
