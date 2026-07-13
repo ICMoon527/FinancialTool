@@ -6,6 +6,7 @@ interface ChartEntry {
   data: { time: number; value: number }[];
   lastValueSeries?: ISeriesApi<any>;
   lastValueVisibleOrig?: boolean;
+  timeMapper?: (time: number) => number;
 }
 
 export interface CrosshairCallbacks {
@@ -15,6 +16,8 @@ export interface CrosshairCallbacks {
 
 export interface RegisterOptions {
   lastValueSeries?: ISeriesApi<any>;
+  /** 时间映射器：将外部时间（来自其他图表）转换为此图表的本地时间刻度 */
+  timeMapper?: (time: number) => number;
 }
 
 export class CrosshairSyncEngine {
@@ -35,6 +38,7 @@ export class CrosshairSyncEngine {
       primarySeries,
       data,
       lastValueSeries: options?.lastValueSeries,
+      timeMapper: options?.timeMapper,
     };
     if (options?.lastValueSeries) {
       try {
@@ -173,7 +177,11 @@ export class CrosshairSyncEngine {
   private _setCrosshair(entry: ChartEntry, time: Time, targetId: string): void {
     try {
       const { chart, primarySeries, data } = entry;
-      const timeNum = Number(time);
+      let timeNum = Number(time);
+      // 如果该条目有时间映射器，先转换时间（如1分钟→5分钟桶）
+      if (entry.timeMapper) {
+        timeNum = entry.timeMapper(timeNum);
+      }
       const dataPt = data.find((d) => d.time === timeNum);
       let value: number | null = null;
       let matchTime: number; // 实际匹配到的数据点时间，用于 setCrosshairPosition

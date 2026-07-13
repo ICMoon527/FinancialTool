@@ -1583,6 +1583,16 @@ const IntradayPage: React.FC = () => {
       crosshairSubsRef.current = [];
       syncEngineRef.current.clear();
 
+      // ── 销毁天道5分钟子图（切换股票时需重置ref，否则懒初始化跳过）──
+      if (tiandao5mChartRef.current) {
+        try { tiandao5mChartRef.current.remove(); } catch (e) { /* ignore */ }
+        tiandao5mChartRef.current = null;
+        tiandao5mCandleRef.current = null;
+        tiandao5mJinzuanRef.current = null;
+        tiandao5mJinniuRef.current = null;
+        tiandao5mMarkersRef.current = null;
+      }
+
       // ── 销毁旧图表以完全重置内部状态（包括用户手动调整的 scale）──
       if (chartRef.current) {
         try { chartRef.current.remove(); } catch (e) { /* ignore */ }
@@ -3729,6 +3739,33 @@ const IntradayPage: React.FC = () => {
 
       tiandao5mChartRef.current = td5mChart;
 
+      // 注册到十字线同步引擎（1分钟 → 5分钟时间映射）
+      const mapTo5MinBucket = (timeSec: number) => timeSec - (timeSec % 300);
+      syncEngineRef.current.register(
+        'tiandao5m',
+        td5mChart,
+        tiandao5mCandleRef.current,
+        [],  // 初始数据为空，后续通过 updateEntryData 更新
+        { timeMapper: mapTo5MinBucket },
+      );
+
+      // 订阅十字线移动事件
+      crosshairSubsRef.current.push(
+        td5mChart.subscribeCrosshairMove((param: any) => {
+          syncEngineRef.current.handleMove('tiandao5m', param);
+          // mode 0 图表：RAF 重设 crosshair，抵消内置 crosshair 渲染的覆盖
+          if (param.time) {
+            const capturedTime = param.time;
+            const rafId = requestAnimationFrame(() => {
+              if (currentCrosshairTimeRef.current === capturedTime) {
+                syncEngineRef.current.reapplyCrosshair('tiandao5m', capturedTime);
+              }
+            });
+            renderDataRafIdsRef.current.push(rafId);
+          }
+        }),
+      );
+
       // 响应窗口尺寸
       const td5mRo = new ResizeObserver((entries) => {
         if (!tiandao5mChartRef.current || entries.length === 0) return;
@@ -3769,6 +3806,12 @@ const IntradayPage: React.FC = () => {
     if (tiandao5mCandleRef.current) {
       tiandao5mCandleRef.current.setData(allKlines);
     }
+
+    // 更新同步引擎的 tiandao 条目数据
+    syncEngineRef.current.updateEntryData(
+      'tiandao5m',
+      allKlines.map((k) => ({ time: k.time as number, value: k.close })),
+    );
 
     // 金钻趋势线（前日+当日完整数据）
     if (tiandao5mJinzuanRef.current && tdSub.jinzuan_line.length > 0) {
@@ -3814,11 +3857,15 @@ const IntradayPage: React.FC = () => {
     }
 
     // 固定时间范围：前一日9:30 → 当日15:00
+    // 使用 requestAnimationFrame 确保在图表渲染完数据后再设置可见范围，
+    // 避免 setData 触发的自动适配覆盖 setVisibleRange
     const prevDate = new Date(data.date);
     prevDate.setDate(prevDate.getDate() - 1);
     const fromTime = (new Date(`${prevDate.toISOString().slice(0, 10)}T09:30:00`).getTime() / 1000) as any;
     const toTime = (new Date(`${data.date}T15:00:00`).getTime() / 1000) as any;
-    tiandao5mChartRef.current.timeScale().setVisibleRange({ from: fromTime, to: toTime });
+    requestAnimationFrame(() => {
+      tiandao5mChartRef.current?.timeScale().setVisibleRange({ from: fromTime, to: toTime });
+    });
   }, []);
 
   // 当天道子图数据变化时更新图表
