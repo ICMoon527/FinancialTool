@@ -1397,17 +1397,17 @@ def _compute_tiandao_5min(klines_5min: list, prev_day_klines: list = None,
     today_jinniu_truncated = jinniu_truncated[prev_len:]
 
     # 调试：输出13:00-14:00时段的指标值与收盘价对比
-    for i in range(prev_len, len(full_df)):
-        tl = full_time_labels[i] if i < len(full_time_labels) else ""
-        if tl and "T13:" in tl:
-            close_v = float(full_df["Close"].iloc[i])
-            jinzuan_v = float(jinzuan_truncated[i]) if not np.isnan(jinzuan_truncated[i]) else float('nan')
-            jinniu_v = float(jinniu_truncated[i]) if not np.isnan(jinniu_truncated[i]) else float('nan')
-            logger.info(
-                f"[天道指标-显示] {tl} close={close_v:.4f}, jinzuan={jinzuan_v:.4f}, "
-                f"jinniu={jinniu_v:.4f}, "
-                f"close>jinniu={close_v > jinniu_v}, close<jinzuan={close_v < jinzuan_v}"
-            )
+    # for i in range(prev_len, len(full_df)):
+    #     tl = full_time_labels[i] if i < len(full_time_labels) else ""
+    #     if tl and "T13:" in tl:
+    #         close_v = float(full_df["Close"].iloc[i])
+    #         jinzuan_v = float(jinzuan_truncated[i]) if not np.isnan(jinzuan_truncated[i]) else float('nan')
+    #         jinniu_v = float(jinniu_truncated[i]) if not np.isnan(jinniu_truncated[i]) else float('nan')
+    #         logger.info(
+    #             f"[天道指标-显示] {tl} close={close_v:.4f}, jinzuan={jinzuan_v:.4f}, "
+    #             f"jinniu={jinniu_v:.4f}, "
+    #             f"close>jinniu={close_v > jinniu_v}, close<jinzuan={close_v < jinzuan_v}"
+    #         )
 
     # 生成天道信号
     # - 首次加载（缓存为空）：逐bar评估，使用右对齐截断XMA，模拟真实信号产生顺序
@@ -2494,6 +2494,9 @@ def get_intraday_data(
         if actual_date != date_str:
             logger.info(f"[数据源] {code}: 日期修正 {date_str} → {actual_date}")
 
+        # 过滤当日K线中的盘后交易数据（15:00-15:30），保留15:00整的K线
+        klines = _filter_post_market_klines(klines)
+
         # 注入累计分时均价（策略需要 AvgPrice）
         _inject_avg_price(klines)
 
@@ -3179,6 +3182,7 @@ def get_batch_status(
             if actual_date == today_str:
                 current_updated = True
                 try:
+                    klines = _filter_post_market_klines(klines)
                     _inject_avg_price(klines)
                     reference_lines = _compute_reference_lines(klines, code, db_manager, None)
                     # 从K线表加载前日数据用于指标预热

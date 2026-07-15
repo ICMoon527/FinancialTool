@@ -164,15 +164,16 @@ function convertKlineData(
     rawTimestamp: string;
   }> = [];
 
-  // 收盘时间（15:00:00），用于过滤盘后交易数据
-  const closingTime = new Date(dateStr + 'T15:00:00').getTime() / 1000;
-
   for (const k of klineData) {
     const ts = k.timestamp || k.time || '';
     const utcMs = parseTimestamp(ts, dateStr);
     const unixSec = Math.floor(utcMs / 1000);
-    // 过滤盘后交易数据（15:00之后），保留15:00整的K线
-    if (unixSec > closingTime) {
+    // 过滤盘后交易数据（15:00之后），用数据自身时间戳的小时/分钟判断，
+    // 避免 dateStr 与数据实际日期不一致时（如涨停无当日数据回退到前日）过滤失效
+    const d = new Date(utcMs);
+    const hour = d.getHours();
+    const minute = d.getMinutes();
+    if (hour > 15 || (hour === 15 && minute > 0)) {
       continue;
     }
     // 过滤异常值：跳过 OHLC 中包含 NaN 或 Infinity 的数据点，防止 Y 轴 scale 失控
@@ -578,6 +579,7 @@ const IntradayPage: React.FC = () => {
   const timeSyncSubRef = useRef<(() => void) | null>(null);
   const isTimeSyncingRef = useRef(false);
   const isInitialRenderRef = useRef(false);
+  const initialRenderGenRef = useRef(0); // 版本号，防止过期 RAF 回调解锁 isInitialRenderRef
   const tiandao5mCrosshairBlockedRef = useRef(false); // 阻止天道子图初始化期间的十字线事件传播
   const renderDataRafIdsRef = useRef<number[]>([]);
   // 5分钟天道子图 refs
@@ -1596,6 +1598,12 @@ const IntradayPage: React.FC = () => {
       const volContainer = volumeContainerRef.current;
       if (!container || !volContainer) return;
 
+      // ── 版本号递增，防止过期 RAF 回调解锁 isInitialRenderRef（切换股票时旧渲染的 RAF 可能仍在队列中）──
+      initialRenderGenRef.current += 1;
+      const currentRenderGen = initialRenderGenRef.current;
+      // ── 取消上一次渲染遗留的 RAF 回调，避免旧回调用过期数据覆盖当前 crosshair ──
+      renderDataRafIdsRef.current.forEach((id) => cancelAnimationFrame(id));
+      renderDataRafIdsRef.current = [];
       // ── 标记初始化阶段开始：阻止子图时间轴变更反向传播到主图 ──
       isInitialRenderRef.current = true;
       // 同时阻止天道子图初始化期间十字线事件传播到其他图表
@@ -2764,26 +2772,35 @@ const IntradayPage: React.FC = () => {
       // 第一根 bar 的时间作为默认十字线位置。我们通过 isInitialRenderRef 阻断主图/成交量
       // 图的初始 crosshairMove 事件传播，在所有初始化完成后（第2个RAF）同时解除阻塞
       // 并设置正确的十字线位置，确保不存在时序竞争。
-      if (klines.length > 0) {
-        // 找到15:00之前的最后一根K线（排除盘后交易数据15:00:01-15:30:00）
-        const closingTime = new Date(date + 'T15:00:00').getTime() / 1000;
-        let latestTime = klines[klines.length - 1].time;
-        for (let i = klines.length - 1; i >= 0; i--) {
-          if (klines[i].time <= closingTime) {
-            latestTime = klines[i].time;
-            break;
-          }
-        }
-        if (latestTime != null) {
-          // 在 isInitialRenderRef 清除的同一帧设置十字线，避免解除阻塞后图表库旧事件覆盖
+      //
+      // 使用 fullDayPoints 最后时间点（15:00:00）作为十字线目标，而非从 klines 推算，
+      // 避免数据日期与查询日期不一致时（如涨停无当日数据回退到前日）定位错误。
+      if (klines.length > 0 && fullDayPoints.length > 0) {
+        const targetTime = fullDayPoints[fullDayPoints.length - 1].time as number;
+        // 版本号机制：在每个 RAF 回调中校验版本号，若已过期（新的 renderData 已启动）则跳过，
+        // 防止旧渲染的 RAF 回调解锁 isInitialRenderRef 并覆盖当前 crosshair
+        requestAnimationFrame(() => {
+          if (initialRenderGenRef.current !== currentRenderGen) return;
           requestAnimationFrame(() => {
+            if (initialRenderGenRef.current !== currentRenderGen) return;
+            // 先设置十字线，此时 isInitialRenderRef 仍为 true，会阻断图表库的
+            // 异步 crosshairMove 事件，防止级联传播将十字线拖回早期K线
+            syncEngineRef.current.setCrosshairAtTime(targetTime as any);
+            // 在下一帧再清除阻塞标志，确保 setCrosshairAtTime 触发的所有
+            // 图表事件都已被 isInitialRenderRef 阻断
             requestAnimationFrame(() => {
+              if (initialRenderGenRef.current !== currentRenderGen) return;
               isInitialRenderRef.current = false;
               tiandao5mCrosshairBlockedRef.current = false;
-              syncEngineRef.current.setCrosshairAtTime(latestTime as any);
+              // 清除阻塞标志后，图表库可能异步发射 crosshairMove 事件将十字线拖回早期K线，
+              // 在下一帧重新设置十字线到正确位置，确保最终锁定在最新bar
+              requestAnimationFrame(() => {
+                if (initialRenderGenRef.current !== currentRenderGen) return;
+                syncEngineRef.current.setCrosshairAtTime(targetTime as any);
+              });
             });
           });
-        }
+        });
       }
     },
     [],
