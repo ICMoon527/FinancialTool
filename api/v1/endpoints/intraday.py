@@ -1103,8 +1103,8 @@ def _synthesize_5min_klines(klines_1min: list) -> list:
             h, m = int(hour), int(minute)
         except (ValueError, IndexError):
             continue
-        # 过滤 15:00 及之后的集合竞价数据（无价格浮动，对指标计算无意义）
-        if h >= 15:
+        # 过滤 15:01 及之后的盘后数据，保留 15:00 整的K线桶（用于十字线定位到最新交易时间）
+        if h > 15 or (h == 15 and m > 0):
             continue
         bucket_minute = (m // 5) * 5
         bucket_time = f"{date_part}T{h:02d}:{bucket_minute:02d}:00"
@@ -1126,6 +1126,43 @@ def _synthesize_5min_klines(klines_1min: list) -> list:
         })
 
     return result
+
+
+def _filter_post_market_klines(klines: list) -> list:
+    """过滤掉盘后交易数据（15:00-15:30），保留15:00整的K线。
+
+    用于预热数据（前一交易日K线）的清洗，确保指标计算和图表展示
+    不受盘后集合竞价数据的影响。
+    """
+    if not klines:
+        return klines
+    filtered = []
+    for k in klines:
+        ts = k.get("timestamp", "")
+        if not ts:
+            filtered.append(k)
+            continue
+        ts_str = str(ts)
+        # 提取时间部分
+        if "T" in ts_str:
+            time_part = ts_str.split("T", 1)[1]
+        elif " " in ts_str:
+            time_part = ts_str.split(" ", 1)[1]
+        else:
+            filtered.append(k)
+            continue
+        time_str = time_part.strip()[:5]  # "HH:MM"
+        try:
+            hour, minute = time_str.split(":")
+            h, m = int(hour), int(minute)
+        except (ValueError, IndexError):
+            filtered.append(k)
+            continue
+        # 过滤 15:01 及之后的盘后数据，保留 15:00 整
+        if h > 15 or (h == 15 and m > 0):
+            continue
+        filtered.append(k)
+    return filtered
 
 
 def _compute_xma_truncated(series: 'np.ndarray', n: int) -> 'np.ndarray':
@@ -1210,6 +1247,10 @@ def _evaluate_signals_incremental(full_df: 'pd.DataFrame', prev_len: int) -> lis
         jinniu_f = float(jinniu_val)
 
         if close_f < jinzuan_f:
+            logger.info(
+                f"[天道信号-逐bar] {tl} 买入: close={close_f:.4f}, jinzuan={jinzuan_f:.4f}, "
+                f"jinniu={jinniu_f:.4f}, 差值={jinzuan_f - close_f:.4f}"
+            )
             signals.append(
                 TiandaoSignal(
                     signal_type="buy",
@@ -1219,6 +1260,10 @@ def _evaluate_signals_incremental(full_df: 'pd.DataFrame', prev_len: int) -> lis
                 )
             )
         elif close_f > jinniu_f:
+            logger.info(
+                f"[天道信号-逐bar] {tl} 卖出: close={close_f:.4f}, jinniu={jinniu_f:.4f}, "
+                f"jinzuan={jinzuan_f:.4f}, 差值={close_f - jinniu_f:.4f}"
+            )
             signals.append(
                 TiandaoSignal(
                     signal_type="sell",
@@ -1227,6 +1272,13 @@ def _evaluate_signals_incremental(full_df: 'pd.DataFrame', prev_len: int) -> lis
                     reason="价格突破金牛线",
                 )
             )
+        else:
+            # 在区间内，无信号，记录调试信息（仅在13:00-14:00时段输出，避免日志过多）
+            if tl and "T13:" in tl:
+                logger.info(
+                    f"[天道信号-逐bar] {tl} 无信号: close={close_f:.4f}, jinzuan={jinzuan_f:.4f}, "
+                    f"jinniu={jinniu_f:.4f}, 区间内"
+                )
 
     return signals
 
@@ -1343,6 +1395,19 @@ def _compute_tiandao_5min(klines_5min: list, prev_day_klines: list = None,
     # 当日截断值（用于信号评估）
     today_jinzuan_truncated = jinzuan_truncated[prev_len:]
     today_jinniu_truncated = jinniu_truncated[prev_len:]
+
+    # 调试：输出13:00-14:00时段的指标值与收盘价对比
+    for i in range(prev_len, len(full_df)):
+        tl = full_time_labels[i] if i < len(full_time_labels) else ""
+        if tl and "T13:" in tl:
+            close_v = float(full_df["Close"].iloc[i])
+            jinzuan_v = float(jinzuan_truncated[i]) if not np.isnan(jinzuan_truncated[i]) else float('nan')
+            jinniu_v = float(jinniu_truncated[i]) if not np.isnan(jinniu_truncated[i]) else float('nan')
+            logger.info(
+                f"[天道指标-显示] {tl} close={close_v:.4f}, jinzuan={jinzuan_v:.4f}, "
+                f"jinniu={jinniu_v:.4f}, "
+                f"close>jinniu={close_v > jinniu_v}, close<jinzuan={close_v < jinzuan_v}"
+            )
 
     # 生成天道信号
     # - 首次加载（缓存为空）：逐bar评估，使用右对齐截断XMA，模拟真实信号产生顺序
@@ -2447,8 +2512,9 @@ def get_intraday_data(
         if warmup_enabled:
             prev_day_data = db_manager.load_previous_day_klines(code, q_date)
             warmup_klines = prev_day_data.get("klines", []) if prev_day_data else []
+            warmup_klines = _filter_post_market_klines(warmup_klines)
             if warmup_klines:
-                logger.info(f"[预热] {code} 从K线表加载前日 {len(warmup_klines)} 根K线进行指标预热，来源日期={prev_day_data.get('date', '')}")
+                logger.info(f"[预热] {code} 从K线表加载前日 {len(warmup_klines)} 根K线进行指标预热（已过滤盘后数据），来源日期={prev_day_data.get('date', '')}")
             else:
                 logger.warning(f"[预热] {code} 无前日K线数据，指标将从零状态开始计算")
 
@@ -2702,6 +2768,7 @@ def _compute_signal_alert(code: str, db_manager=None) -> Optional[dict]:
                 q_date = date_type.today()
             prev_day_data = db_manager.load_previous_day_klines(code, q_date)
             warmup_klines = prev_day_data.get("klines", []) if prev_day_data else []
+            warmup_klines = _filter_post_market_klines(warmup_klines)
 
         signals, _summary, _precomputed, _engine = _run_t0_strategy(klines, None, warmup_klines)
         if not signals:
@@ -3117,6 +3184,7 @@ def get_batch_status(
                     # 从K线表加载前日数据用于指标预热
                     batch_prev_day = db_manager.load_previous_day_klines(code, actual_date)
                     batch_warmup_klines = batch_prev_day.get("klines", []) if batch_prev_day else []
+                    batch_warmup_klines = _filter_post_market_klines(batch_warmup_klines)
                     if batch_warmup_klines:
                         logger.info(f"[预热] batch-status {code} 从K线表加载前日 {len(batch_warmup_klines)} 根K线")
                     else:

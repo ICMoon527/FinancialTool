@@ -66,7 +66,7 @@ export class CrosshairSyncEngine {
     this.callbacks = callbacks;
   }
 
-  handleMove = (sourceId: string, param: any): void => {
+  handleMove = (sourceId: string, param: any) => {
     if (this.syncDepth > 0) {
       if (param.time) {
         this.callbacks.onMove?.(param.time, sourceId);
@@ -141,10 +141,6 @@ export class CrosshairSyncEngine {
   }
 
   syncTimeRange(range: { from: Time; to: Time }): void {
-    const fromStr = new Date(Number(range.from) * 1000).toLocaleTimeString();
-    const toStr = new Date(Number(range.to) * 1000).toLocaleTimeString();
-    console.log(`[Engine] syncTimeRange from=${fromStr} to=${toStr}`, range);
-    console.trace('[Engine] syncTimeRange stack');
     this.entries.forEach((entry, id) => {
       try {
         entry.chart.timeScale().setVisibleRange(range);

@@ -164,10 +164,17 @@ function convertKlineData(
     rawTimestamp: string;
   }> = [];
 
+  // 收盘时间（15:00:00），用于过滤盘后交易数据
+  const closingTime = new Date(dateStr + 'T15:00:00').getTime() / 1000;
+
   for (const k of klineData) {
     const ts = k.timestamp || k.time || '';
     const utcMs = parseTimestamp(ts, dateStr);
     const unixSec = Math.floor(utcMs / 1000);
+    // 过滤盘后交易数据（15:00之后），保留15:00整的K线
+    if (unixSec > closingTime) {
+      continue;
+    }
     // 过滤异常值：跳过 OHLC 中包含 NaN 或 Infinity 的数据点，防止 Y 轴 scale 失控
     if (
       !isFinite(k.Open) || !isFinite(k.High) || !isFinite(k.Low) || !isFinite(k.Close)
@@ -230,7 +237,7 @@ function parseTimestamp(tsStr: string, dateStr: string): number {
     return d.getTime();
   }
 
-  // ISO 格式
+  // ISO 格式（含秒） "2024-01-01T09:30:00"
   const isoMatch = s.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
   if (isoMatch) {
     const d = new Date(
@@ -240,6 +247,21 @@ function parseTimestamp(tsStr: string, dateStr: string): number {
       Number(isoMatch[4]),
       Number(isoMatch[5]),
       Number(isoMatch[6]),
+    );
+    _tsCache.set(cacheKey, d.getTime());
+    return d.getTime();
+  }
+
+  // ISO 格式（无秒） "2024-01-01T09:30"（天道信号 trigger_time 格式）
+  const isoMatchNoSec = s.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/);
+  if (isoMatchNoSec) {
+    const d = new Date(
+      Number(isoMatchNoSec[1]),
+      Number(isoMatchNoSec[2]) - 1,
+      Number(isoMatchNoSec[3]),
+      Number(isoMatchNoSec[4]),
+      Number(isoMatchNoSec[5]),
+      0,
     );
     _tsCache.set(cacheKey, d.getTime());
     return d.getTime();
@@ -556,6 +578,7 @@ const IntradayPage: React.FC = () => {
   const timeSyncSubRef = useRef<(() => void) | null>(null);
   const isTimeSyncingRef = useRef(false);
   const isInitialRenderRef = useRef(false);
+  const tiandao5mCrosshairBlockedRef = useRef(false); // 阻止天道子图初始化期间的十字线事件传播
   const renderDataRafIdsRef = useRef<number[]>([]);
   // 5分钟天道子图 refs
   const tiandao5mContainerRef = useRef<HTMLDivElement>(null);
@@ -1575,6 +1598,8 @@ const IntradayPage: React.FC = () => {
 
       // ── 标记初始化阶段开始：阻止子图时间轴变更反向传播到主图 ──
       isInitialRenderRef.current = true;
+      // 同时阻止天道子图初始化期间十字线事件传播到其他图表
+      tiandao5mCrosshairBlockedRef.current = true;
 
       // ── 先退订十字线事件，防止销毁图表时触发旧图表 crosshair 事件扰乱引擎状态 ──
       crosshairSubsRef.current.forEach((unsub) => {
@@ -2242,6 +2267,9 @@ const IntradayPage: React.FC = () => {
 
       // ── 主图十字线联动 ──
       const mainHandleCrosshairMove = (param: any) => {
+        // 初始化期间阻止主图十字线事件传播，避免 lightweight-charts 内部初始渲染
+        // 时将第一根 bar 的位置作为默认十字线位置传播到所有图表
+        if (isInitialRenderRef.current) return;
         syncEngineRef.current.handleMove('main', param);
         // mode 0 图表：RA 重设 crosshair（下一帧内置 crosshair 渲染后）
         if (param.time) {
@@ -2273,6 +2301,8 @@ const IntradayPage: React.FC = () => {
       // ── 成交量图十字线联动 ──
       if (volChart && volSeries) {
         const volHandleCrosshairMove = (param: any) => {
+          // 初始化期间阻止成交量图十字线事件传播
+          if (isInitialRenderRef.current) return;
           syncEngineRef.current.handleMove('volume', param);
           // mode 0 图表：RAF 重设 crosshair
           if (param.time) {
@@ -2630,11 +2660,12 @@ const IntradayPage: React.FC = () => {
           console.warn(`[SubChart] SKIPPED registration: id=${sc.id} engineDataLen=${engineData.length} hasPrimarySeries=${!!primarySeries}`);
         }
 
-        // 十字线订阅
+        // 十字线订阅（初始化期间阻止传播，避免指标子图初始化事件将十字线拖回早期K线）
         crosshairSubsRef.current.push(
-          subChart.subscribeCrosshairMove((param) =>
-            syncEngineRef.current.handleMove(sc.id, param),
-          ),
+          subChart.subscribeCrosshairMove((param) => {
+            if (isInitialRenderRef.current) return;
+            syncEngineRef.current.handleMove(sc.id, param);
+          }),
         );
 
         // 时间轴同步
@@ -2725,14 +2756,35 @@ const IntradayPage: React.FC = () => {
         seriesMarkersRef.current = createSeriesMarkers(markSeries, markers as any);
       }
 
-      // ── 延迟清除初始化标志：多帧等待后启用双向同步，防止子图异步布局覆盖主图范围 ──
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
+      // ── 初始渲染完成后，将十字线锁定到最新K线 ──
+      // 切换标的时用户期望看到最新数据，但增量更新逻辑（updateChartIncremental）仅在轮询时触发，
+      // 初始渲染此处主动设置十字线到最新bar，避免等待1-2次轮询后才显示。
+      //
+      // 时序说明：lightweight-charts 在设置数据后，通过内部 RAF 触发初始渲染，可能将
+      // 第一根 bar 的时间作为默认十字线位置。我们通过 isInitialRenderRef 阻断主图/成交量
+      // 图的初始 crosshairMove 事件传播，在所有初始化完成后（第2个RAF）同时解除阻塞
+      // 并设置正确的十字线位置，确保不存在时序竞争。
+      if (klines.length > 0) {
+        // 找到15:00之前的最后一根K线（排除盘后交易数据15:00:01-15:30:00）
+        const closingTime = new Date(date + 'T15:00:00').getTime() / 1000;
+        let latestTime = klines[klines.length - 1].time;
+        for (let i = klines.length - 1; i >= 0; i--) {
+          if (klines[i].time <= closingTime) {
+            latestTime = klines[i].time;
+            break;
+          }
+        }
+        if (latestTime != null) {
+          // 在 isInitialRenderRef 清除的同一帧设置十字线，避免解除阻塞后图表库旧事件覆盖
           requestAnimationFrame(() => {
-            isInitialRenderRef.current = false;
+            requestAnimationFrame(() => {
+              isInitialRenderRef.current = false;
+              tiandao5mCrosshairBlockedRef.current = false;
+              syncEngineRef.current.setCrosshairAtTime(latestTime as any);
+            });
           });
-        });
-      });
+        }
+      }
     },
     [],
   );
@@ -3001,7 +3053,15 @@ const IntradayPage: React.FC = () => {
       // 2) 必须先更新引擎缓存的数据，否则找不到最新时间点
       // 3) 即使数据未变化（isKlineChanged=false）也要执行，因为用户未移动十字线但数据已往后推移
       if (klines.length > 0) {
-        const latestTime = klines[klines.length - 1].time;
+        // 找到15:00之前的最后一根K线（排除盘后交易数据15:00:01-15:30:00）
+        const closingTime = new Date(dateStr + 'T15:00:00').getTime() / 1000;
+        let latestTime = klines[klines.length - 1].time;
+        for (let i = klines.length - 1; i >= 0; i--) {
+          if (klines[i].time <= closingTime) {
+            latestTime = klines[i].time;
+            break;
+          }
+        }
         if (latestTime != null) {
           // 更新引擎数据缓存
           syncEngineRef.current.updateEntryData('main', klines.map((k) => ({ time: k.time, value: k.close })));
@@ -3752,6 +3812,8 @@ const IntradayPage: React.FC = () => {
       // 订阅十字线移动事件
       crosshairSubsRef.current.push(
         td5mChart.subscribeCrosshairMove((param: any) => {
+          // 初始化期间阻止天道子图十字线事件传播，避免覆盖 renderData 设置的 latestTime
+          if (tiandao5mCrosshairBlockedRef.current) return;
           syncEngineRef.current.handleMove('tiandao5m', param);
           // mode 0 图表：RAF 重设 crosshair，抵消内置 crosshair 渲染的覆盖
           if (param.time) {

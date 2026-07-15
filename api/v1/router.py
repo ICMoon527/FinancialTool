@@ -11,7 +11,15 @@ API v1 路由聚合
 
 from fastapi import APIRouter
 
-from api.v1.endpoints import health, analysis, auth, history, stocks, backtest, system_config, agent, stock_selector, stock_search, visualization, intraday, rl
+from api.v1.endpoints import health, analysis, auth, history, stocks, backtest, system_config, agent, stock_selector, stock_search, visualization, intraday
+
+# RL模块依赖torch，仅在可用时导入
+try:
+    from api.v1.endpoints import rl
+    _rl_available = True
+except ImportError:
+    _rl_available = False
+    rl = None  # type: ignore
 
 # 创建 v1 版本主路由
 router = APIRouter(prefix="/api/v1")
@@ -85,8 +93,9 @@ router.include_router(
     tags=["Intraday"]
 )
 
-router.include_router(
-    rl.router,
-    prefix="/rl",
-    tags=["RL Training"]
-)
+if _rl_available:
+    router.include_router(
+        rl.router,
+        prefix="/rl",
+        tags=["RL Training"]
+    )
