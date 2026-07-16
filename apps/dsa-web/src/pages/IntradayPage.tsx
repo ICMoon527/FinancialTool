@@ -29,6 +29,7 @@ import type { WeightContribution, IntradaySignal } from '../api/intraday';
 import { validateStockCode } from '../utils/validation';
 import { Card, StockSearchInput } from '../components/common';
 import { CrosshairSyncEngine } from './CrosshairSyncEngine';
+import { systemConfigApi } from '../api/systemConfig';
 
 /** 计算成交量的 N 日简单移动平均（滑动窗口增量算法，O(n)复杂度） */
 function calculateVolumeMA(
@@ -370,9 +371,61 @@ const IntradayPage: React.FC = () => {
   const signalsBackupRef = useRef<IntradaySignal[] | null>(null);
   const isTencentDataRef = useRef(false);
 
+  // 参考线显示配置（从系统设置加载）
+  const refLineConfigRef = useRef<Record<string, boolean>>({});
+  const [refLineConfigVersion, setRefLineConfigVersion] = useState(0);
+  /** 参考线ID到配置键后缀的映射（注意：API返回小写键，后端ID与YAML键名有差异） */
+  const REF_LINE_CONFIG_KEY_SUFFIX: Record<string, string> = {
+    attack_line: 'chart.reference_lines.attack_line',
+    operation_line: 'chart.reference_lines.trading_line',
+    defense_line: 'chart.reference_lines.defense_line',
+    ma5: 'chart.reference_lines.ma_5',
+    ma10: 'chart.reference_lines.ma_10',
+    ma20: 'chart.reference_lines.ma_20',
+    expma_13: 'chart.reference_lines.expma_13',
+    previous_high_30: 'chart.reference_lines.previous_high_30',
+    previous_low_30: 'chart.reference_lines.previous_low_30',
+    chip_upper: 'chart.reference_lines.chip_upper',
+    chip_lower: 'chart.reference_lines.chip_lower',
+    prev_close: 'chart.reference_lines.prev_close',
+  };
+  const YAML_BASE = 'watchdog/strategies/intraday_t0_config.yaml:';
+
+  /** 从系统配置API加载参考线显示配置 */
+  const loadRefLineConfig = useCallback(async () => {
+    try {
+      const res = await systemConfigApi.getConfig(false);
+      const config: Record<string, boolean> = {};
+      for (const item of res.items) {
+        for (const [lineId, keySuffix] of Object.entries(REF_LINE_CONFIG_KEY_SUFFIX)) {
+          if (item.key === `${YAML_BASE}${keySuffix}`) {
+            config[lineId] = item.value.trim().toLowerCase() === 'true';
+          }
+        }
+      }
+      const prev = JSON.stringify(refLineConfigRef.current);
+      const next = JSON.stringify(config);
+      refLineConfigRef.current = config;
+      if (prev !== next) {
+        setRefLineConfigVersion((v) => v + 1);
+      }
+    } catch {
+      // 加载失败时静默处理，默认显示所有参考线
+    }
+  }, []);
+
   useEffect(() => {
     isReplayingRef.current = isReplaying;
   }, [isReplaying]);
+
+  // 加载参考线配置，并设置30秒轮询以检测配置变更
+  useEffect(() => {
+    loadRefLineConfig();
+    const interval = setInterval(() => {
+      loadRefLineConfig();
+    }, 30000);
+    return () => clearInterval(interval);
+  }, [loadRefLineConfig]);
 
   // 批量下载分时数据
   const [batchDownload, setBatchDownload] = useState<BatchDownloadStatus | null>(null);
@@ -595,6 +648,7 @@ const IntradayPage: React.FC = () => {
   const currentCrosshairTimeRef = useRef<Time | null>(null);
   const klineRawDataRef = useRef<any[]>([]);
   const lastIncrementalStockCodeRef = useRef<string | null>(null);
+  const prevRefLineConfigVersionRef = useRef(0);
   const currentStockCodeRef = useRef<string | null>(null);  // 追踪当前图表展示的股票代码，用于增量更新门禁
   const indicatorDataAccumulatedRef = useRef<Map<string, { lines: Array<{ name: string; data: any[] }> }>>(new Map());
   const crosshairSignalRef = useRef<Record<string, string>>({});
@@ -1978,6 +2032,9 @@ const IntradayPage: React.FC = () => {
         data.reference_lines.forEach((rl) => {
           const isChipLine = rl.id === 'chip_upper' || rl.id === 'chip_lower';
           if (isChipLine && !chipOverlaps) return; // 筹码区不在可见范围内，跳过该参考线
+          // 检查参考线配置是否启用
+          const configEnabled = refLineConfigRef.current[rl.id];
+          if (configEnabled === false) return; // 配置中明确禁用，跳过该参考线
           const ls: 0 | 1 | 2 | 3 | 4 = 2; // 所有参考线统一使用虚线（分时均线不在此列，不受影响）
           // 将颜色 hex 转换为半透明 hex 作为标签背景色
           const labelBgColor = hexToRgba(rl.color, 0.35);
@@ -3711,16 +3768,20 @@ const IntradayPage: React.FC = () => {
   // 当数据变更时重新渲染（增量更新时跳过全量重建）
   useEffect(() => {
     if (intradayData && !isReplayingRef.current) {
-      // 增量更新时跳过全量重建，但仅限于同股票代码的场景
-      // 如果股票已切换，必须执行全量 renderData 重建
-      if (lastIncrementalStockCodeRef.current === intradayData.stock_code) {
+      // 参考线配置变更时强制全量渲染
+      const configChanged = refLineConfigVersion !== prevRefLineConfigVersionRef.current;
+      if (configChanged) {
+        prevRefLineConfigVersionRef.current = refLineConfigVersion;
+      }
+      // 增量更新时跳过全量重建，但仅限于同股票代码且非配置变更的场景
+      if (!configChanged && lastIncrementalStockCodeRef.current === intradayData.stock_code) {
         lastIncrementalStockCodeRef.current = null;
         return;
       }
       lastIncrementalStockCodeRef.current = null;
       renderData(intradayData, intradayData.date || todayDateStr);
     }
-  }, [intradayData, renderData]);
+  }, [intradayData, renderData, refLineConfigVersion]);
 
   // ── 5分钟天道K线子图更新 ──
   const updateTiandao5mChart = useCallback((data: IntradayDataResponse) => {

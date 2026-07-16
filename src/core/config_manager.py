@@ -203,16 +203,24 @@ class YamlConfigManager:
             return {}
 
     def write_config_map(self, flat_map: Dict[str, str]) -> bool:
-        """将扁平化键值对写入嵌套 YAML 文件。"""
+        """将扁平化键值对写入嵌套 YAML 文件（与现有内容合并，非覆盖）。"""
         if yaml is None:
             return False
         temp_path = self._yaml_path.with_suffix(self._yaml_path.suffix + ".tmp")
         try:
-            nested = self._unflatten_dict(flat_map)
+            # 读取现有文件内容
+            existing: dict = {}
+            if self._yaml_path.exists():
+                with open(self._yaml_path, "r", encoding="utf-8") as f:
+                    existing = yaml.safe_load(f) or {}
+            # 反扁平化变更内容
+            changes = self._unflatten_dict(flat_map)
+            # 深度合并变更到现有内容
+            merged = self._deep_merge(existing, changes)
             if not self._yaml_path.parent.exists():
                 self._yaml_path.parent.mkdir(parents=True, exist_ok=True)
             with open(temp_path, "w", encoding="utf-8", newline="\n") as f:
-                yaml.safe_dump(nested, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+                yaml.safe_dump(merged, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(temp_path, self._yaml_path)
@@ -280,3 +288,14 @@ class YamlConfigManager:
         except ValueError:
             pass
         return value
+
+    @staticmethod
+    def _deep_merge(base: dict, updates: dict) -> dict:
+        """深度合并两个字典，updates 中的值覆盖 base 中的值。"""
+        result = dict(base)
+        for key, value in updates.items():
+            if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+                result[key] = YamlConfigManager._deep_merge(result[key], value)
+            else:
+                result[key] = value
+        return result
