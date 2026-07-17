@@ -371,9 +371,6 @@ const IntradayPage: React.FC = () => {
   const signalsBackupRef = useRef<IntradaySignal[] | null>(null);
   const isTencentDataRef = useRef(false);
 
-  // 参考线显示配置（从系统设置加载）
-  const refLineConfigRef = useRef<Record<string, boolean>>({});
-  const [refLineConfigVersion, setRefLineConfigVersion] = useState(0);
   /** 参考线ID到配置键后缀的映射（注意：API返回小写键，后端ID与YAML键名有差异） */
   const REF_LINE_CONFIG_KEY_SUFFIX: Record<string, string> = {
     attack_line: 'chart.reference_lines.attack_line',
@@ -389,6 +386,12 @@ const IntradayPage: React.FC = () => {
     chip_lower: 'chart.reference_lines.chip_lower',
     prev_close: 'chart.reference_lines.prev_close',
   };
+
+  // 参考线显示配置（从系统设置加载，默认全部显示）
+  const refLineConfigRef = useRef<Record<string, boolean>>(
+    Object.fromEntries(Object.keys(REF_LINE_CONFIG_KEY_SUFFIX).map((k) => [k, true])),
+  );
+  const [refLineConfigVersion, setRefLineConfigVersion] = useState(0);
   const YAML_BASE = 'watchdog/strategies/intraday_t0_config.yaml:';
 
   /** 从系统配置API加载参考线显示配置 */
