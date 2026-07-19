@@ -341,6 +341,8 @@ class BacktestOrchestrator:
                 if preset:
                     strategy_name_cfg = preset.get("strategy", "simple")
                     params = preset.get("params", {})
+                    # 将配置文件中的 camelCase 参数转换为 snake_case
+                    params = _camel_to_snake_keys(params)
                     from .exit_strategies import ExitStrategy
                     exit_strategy_instance = ExitStrategy.create(strategy_name_cfg, params)
                     logger.info("使用配置文件退出策略预设: %s (%s)", active_key, preset.get("name", ""))
