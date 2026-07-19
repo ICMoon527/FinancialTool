@@ -13,6 +13,8 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import re
+
 import pandas as pd
 import yaml
 
@@ -23,6 +25,16 @@ from .report import BacktestReportGenerator
 from .smart_data_preloader import SmartDataPreloader
 
 logger = logging.getLogger(__name__)
+
+
+def _camel_to_snake(name: str) -> str:
+    """将 camelCase 字符串转换为 snake_case。"""
+    return re.sub(r'(?<!^)(?=[A-Z])', '_', name).lower()
+
+
+def _camel_to_snake_keys(params: Dict[str, Any]) -> Dict[str, Any]:
+    """将字典中的所有 camelCase 键转换为 snake_case。"""
+    return {_camel_to_snake(k): v for k, v in params.items()}
 
 
 class BacktestOrchestrator:
@@ -314,6 +326,8 @@ class BacktestOrchestrator:
         if exit_strategy and isinstance(exit_strategy, dict):
             strategy_name_cfg = exit_strategy.get("strategy", "simple")
             params = exit_strategy.get("params", {})
+            # 将前端传来的 camelCase 参数转换为 snake_case
+            params = _camel_to_snake_keys(params)
             from .exit_strategies import ExitStrategy
             exit_strategy_instance = ExitStrategy.create(strategy_name_cfg, params)
             logger.info("使用退出策略: %s, 参数: %s", strategy_name_cfg, params)
