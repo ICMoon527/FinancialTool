@@ -18,6 +18,10 @@ import pandas as pd
 
 from .data_access import TimeIsolatedDataProvider
 
+# 天道指标（供天道系列退出策略使用）
+from indicators.indicators.tiandao import Tiandao
+from .exit_strategies import TiandaoIndicatorSnapshot
+
 logger = logging.getLogger(__name__)
 
 
@@ -235,6 +239,11 @@ class StrategyBacktestEngine:
                 max_holding_days=max_holding_days,
             )
 
+        # 天道指标计算器（供天道系列退出策略使用）
+        self._tiandao_indicator = Tiandao()
+        # 天道指标缓存：{stock_code: TiandaoIndicatorSnapshot}
+        self._tiandao_cache: Dict[str, TiandaoIndicatorSnapshot] = {}
+
         # 初始化随机种子
         random.seed()
 
@@ -383,6 +392,184 @@ class StrategyBacktestEngine:
         except (KeyError, ValueError, IndexError) as e:
             logger.warning(f"获取股票{price_type}价失败 {stock_code}: {e}")
         return None
+
+    def _compute_tiandao_indicators(self, current_date: date) -> None:
+        """
+        为所有持仓股票计算天道指标并缓存。
+
+        在每个交易日的盘中阶段调用一次，后续 exit strategy 的
+        check_exits 通过 indicator_provider 回调获取缓存数据。
+
+        Args:
+            current_date: 当前交易日
+        """
+        self._tiandao_cache.clear()
+        for stock_code in list(self.portfolio.positions.keys()):
+            try:
+                data = self._data_provider.get_daily_data(stock_code, days=200)
+                if isinstance(data, tuple):
+                    df, _ = data
+                else:
+                    df = data
+                if df is None or df.empty:
+                    continue
+
+                # 确保有日期列
+                if "date" not in df.columns:
+                    continue
+
+                # Tiandao 类期望列名为大写首字母：Open, High, Low, Close, Volume
+                # 数据提供器可能返回小写列名，需做映射
+                column_mapping = {
+                    "open": "Open", "high": "High", "low": "Low",
+                    "close": "Close", "volume": "Volume",
+                }
+                df = df.rename(columns={k: v for k, v in column_mapping.items() if k in df.columns})
+                # 同时处理首字母大写形式
+                df = df.rename(columns={
+                    k.capitalize(): v for k, v in column_mapping.items()
+                    if k.capitalize() in df.columns and k.capitalize() not in column_mapping.values()
+                })
+
+                # 计算天道指标
+                result = self._tiandao_indicator.calculate(df)
+                if result is None or result.empty:
+                    continue
+
+                # 找到当前日期对应的指标值
+                if "date" in result.columns:
+                    result["date"] = pd.to_datetime(result["date"]).dt.date
+                    row = result[result["date"] == current_date]
+                    if row.empty:
+                        continue
+                    row = row.iloc[-1]
+                else:
+                    # 如果没有日期列，使用最后一行
+                    row = result.iloc[-1]
+
+                snapshot = TiandaoIndicatorSnapshot(
+                    td_jinzuan=float(row.get("td_jinzuan", 0) or 0),
+                    td_jinniu=float(row.get("td_jinniu", 0) or 0),
+                    td_jinniu2=float(row.get("td_jinniu2", 0) or 0),
+                    td_bbi=float(row.get("td_bbi", 0) or 0),
+                )
+                self._tiandao_cache[stock_code] = snapshot
+                logger.debug(
+                    "天道指标 [%s]: 金钻=%.2f 金牛=%.2f 金牛2=%.2f BBI=%.2f",
+                    stock_code, snapshot.td_jinzuan, snapshot.td_jinniu,
+                    snapshot.td_jinniu2, snapshot.td_bbi,
+                )
+            except Exception as e:
+                logger.debug("计算天道指标失败 [%s]: %s", stock_code, e)
+
+    def _setup_indicator_provider(self) -> None:
+        """
+        为退出策略设置天道指标提供器。
+
+        如果退出策略有 _indicator_provider 属性，则设置一个回调函数，
+        从缓存中获取对应股票的天道指标快照。
+        """
+        if hasattr(self.exit_strategy, "_indicator_provider"):
+            cache = self._tiandao_cache
+
+            def indicator_provider(stock_code: str) -> Optional[TiandaoIndicatorSnapshot]:
+                return cache.get(stock_code)
+
+            self.exit_strategy._indicator_provider = indicator_provider
+
+    def _process_exit_signal(
+        self,
+        signal: "ExitSignal",
+        current_date: date,
+        sold_stocks: Set[str],
+        price_type: str,
+    ) -> None:
+        """
+        处理退出信号（卖出或加仓买回）。
+
+        支持三种信号类型：
+        - "full": 全部卖出
+        - "partial": 部分卖出
+        - "rebuy": 加仓买回（将之前减仓的部分买回）
+
+        Args:
+            signal: 退出信号
+            current_date: 当前交易日
+            sold_stocks: 已卖出股票集合（用于跟踪）
+            price_type: 价格类型标签（用于日志）
+        """
+        stock_code = signal.stock_code
+        if stock_code in sold_stocks:
+            return
+
+        # 处理加仓买回信号
+        if signal.exit_type == "rebuy":
+            self._process_rebuy_signal(signal, current_date)
+            return
+
+        # 处理卖出信号
+        pos = self.portfolio.get_position(stock_code)
+        if not pos:
+            return
+
+        sell_price = signal.sell_price
+        if signal.exit_type == "full":
+            sell_qty = pos.quantity
+        else:
+            # partial: exit_ratio 是卖出比例（如 0.5 表示卖出 50%）
+            sell_qty = max(100, int(pos.quantity * signal.exit_ratio / 100) * 100)
+
+        if sell_qty <= 0:
+            sell_qty = pos.quantity
+
+        logger.info(
+            "以%s价执行%s: %s %d股 @ %.2f (%s)",
+            price_type,
+            "卖出" if signal.exit_type != "rebuy" else "加仓",
+            stock_code, sell_qty, sell_price, signal.reason,
+        )
+        self.place_order(stock_code, OrderType.SELL, sell_qty, price=sell_price, price_type=signal.price_type)
+
+        if signal.exit_type == "full":
+            sold_stocks.add(stock_code)
+            self.exit_strategy.cleanup_position(stock_code)
+
+    def _process_rebuy_signal(self, signal: "ExitSignal", current_date: date) -> None:
+        """
+        处理加仓买回信号。
+
+        使用可用现金买入指定数量的股票，不增加新的持仓记录。
+
+        Args:
+            signal: 加仓信号
+            current_date: 当前交易日
+        """
+        stock_code = signal.stock_code
+        pos = self.portfolio.get_position(stock_code)
+        if not pos:
+            return
+
+        buy_price = signal.sell_price  # rebuy信号中 sell_price 表示买入价格
+        # 计算可买入的股数：使用可用现金的相应比例
+        # exit_ratio 表示买回比例，如 0.5 表示买回之前减仓的 50% 仓位
+        target_qty = int(pos.quantity * signal.exit_ratio / 100) * 100
+        if target_qty < 100:
+            return
+
+        # 检查可用资金是否足够
+        estimated_cost = target_qty * buy_price * (1 + self.commission_rate + self.slippage_rate)
+        if self.portfolio.cash < estimated_cost:
+            logger.debug(
+                "天道策略 [%s]: 加仓资金不足，需要 %.2f，可用 %.2f",
+                stock_code, estimated_cost, self.portfolio.cash,
+            )
+            return
+
+        logger.info(
+            "天道策略加仓买回: %s %d股 @ %.2f (%s)",
+            stock_code, target_qty, buy_price, signal.reason,
+        )
+        self.place_order(stock_code, OrderType.BUY, target_qty, price=buy_price, price_type=signal.price_type)
 
     def _calculate_commission(self, amount: float) -> float:
         """
@@ -838,6 +1025,10 @@ class StrategyBacktestEngine:
         def price_provider(stock_code: str, price_type: str) -> Optional[float]:
             return self._get_stock_price(stock_code, current_date, price_type)
         
+        # 计算天道指标并设置 indicator_provider
+        self._compute_tiandao_indicators(current_date)
+        self._setup_indicator_provider()
+        
         stocks_to_sell_open = self.exit_strategy.check_exits(
             current_date=current_date,
             positions=self.portfolio.positions,
@@ -848,18 +1039,7 @@ class StrategyBacktestEngine:
         )
         sold_stocks = set()
         for signal in stocks_to_sell_open:
-            stock_code = signal.stock_code
-            sell_price = signal.sell_price
-            pos = self.portfolio.get_position(stock_code)
-            if pos:
-                sell_qty = pos.quantity if signal.exit_type == "full" else int(pos.quantity * signal.exit_ratio / 100) * 100
-                if sell_qty <= 0:
-                    sell_qty = pos.quantity
-                logger.info(f"以开盘价执行卖出: {stock_code} {sell_qty} 股 @ {sell_price:.2f} ({signal.reason})")
-                self.place_order(stock_code, OrderType.SELL, sell_qty, price=sell_price, price_type="open")
-                if signal.exit_type == "full":
-                    sold_stocks.add(stock_code)
-                    self.exit_strategy.cleanup_position(stock_code)
+            self._process_exit_signal(signal, current_date, sold_stocks, "开盘")
         
         # 步骤 3：检查今天最高价和最低价，如果触发止盈/止损则按照止盈/止损价卖出
         logger.info("检查盘中最高价和最低价是否触发止盈止损...")
@@ -883,20 +1063,7 @@ class StrategyBacktestEngine:
             phase="intraday",
         )
         for signal in stocks_to_sell_intraday:
-            stock_code = signal.stock_code
-            if stock_code in sold_stocks:
-                continue
-            sell_price = signal.sell_price
-            pos = self.portfolio.get_position(stock_code)
-            if pos:
-                sell_qty = pos.quantity if signal.exit_type == "full" else int(pos.quantity * signal.exit_ratio / 100) * 100
-                if sell_qty <= 0:
-                    sell_qty = pos.quantity
-                logger.info(f"以盘中止盈止损价执行卖出: {stock_code} {sell_qty} 股 @ {sell_price:.2f} ({signal.reason})")
-                self.place_order(stock_code, OrderType.SELL, sell_qty, price=sell_price, price_type="intraday")
-                if signal.exit_type == "full":
-                    sold_stocks.add(stock_code)
-                    self.exit_strategy.cleanup_position(stock_code)
+            self._process_exit_signal(signal, current_date, sold_stocks, "盘中")
         
         # 步骤 4：更新持仓价格到今天收盘价
         logger.info("更新持仓价格到今天收盘价...")
@@ -927,19 +1094,7 @@ class StrategyBacktestEngine:
             phase="close",
         )
         for signal in stocks_to_sell_timeout:
-            stock_code = signal.stock_code
-            if stock_code in sold_stocks:
-                continue
-            sell_price = signal.sell_price
-            pos = self.portfolio.get_position(stock_code)
-            if pos:
-                sell_qty = pos.quantity if signal.exit_type == "full" else int(pos.quantity * signal.exit_ratio / 100) * 100
-                if sell_qty <= 0:
-                    sell_qty = pos.quantity
-                logger.info(f"以收盘价执行卖出: {stock_code} {sell_qty} 股 @ {sell_price:.2f} ({signal.reason})")
-                self.place_order(stock_code, OrderType.SELL, sell_qty, price=sell_price, price_type="close")
-                if signal.exit_type == "full":
-                    self.exit_strategy.cleanup_position(stock_code)
+            self._process_exit_signal(signal, current_date, sold_stocks, "收盘")
         
         # 步骤 6：判断是否需要跑策略选股
         need_run_strategy = False

@@ -18,6 +18,9 @@ FastAPI 应用工厂模块
 import os
 import sys
 
+# 解决 Windows 上 torch / numpy-mkl / scikit-learn 等库的 OpenMP 多副本冲突
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+
 # ── 必须在任何 litellm 相关模块导入前设置，否则无效 ──
 os.environ.setdefault("LITELLM_LOG", "ERROR")
 try:
@@ -68,7 +71,7 @@ import logging
 
 class _SuppressPollingFilter(logging.Filter):
     """过滤 uvicorn access 日志中的轮询请求。"""
-    _POLLING_PATHS = ("screen-async/status",)
+    _POLLING_PATHS = ("screen-async/status", "backtest/strategy/task/")
 
     def filter(self, record: logging.LogRecord) -> bool:
         msg = record.getMessage()

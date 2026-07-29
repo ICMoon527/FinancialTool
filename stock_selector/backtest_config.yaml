@@ -160,4 +160,24 @@ exit_strategy:
         big_winner_stop_loss_pct: 0.15
         big_winner_trailing_stop_pct: 0.15
         time_stop_days: 44
+    # 天道系列退出策略（需配合天道超跌选股策略使用）
+    tiandao_jinniu:
+      name: "天道金牛清仓"
+      strategy: "tiandao_jinniu"
+      params:
+        max_holding_days: 30
+        stop_loss_buffer: 0.05   # 止损缓冲（买入价下方5%）
+    tiandao_bbi_rolling:
+      name: "天道BBI滚动"
+      strategy: "tiandao_bbi_rolling"
+      params:
+        max_holding_days: 40
+        max_rebuy_count: 1
+        stop_loss_buffer: 0.05   # 止损缓冲（金钻趋势下方5%）
+    tiandao_jinniu2_protection:
+      name: "天道金牛2保护"
+      strategy: "tiandao_jinniu2_protection"
+      params:
+        max_holding_days: 35
+        stop_loss_buffer: 0.05   # 二次止损缓冲（金牛2下方5%）
   active: "conservative"

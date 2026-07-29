@@ -489,14 +489,14 @@ def get_strategy_backtest_task_status(
                 detail={"error": "task_not_found", "message": "任务不存在"},
             )
         
-        # 调试：打印任务数据
-        logger.info(f"任务状态数据 (task {task_id}):")
-        logger.info(f"  - status: {task.get('status')}")
-        logger.info(f"  - has result: {task.get('result') is not None}")
+        # 调试：打印任务数据（DEBUG 级别，避免终端刷屏）
+        logger.debug(f"任务状态数据 (task {task_id}):")
+        logger.debug(f"  - status: {task.get('status')}")
+        logger.debug(f"  - has result: {task.get('result') is not None}")
         if task.get('result'):
             result = task.get('result')
-            logger.info(f"  - result keys: {list(result.keys())}")
-            logger.info(f"  - has results: {result.get('results') is not None}")
+            logger.debug(f"  - result keys: {list(result.keys())}")
+            logger.debug(f"  - has results: {result.get('results') is not None}")
             logger.info(f"  - has metrics: {result.get('metrics') is not None}")
             if result.get('results'):
                 results = result.get('results')
