@@ -23,6 +23,7 @@ AkshareFetcher - 主数据源 (Priority 1)
 - 筹码分布：获利比例、平均成本、筹码集中度
 """
 
+import concurrent.futures
 import logging
 import os
 import random
@@ -346,18 +347,31 @@ class AkshareFetcher(BaseFetcher):
         """
         import akshare as ak
 
-        # 主路径：轻量代码-名称接口
-        try:
-            self._set_random_user_agent()
-            self._enforce_rate_limit()
-            logger.info("[API调用] ak.stock_info_a_code_name() 获取股票列表...")
-            df = ak.stock_info_a_code_name()
-            if df is not None and not df.empty:
-                logger.info(f"Akshare 获取股票列表成功: {len(df)} 条")
-                result = df[['code', 'name']].copy()
-                return result
-        except Exception as e:
-            logger.warning(f"Akshare stock_info_a_code_name 获取失败: {e}")
+        # 主路径：轻量代码-名称接口（带超时保护，最多重试 3 次）
+        for attempt in range(3):
+            try:
+                self._set_random_user_agent()
+                self._enforce_rate_limit()
+                logger.info("[API调用] ak.stock_info_a_code_name() 获取股票列表... (尝试 %d/3)", attempt + 1)
+                # 在独立线程中执行，设置 30 秒超时，避免网络阻塞导致永久卡死
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(ak.stock_info_a_code_name)
+                    df = future.result(timeout=30)
+                if df is not None and not df.empty:
+                    logger.info(f"Akshare 获取股票列表成功: {len(df)} 条")
+                    result = df[['code', 'name']].copy()
+                    return result
+            except concurrent.futures.TimeoutError:
+                logger.warning(
+                    "Akshare stock_info_a_code_name 超时 (尝试 %d/3)，等待 %d 秒后重试",
+                    attempt + 1, (attempt + 1) * 5,
+                )
+                if attempt < 2:
+                    time.sleep((attempt + 1) * 5)  # 渐进式等待：5s, 10s
+            except Exception as e:
+                logger.warning(f"Akshare stock_info_a_code_name 获取失败 (尝试 {attempt + 1}/3): {e}")
+                if attempt < 2:
+                    time.sleep((attempt + 1) * 3)  # 渐进式等待：3s, 6s
 
         # 降级：从实时行情快照缓存中提取
         current_time = time.time()
