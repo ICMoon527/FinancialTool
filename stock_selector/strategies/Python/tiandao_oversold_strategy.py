@@ -2,8 +2,8 @@
 """
 天道超跌反弹策略 - Python 实现。
 
-基于天道指标识别上升趋势中部分超跌的反弹机会，
-综合金钻趋势线、金牛2趋势线、成交量、BBI、DDX资金流等条件。
+基于天道指标内置的 td_xg（▲买入）信号选股，
+叠加缩量企稳、BBI多空、DDX资金流等辅助条件进行评分排序。
 """
 
 import logging
@@ -32,10 +32,9 @@ class TiandaoOversoldStrategy(StockSelectorStrategy):
     """
     天道超跌反弹策略。
 
-    基于天道指标识别上升趋势中部分超跌的反弹机会：
-    1. 价格跌破金钻趋势线（部分超跌）
-    2. 金钻趋势线高于金牛2趋势线（确认上升趋势）
-    3. 叠加缩量企稳、BBI多空、DDX资金流、反弹力度、金钻起涨等辅助条件。
+    使用天道指标内置的 td_xg（▲买入）信号作为核心选股条件：
+    - td_xg = 金钻趋势 > HIGH（全天价格在支撑位下方） AND 回调买（VAR23动量反转）
+    - 叠加缩量企稳、BBI多空、DDX资金流、反弹力度、金钻起涨等辅助条件评分。
     """
 
     def __init__(self):
@@ -80,8 +79,7 @@ class TiandaoOversoldStrategy(StockSelectorStrategy):
         max_score = 100.0
 
         # 核心条件标志，初始化为 False
-        core_1_oversold = False
-        core_2_uptrend = False
+        core_xg_signal = False
 
         try:
             if self._data_provider:
@@ -142,6 +140,7 @@ class TiandaoOversoldStrategy(StockSelectorStrategy):
                             td_jinniu2 = float(latest.get("td_jinniu2", 999999))
                             td_bbi = float(latest.get("td_bbi", 0))
                             td_ddx = float(latest.get("td_ddx", 0))
+                            td_xg = int(latest.get("td_xg", 0))
                             td_xg2 = int(latest.get("td_xg2", 0))
 
                             # 计算5日均量
@@ -224,6 +223,7 @@ class TiandaoOversoldStrategy(StockSelectorStrategy):
                                             td_jinniu2 = float(latest.get("td_jinniu2", 999999))
                                             td_bbi = float(latest.get("td_bbi", 0))
                                             td_ddx = float(latest.get("td_ddx", 0))
+                                            td_xg = int(latest.get("td_xg", 0))
                                             td_xg2 = int(latest.get("td_xg2", 0))
 
                                             vol_col = daily_data["Volume"]
@@ -251,23 +251,18 @@ class TiandaoOversoldStrategy(StockSelectorStrategy):
                                     conditions_failed.append("前复权数据刷新失败，排除")
 
                             if not is_gap_event:
-                                core_1_oversold = low_val < td_jinzuan
-                                core_2_uptrend = td_jinzuan > td_jinniu2
+                                core_xg_signal = td_xg == 1
 
-                            match_details["conditions"]["core_oversold"] = {
-                                "passed": core_1_oversold,
+                            match_details["conditions"]["core_xg"] = {
+                                "passed": core_xg_signal,
+                                "td_xg": td_xg,
+                                "td_jinzuan": round(td_jinzuan, 3),
                                 "low": round(low_val, 3),
-                                "td_jinzuan": round(td_jinzuan, 3),
-                            }
-                            match_details["conditions"]["core_uptrend"] = {
-                                "passed": core_2_uptrend,
-                                "td_jinzuan": round(td_jinzuan, 3),
-                                "td_jinniu2": round(td_jinniu2, 3),
                             }
 
-                            if core_1_oversold and core_2_uptrend:
-                                # 核心条件满足，基础得分 60
-                                conditions_met.append("核心条件满足(基础60分)")
+                            if core_xg_signal:
+                                # 核心条件满足（td_xg 信号），基础得分 60
+                                conditions_met.append("td_xg买入信号(基础60分)")
                                 total_score += 60
 
                                 # ========== 辅助加分条件 ==========
@@ -335,13 +330,9 @@ class TiandaoOversoldStrategy(StockSelectorStrategy):
                                 # 核心条件不满足，记录失败原因
                                 # 若是除权跳空导致，不重复追加核心条件失败消息（已通过 gap_detection 说明）
                                 if not is_gap_event:
-                                    if not core_1_oversold:
+                                    if not core_xg_signal:
                                         conditions_failed.append(
-                                            f"未超跌(Low={low_val:.3f} >= 金钻趋势={td_jinzuan:.3f})"
-                                        )
-                                    if not core_2_uptrend:
-                                        conditions_failed.append(
-                                            f"非上升趋势(金钻趋势={td_jinzuan:.3f} <= 金牛2={td_jinniu2:.3f})"
+                                            f"td_xg信号未触发(xg={td_xg}, 金钻={td_jinzuan:.3f}, Low={low_val:.3f})"
                                         )
                     except Exception as e:
                         logger.warning(f"天道指标计算失败: {e}")
@@ -351,8 +342,8 @@ class TiandaoOversoldStrategy(StockSelectorStrategy):
             conditions_failed.append(f"策略执行错误: {str(e)[:50]}")
 
         raw_score = min(total_score, max_score)
-        # 直接使用核心条件布尔值判断匹配，避免 score 阈值间接判断的脆弱性
-        matched = core_1_oversold and core_2_uptrend
+        # 直接使用 td_xg 核心信号判断匹配
+        matched = core_xg_signal
 
         if conditions_met:
             reason_parts = []
