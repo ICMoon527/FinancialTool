@@ -1160,6 +1160,10 @@ class TiandaoJinniu2ProtectionExitStrategy(ExitStrategy):
         if indicators is None:
             return None
 
+        # 获取开盘价，用于计算实际可成交的卖出价
+        # 当股票跳空低开直接跌破触发价时，不能以触发价卖出（当天该价格不存在）
+        open_price = price_provider(stock_code, "open")
+
         # 优先级1：金牛线止盈（全清）
         if indicators.td_jinniu > 0 and high_price >= indicators.td_jinniu:
             logger.info(
@@ -1180,31 +1184,44 @@ class TiandaoJinniu2ProtectionExitStrategy(ExitStrategy):
             # 未减仓：检查是否跌破金牛2（趋势转弱）
             if low_price <= indicators.td_jinniu2:
                 state.partial_sold = True
+                # 卖出价不能高于开盘价（如果跳空低开跌破金牛2，金牛2当天不存在）
+                actual_sell_price = (
+                    min(open_price, indicators.td_jinniu2)
+                    if open_price is not None
+                    else indicators.td_jinniu2
+                )
                 logger.info(
-                    "天道金牛2保护 [%s]: 最低价 %.2f <= 金牛2 %.2f，趋势转弱减仓50%%",
-                    stock_code, low_price, indicators.td_jinniu2,
+                    "天道金牛2保护 [%s]: 最低价 %.2f <= 金牛2 %.2f，趋势转弱减仓50%%（卖出价=%.2f）",
+                    stock_code, low_price, indicators.td_jinniu2, actual_sell_price,
                 )
                 return ExitSignal(
                     stock_code=stock_code,
                     reason="趋势转弱减仓",
                     exit_type="partial",
                     exit_ratio=0.5,
-                    sell_price=indicators.td_jinniu2,
+                    sell_price=actual_sell_price,
                     price_type="intraday",
                 )
         else:
             # 已减仓：检查是否跌破金牛2 × 0.95（趋势走坏）
             stop_loss_price = indicators.td_jinniu2 * (1 - self.stop_loss_buffer)
             if low_price <= stop_loss_price:
+                # 卖出价不能高于开盘价（如果跳空低开跌破止损价，止损价当天不存在）
+                actual_sell_price = (
+                    min(open_price, stop_loss_price)
+                    if open_price is not None
+                    else stop_loss_price
+                )
                 logger.info(
-                    "天道金牛2保护 [%s]: 最低价 %.2f <= 止损价 %.2f (金牛2 %.2f × %.0f%%)，趋势走坏清仓",
+                    "天道金牛2保护 [%s]: 最低价 %.2f <= 止损价 %.2f (金牛2 %.2f × %.0f%%)，趋势走坏清仓（卖出价=%.2f）",
                     stock_code, low_price, stop_loss_price,
                     indicators.td_jinniu2, (1 - self.stop_loss_buffer) * 100,
+                    actual_sell_price,
                 )
                 return ExitSignal(
                     stock_code=stock_code,
                     reason="趋势走坏清仓",
-                    sell_price=stop_loss_price,
+                    sell_price=actual_sell_price,
                     price_type="intraday",
                 )
 

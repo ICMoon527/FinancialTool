@@ -99,7 +99,7 @@ slippage_rate: 0.001
 risk_free_rate: 0.025
 
 # 回测开始日期（YYYY-MM-DD格式）
-start_date: "2021-07-31"
+start_date: "2025-07-31"
 
 # 回测结束日期（YYYY-MM-DD格式）
 end_date: "2026-07-31"
