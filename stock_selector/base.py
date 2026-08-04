@@ -47,6 +47,7 @@ class StrategyMatch:
     raw_score: float = 0.0
     reason: Optional[str] = None
     match_details: Dict[str, Any] = field(default_factory=dict)
+    control_degree: Optional[float] = None
 
 
 @dataclass
@@ -165,7 +166,8 @@ class StockSelectorStrategy(ABC):
         raw_score: float, 
         matched: bool, 
         reason: Optional[str] = None,
-        match_details: Optional[Dict[str, Any]] = None
+        match_details: Optional[Dict[str, Any]] = None,
+        control_degree: Optional[float] = None,
     ) -> StrategyMatch:
         """
         Create a StrategyMatch with normalized score.
@@ -175,6 +177,7 @@ class StockSelectorStrategy(ABC):
             matched: Whether the strategy matched
             reason: Optional reason for the match
             match_details: Optional match details
+            control_degree: Optional control degree (主力控盘度)
             
         Returns:
             StrategyMatch with normalized score
@@ -189,6 +192,7 @@ class StockSelectorStrategy(ABC):
             raw_score=raw_score,
             reason=reason,
             match_details=match_details or {},
+            control_degree=control_degree,
         )
 
     @property

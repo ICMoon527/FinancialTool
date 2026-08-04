@@ -345,6 +345,22 @@ class TiandaoOversoldStrategy(StockSelectorStrategy):
         # 直接使用 td_xg 核心信号判断匹配
         matched = core_xg_signal
 
+        # 计算主力控盘度
+        control_degree = None
+        if daily_data is not None and isinstance(daily_data, pd.DataFrame) and not daily_data.empty:
+            try:
+                close_col = "Close" if "Close" in daily_data.columns else "close"
+                if close_col in daily_data.columns:
+                    ma12 = daily_data[close_col].rolling(window=12).mean()
+                    ma36 = daily_data[close_col].rolling(window=36).mean()
+                    ma36_prev = ma36.shift(1)
+                    cd = (ma12 - ma36_prev) / ma36_prev * 100 + 50
+                    latest_cd = cd.iloc[-1]
+                    if pd.notna(latest_cd):
+                        control_degree = float(latest_cd)
+            except Exception:
+                pass
+
         if conditions_met:
             reason_parts = []
             for cond in conditions_met:
@@ -358,12 +374,15 @@ class TiandaoOversoldStrategy(StockSelectorStrategy):
 
         match_details["conditions_met"] = conditions_met
         match_details["conditions_failed"] = conditions_failed
+        if control_degree is not None:
+            match_details["control_degree"] = control_degree
 
         return self.create_strategy_match(
             raw_score=raw_score,
             matched=matched,
             reason=reason,
             match_details=match_details,
+            control_degree=control_degree,
         )
 
     @staticmethod

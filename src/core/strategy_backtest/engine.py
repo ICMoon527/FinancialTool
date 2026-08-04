@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 import logging
-import random
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from enum import Enum
@@ -243,9 +242,6 @@ class StrategyBacktestEngine:
         self._tiandao_indicator = Tiandao()
         # 天道指标缓存：{stock_code: TiandaoIndicatorSnapshot}
         self._tiandao_cache: Dict[str, TiandaoIndicatorSnapshot] = {}
-
-        # 初始化随机种子
-        random.seed()
 
     def set_strategy(self, strategy: Any) -> None:
         """
@@ -702,8 +698,7 @@ class StrategyBacktestEngine:
             logger.info("未设置最高持仓数限制，可以买入所有目标股票")
             available_slots = len(target_stocks)
 
-        # 动态选择：缺几只股票，就选几只股票挂单
-        # 每次从剩下的股票中选出分数前三的，随机选择一个
+        # 按排序顺序直接选择前N只股票（已按控盘度优先排序）
         eligible_stocks = [
             stock_code for stock_code in target_stocks 
             if stock_code not in current_holdings and stock_code not in pending_stocks
@@ -712,32 +707,10 @@ class StrategyBacktestEngine:
         if not eligible_stocks:
             stocks_to_buy = []
         else:
-            stocks_to_buy = []
-            remaining_candidates = eligible_stocks.copy()
+            # 直接取前 available_slots 只
+            stocks_to_buy = eligible_stocks[:available_slots]
             
-            # 需要选择的股票数量
-            num_to_select = min(available_slots, len(remaining_candidates))
-            
-            for i in range(num_to_select):
-                if not remaining_candidates:
-                    break
-                
-                # 从剩下的候选中选出前三
-                current_top = remaining_candidates[:3]
-                
-                # 从前三中随机选择一个
-                selected_idx = random.randint(0, len(current_top) - 1)
-                selected_stock = current_top[selected_idx]
-                
-                stocks_to_buy.append(selected_stock)
-                
-                # 从剩余候选中移除已选的股票
-                remaining_candidates.remove(selected_stock)
-                
-                # 记录日志
-                logger.info(f"第 {i+1} 次选择:")
-                logger.info(f"  当前候选股票（前3名）: {current_top}")
-                logger.info(f"  随机选择第 {selected_idx + 1} 只股票: {selected_stock}")
+            logger.info(f"按控盘度优先排序，选择前 {len(stocks_to_buy)} 只股票: {stocks_to_buy}")
 
         if not stocks_to_buy:
             logger.info("没有符合条件的新股可买入")
@@ -1142,20 +1115,28 @@ class StrategyBacktestEngine:
                             all_matched = False
                             break
                         total_score += match.score
+                        # 取策略的控盘度（用于排序）
+                        control_degree = match.control_degree
                     
                     # 只有当所有策略都匹配时才选中（与选股页面保持一致）
                     if all_matched:
                         avg_score = total_score / len(strategies_to_use)
-                        selected_with_scores.append((stock_code, avg_score))
+                        selected_with_scores.append((stock_code, avg_score, control_degree))
                 except Exception as e:
                     logger.warning(f"策略执行失败 {stock_code}: {e}")
             
-            # 按分数从高到低排序
-            selected_with_scores_sorted = sorted(selected_with_scores, key=lambda x: x[1], reverse=True)
-            selected_stocks = [stock_code for stock_code, score in selected_with_scores_sorted]
+            # 按控盘度从高到低排序，控盘度相同时按策略得分从高到低排序
+            selected_with_scores_sorted = sorted(
+                selected_with_scores,
+                key=lambda x: (
+                    -(x[2] if x[2] is not None else 0),  # 控盘度
+                    -x[1],  # 策略得分
+                )
+            )
+            selected_stocks = [stock_code for stock_code, score, cd in selected_with_scores_sorted]
             
             if selected_with_scores_sorted:
-                logger.info(f"选中股票的分数（前10只）: {[(stock, round(score, 2)) for stock, score in selected_with_scores_sorted[:10]]}")
+                logger.info(f"选中股票的分数（前10只）: {[(stock, round(score, 2), round(cd, 2) if cd else 0) for stock, score, cd in selected_with_scores_sorted[:10]]}")
 
             logger.info(f"策略选股完成: 选中 {len(selected_stocks)} 只股票")
             if selected_stocks:
