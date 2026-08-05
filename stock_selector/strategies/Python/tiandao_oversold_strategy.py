@@ -251,17 +251,18 @@ class TiandaoOversoldStrategy(StockSelectorStrategy):
                                     conditions_failed.append("前复权数据刷新失败，排除")
 
                             if not is_gap_event:
-                                core_xg_signal = td_xg == 1
+                                core_xg_signal = (td_xg == 1) and (td_jinzuan > td_jinniu2)
 
                             match_details["conditions"]["core_xg"] = {
                                 "passed": core_xg_signal,
                                 "td_xg": td_xg,
                                 "td_jinzuan": round(td_jinzuan, 3),
+                                "td_jinniu2": round(td_jinniu2, 3),
                                 "low": round(low_val, 3),
                             }
 
                             if core_xg_signal:
-                                # 核心条件满足（td_xg 信号），基础得分 60
+                                # 核心条件满足（td_xg 信号 + 金钻趋势 > 金牛2），基础得分 60
                                 conditions_met.append("td_xg买入信号(基础60分)")
                                 total_score += 60
 

@@ -546,25 +546,37 @@ class StrategyBacktestEngine:
             return
 
         buy_price = signal.sell_price  # rebuy信号中 sell_price 表示买入价格
-        # 计算可买入的股数：使用可用现金的相应比例
-        # exit_ratio 表示买回比例，如 0.5 表示买回之前减仓的 50% 仓位
-        target_qty = int(pos.quantity * signal.exit_ratio / 100) * 100
-        if target_qty < 100:
-            return
 
-        # 检查可用资金是否足够
-        estimated_cost = target_qty * buy_price * (1 + self.commission_rate + self.slippage_rate)
-        if self.portfolio.cash < estimated_cost:
-            logger.debug(
-                "天道策略 [%s]: 加仓资金不足，需要 %.2f，可用 %.2f",
-                stock_code, estimated_cost, self.portfolio.cash,
+        if signal.exit_ratio >= 1.0:
+            # 使用全部可用现金加仓买回（天道金牛2保护策略）
+            target_qty = int(
+                self.portfolio.cash / (buy_price * (1 + self.commission_rate + self.slippage_rate)) / 100
+            ) * 100
+            if target_qty < 100:
+                logger.debug("天道策略 [%s]: 可用现金不足，无法加仓", stock_code)
+                return
+            logger.info(
+                "天道策略加仓买回(全部现金): %s %d股 @ %.2f，可用现金 %.2f (%s)",
+                stock_code, target_qty, buy_price, self.portfolio.cash, signal.reason,
             )
-            return
+        else:
+            # 按比例加仓买回（普通策略）
+            target_qty = int(pos.quantity * signal.exit_ratio / 100) * 100
+            if target_qty < 100:
+                return
+            # 检查可用资金是否足够
+            estimated_cost = target_qty * buy_price * (1 + self.commission_rate + self.slippage_rate)
+            if self.portfolio.cash < estimated_cost:
+                logger.debug(
+                    "天道策略 [%s]: 加仓资金不足，需要 %.2f，可用 %.2f",
+                    stock_code, estimated_cost, self.portfolio.cash,
+                )
+                return
+            logger.info(
+                "天道策略加仓买回: %s %d股 @ %.2f (%s)",
+                stock_code, target_qty, buy_price, signal.reason,
+            )
 
-        logger.info(
-            "天道策略加仓买回: %s %d股 @ %.2f (%s)",
-            stock_code, target_qty, buy_price, signal.reason,
-        )
         self.place_order(stock_code, OrderType.BUY, target_qty, price=buy_price, price_type=signal.price_type)
 
     def _calculate_commission(self, amount: float) -> float:

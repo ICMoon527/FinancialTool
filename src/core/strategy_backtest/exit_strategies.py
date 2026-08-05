@@ -1251,7 +1251,7 @@ class TiandaoJinniu2ProtectionExitStrategy(ExitStrategy):
                         stock_code=stock_code,
                         reason="趋势恢复加仓",
                         exit_type="rebuy",
-                        exit_ratio=0.5,
+                        exit_ratio=1.0,
                         sell_price=close_price,
                         price_type="close",
                     )
