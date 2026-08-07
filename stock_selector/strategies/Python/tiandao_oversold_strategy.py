@@ -8,6 +8,7 @@
 
 import logging
 import sys
+import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -59,6 +60,7 @@ class TiandaoOversoldStrategy(StockSelectorStrategy):
         stock_name: Optional[str] = None,
         daily_data: Optional[pd.DataFrame] = None,
         precomputed_metrics: Optional[Dict[str, Any]] = None,
+        require_jinzuan_above_jinniu2: bool = False,
     ) -> StrategyMatch:
         """
         对单只股票执行天道超跌反弹策略。
@@ -68,6 +70,7 @@ class TiandaoOversoldStrategy(StockSelectorStrategy):
             stock_name: 可选的股票名称
             daily_data: 可选的预加载日线数据
             precomputed_metrics: 可选的预计算指标
+            require_jinzuan_above_jinniu2: 是否要求金钻趋势线在金牛2线上方（回测中启用，选股页面不启用）
 
         Returns:
             StrategyMatch 结果对象
@@ -251,7 +254,11 @@ class TiandaoOversoldStrategy(StockSelectorStrategy):
                                     conditions_failed.append("前复权数据刷新失败，排除")
 
                             if not is_gap_event:
-                                core_xg_signal = (td_xg == 1) and (td_jinzuan > td_jinniu2)
+                                if require_jinzuan_above_jinniu2:
+                                    core_xg_signal = (td_xg == 1) and (td_jinzuan > td_jinniu2)
+                                else:
+                                    # 选股标签页：当日K线有部分在金钻趋势线下（实体或下影线等）
+                                    core_xg_signal = low_val < td_jinzuan
 
                             match_details["conditions"]["core_xg"] = {
                                 "passed": core_xg_signal,
@@ -262,8 +269,11 @@ class TiandaoOversoldStrategy(StockSelectorStrategy):
                             }
 
                             if core_xg_signal:
-                                # 核心条件满足（td_xg 信号 + 金钻趋势 > 金牛2），基础得分 60
-                                conditions_met.append("td_xg买入信号(基础60分)")
+                                if require_jinzuan_above_jinniu2:
+                                    core_msg = "td_xg买入信号+金钻>金牛2(基础60分)"
+                                else:
+                                    core_msg = "K线触及金钻趋势线(基础60分)"
+                                conditions_met.append(core_msg)
                                 total_score += 60
 
                                 # ========== 辅助加分条件 ==========
@@ -387,8 +397,21 @@ class TiandaoOversoldStrategy(StockSelectorStrategy):
         )
 
     @staticmethod
+    def _get_market_prefix(stock_code: str) -> str:
+        """根据股票代码判断市场前缀（腾讯接口需要）。"""
+        if stock_code.startswith("6"):
+            return "sh"
+        elif stock_code.startswith(("0", "3")):
+            return "sz"
+        elif stock_code.startswith(("4", "8")):
+            return "bj"
+        return "sh"  # fallback
+
+    @staticmethod
     def _refresh_adjusted_data(stock_code: str) -> bool:
-        """检测到除权跳空后，从 AKShare 获取前复权数据并更新数据库。
+        """检测到除权跳空后，从 AKShare 腾讯接口获取前复权数据并更新数据库。
+
+        腾讯接口比东方财富更稳定，支持 qfq（前复权）参数。
 
         返回 True 表示刷新成功，False 表示刷新失败（网络问题等）。
         """
@@ -404,46 +427,50 @@ class TiandaoOversoldStrategy(StockSelectorStrategy):
 
             end_date = date.today().strftime("%Y%m%d")
             start_date = (date.today() - timedelta(days=400)).strftime("%Y%m%d")
+            tx_symbol = f"{TiandaoOversoldStrategy._get_market_prefix(stock_code)}{stock_code}"
 
-            logger.info(f"[数据修复] 正在从 AKShare 获取 {stock_code} 前复权数据...")
-            df = ak.stock_zh_a_hist(
-                symbol=stock_code,
-                period="daily",
-                start_date=start_date,
-                end_date=end_date,
-                adjust="qfq",
-            )
+            # 带指数退避的重试机制
+            max_retries = 3
+            df = None
+            for attempt in range(1, max_retries + 1):
+                try:
+                    logger.info(f"[数据修复] 正在从腾讯接口获取 {stock_code} 前复权数据(第{attempt}次尝试)...")
+                    df = ak.stock_zh_a_hist_tx(
+                        symbol=tx_symbol,
+                        start_date=start_date,
+                        end_date=end_date,
+                        adjust="qfq",
+                    )
+                    if df is not None and not df.empty:
+                        break
+                except Exception as e:
+                    if attempt < max_retries:
+                        wait = attempt * 2  # 2s, 4s
+                        logger.warning(f"[数据修复] {stock_code} 第{attempt}次请求失败: {e}，{wait}s后重试")
+                        time.sleep(wait)
+                    else:
+                        raise
 
             if df is None or df.empty:
-                logger.warning(f"[数据修复] AKShare 返回空数据 {stock_code}")
+                logger.warning(f"[数据修复] 腾讯接口返回空数据 {stock_code}")
                 return False
 
-            # 标准化列名（中文 → 英文）
-            column_mapping = {
-                "日期": "date",
-                "开盘": "open",
-                "收盘": "close",
-                "最高": "high",
-                "最低": "low",
-                "成交量": "volume",
-                "成交额": "amount",
-                "涨跌幅": "pct_chg",
-                "换手率": "turnover_rate",
-            }
-            df = df.rename(columns=column_mapping)
+            # 腾讯接口返回英文列名，只需重命名换手率列
+            # 列名: date, open, close, high, low, volume, turnover, amount
+            df = df.rename(columns={"turnover": "turnover_rate"})
 
-            # 处理换手率：若为百分比格式则转为小数
-            if "turnover_rate" in df.columns:
-                max_val = df["turnover_rate"].max()
-                if max_val > 1:
-                    df["turnover_rate"] = df["turnover_rate"] / 100.0
+            # 单位转换：成交量统一为股（科创板原生为股，其余为手）
+            if not tx_symbol.startswith("sh68"):
+                df["volume"] = df["volume"] * 100  # 手 → 股
+            # 成交额：万元 → 元
+            df["amount"] = df["amount"] * 10000
 
             # 写入数据库（覆盖已有记录）
             from src.storage import get_db
 
             db = get_db()
             count = db.save_daily_data_bulk(df, stock_code, data_source="akshare_qfq")
-            logger.info(f"[数据修复] {stock_code} 前复权数据已更新，共 {count} 条")
+            logger.info(f"[数据修复] {stock_code} 前复权数据已更新(腾讯)，共 {count} 条")
             return True
 
         except Exception as e:

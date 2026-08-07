@@ -1122,7 +1122,8 @@ class StrategyBacktestEngine:
                     all_matched = True
                     
                     for strategy in strategies_to_use:
-                        match = strategy.select(stock_code)
+                        # 回测中启用金钻趋势 > 金牛2 条件，过滤趋势已被破坏的标的
+                        match = strategy.select(stock_code, require_jinzuan_above_jinniu2=True)
                         if not match or not match.matched:
                             all_matched = False
                             break
