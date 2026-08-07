@@ -38,6 +38,9 @@ class TiandaoOversoldStrategy(StockSelectorStrategy):
     - 叠加缩量企稳、BBI多空、DDX资金流、反弹力度、金钻起涨等辅助条件评分。
     """
 
+    # 子类可通过覆盖此标志切换核心条件：True=td_xg==1, False=K线触及金钻趋势线
+    _use_xg_core_condition: bool = False
+
     def __init__(self):
         metadata = StrategyMetadata(
             id="tiandao_oversold",
@@ -257,8 +260,11 @@ class TiandaoOversoldStrategy(StockSelectorStrategy):
                                 if require_jinzuan_above_jinniu2:
                                     core_xg_signal = (td_xg == 1) and (td_jinzuan > td_jinniu2)
                                 else:
-                                    # 选股标签页：当日K线有部分在金钻趋势线下（实体或下影线等）
-                                    core_xg_signal = low_val < td_jinzuan
+                                    if self._use_xg_core_condition:
+                                        core_xg_signal = td_xg == 1
+                                    else:
+                                        # 选股标签页(默认)：当日K线有部分在金钻趋势线下（实体或下影线等）
+                                        core_xg_signal = low_val < td_jinzuan
 
                             match_details["conditions"]["core_xg"] = {
                                 "passed": core_xg_signal,
@@ -271,6 +277,8 @@ class TiandaoOversoldStrategy(StockSelectorStrategy):
                             if core_xg_signal:
                                 if require_jinzuan_above_jinniu2:
                                     core_msg = "td_xg买入信号+金钻>金牛2(基础60分)"
+                                elif self._use_xg_core_condition:
+                                    core_msg = "td_xg买入信号(基础60分)"
                                 else:
                                     core_msg = "K线触及金钻趋势线(基础60分)"
                                 conditions_met.append(core_msg)
@@ -476,3 +484,32 @@ class TiandaoOversoldStrategy(StockSelectorStrategy):
         except Exception as e:
             logger.warning(f"[数据修复] 刷新 {stock_code} 前复权数据失败: {e}")
             return False
+
+
+@register_strategy
+class TiandaoXgBuyStrategy(TiandaoOversoldStrategy):
+    """
+    天道超跌反弹买入策略。
+
+    与天道超跌反弹策略的区别：仅使用 td_xg（▲买入）信号作为核心选股条件，
+    不依赖 K 线是否触及金钻趋势线。
+    """
+
+    _use_xg_core_condition: bool = True
+
+    def __init__(self):
+        # 先走父类 __init__ 注册 indicator
+        super().__init__()
+        # 覆盖为子类独有的元数据
+        self.metadata = StrategyMetadata(
+            id="tiandao_xg_buy",
+            name="tiandao_xg_buy",
+            display_name="天道超跌反弹买入策略",
+            description="仅筛选具有 td_xg（▲买入）信号的标的，不依赖K线是否触及金钻趋势线",
+            strategy_type=StrategyType.PYTHON,
+            category="trend",
+            source="builtin",
+            version="1.0.0",
+            score_multiplier=1.0,
+            max_raw_score=100.0,
+        )
