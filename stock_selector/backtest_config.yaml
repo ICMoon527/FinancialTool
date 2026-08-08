@@ -152,16 +152,9 @@ exit_strategy:
       name: "动态分级止盈"
       strategy: "tiered"
       params:
-        default_stop_loss_pct: 0.12
-        default_breakeven_trigger_pct: 0.10
-        default_partial_take_profit_pct: 0.20
-        default_partial_ratio: 0.50
-        default_trailing_stop_pct: 0.10
-        big_winner_trigger_days: 10
-        big_winner_trigger_pct: 0.15
-        big_winner_stop_loss_pct: 0.15
-        big_winner_trailing_stop_pct: 0.15
-        time_stop_days: 44
+        stop_loss_pct: 0.07
+        time_stop_days: 20
+        time_stop_min_return: 0.05
     # 天道系列退出策略（需配合天道超跌选股策略使用）
     tiandao_jinniu:
       name: "天道金牛清仓"

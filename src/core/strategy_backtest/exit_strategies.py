@@ -322,69 +322,57 @@ class _TieredPositionState:
     """分级止盈策略的持仓状态"""
     entry_date: date
     entry_price: float
-    tier: str = "default"           # "default" | "big_winner"
-    breakeven_activated: bool = False
-    partial_sold: bool = False
-    peak_price: float = 0.0         # 持仓期间最高收盘价
+    peak_price: float = 0.0                    # 持仓期间最高价（收盘价）
+    pending_stop_loss_sell: bool = False       # 收盘价跌破止损，标记次日开盘卖出
+    pending_trailing_sell: bool = False        # 触发移动止盈，标记次日开盘卖出
+    last_trailing_stop: float = 0.0            # 上一次计算的移动止盈价，保证只上移不下移
 
 
 @register_exit_strategy("tiered")
 class TieredExitStrategy(ExitStrategy):
     """动态分级止盈策略。
 
-    默认模式：
-      - 止损 -12%
-      - 涨幅达到 +10% → 保本止损
-      - 涨幅达到 +20% → 卖出 50% 仓位，剩余 50% 启动 10% 移动止盈
-      - 最长持股 44 个交易日
+    止损：
+      - 买入价 × (1 - stop_loss_pct)，默认 12%
+      - 收盘价跌破止损价 → 次日开盘无条件市价单离场
 
-    强势模式（买入后 10 个交易日内收盘价涨幅 ≥15% 触发）：
-      - 止损 -15%（给更多波动空间）
-      - 涨幅达到 +10% → 保本止损（不变）
-      - 不触发 +20% 部分止盈（全部仓位保留）
-      - 15% 移动止盈（给强势股更多回撤空间）
+    阶梯式移动止盈（基于持仓期间最高收盘价）：
+      - 盈利 < 30% 时，回撤容忍 10%
+      - 盈利 >= 30% 时，回撤容忍 8%
+      - 盈利 >= 50% 时，回撤容忍 5%
+
+    动态时间止损：
+      - 持股 20 天后，收益率 < 5% 则平仓
     """
 
     display_name = "动态分级止盈"
-    description = "根据持仓表现自动切换模式：默认严格止损 + 强势股放宽追踪止盈"
+    description = "固定止损 + 阶梯式移动止盈 + 动态时间止损"
 
     def __init__(
         self,
-        # 默认模式参数
-        default_stop_loss_pct: float = 0.12,
-        default_breakeven_trigger_pct: float = 0.10,
-        default_partial_take_profit_pct: float = 0.20,
-        default_partial_ratio: float = 0.50,
-        default_trailing_stop_pct: float = 0.10,
-        # 强势模式参数
-        big_winner_trigger_days: int = 10,
-        big_winner_trigger_pct: float = 0.15,
-        big_winner_stop_loss_pct: float = 0.15,
-        big_winner_trailing_stop_pct: float = 0.15,
-        # 通用参数
-        time_stop_days: int = 44,
+        stop_loss_pct: float = 0.12,
+        time_stop_days: int = 20,
+        time_stop_min_return: float = 0.05,
     ):
-        self.default_stop_loss_pct = default_stop_loss_pct
-        self.default_breakeven_trigger_pct = default_breakeven_trigger_pct
-        self.default_partial_take_profit_pct = default_partial_take_profit_pct
-        self.default_partial_ratio = default_partial_ratio
-        self.default_trailing_stop_pct = default_trailing_stop_pct
-        self.big_winner_trigger_days = big_winner_trigger_days
-        self.big_winner_trigger_pct = big_winner_trigger_pct
-        self.big_winner_stop_loss_pct = big_winner_stop_loss_pct
-        self.big_winner_trailing_stop_pct = big_winner_trailing_stop_pct
+        self.stop_loss_pct = stop_loss_pct
         self.time_stop_days = time_stop_days
+        self.time_stop_min_return = time_stop_min_return
         self._states: Dict[str, _TieredPositionState] = {}
+        self._date_to_index: Optional[Dict[date, int]] = None  # 交易日→索引缓存
+
+    def _get_trailing_stop_pct(self, gain_pct: float) -> float:
+        """根据当前盈利水平获取回撤容忍比例。"""
+        if gain_pct >= 0.50:
+            return 0.05
+        elif gain_pct >= 0.30:
+            return 0.08
+        else:
+            return 0.10
 
     def validate_config(self) -> bool:
-        for pct_name, val in [
-            ("default_stop_loss_pct", self.default_stop_loss_pct),
-            ("default_partial_take_profit_pct", self.default_partial_take_profit_pct),
-            ("big_winner_stop_loss_pct", self.big_winner_stop_loss_pct),
-        ]:
-            if val <= 0 or val >= 1:
-                logger.error("%s 必须在 0-1 之间，当前值: %s", pct_name, val)
-                return False
+        if self.stop_loss_pct <= 0 or self.stop_loss_pct >= 1:
+            logger.error("stop_loss_pct 必须在 0-1 之间，当前值: %s", self.stop_loss_pct)
+            return False
         if self.time_stop_days < 1:
             logger.error("time_stop_days 必须 >= 1")
             return False
@@ -408,12 +396,17 @@ class TieredExitStrategy(ExitStrategy):
     ) -> List[ExitSignal]:
         signals: List[ExitSignal] = []
 
+        # 缓存交易日→索引映射，避免每日 3 次重复构建
+        if self._date_to_index is None:
+            self._date_to_index = {d: i for i, d in enumerate(trading_dates)}
+        date_to_index = self._date_to_index
+
         for stock_code in list(positions.keys()):
             if stock_code not in self._states:
                 continue
             state = self._states[stock_code]
 
-            # T+1 规则
+            # T+1 规则：买入当天不能卖出
             if state.entry_date == current_date:
                 continue
 
@@ -422,12 +415,10 @@ class TieredExitStrategy(ExitStrategy):
                 if s:
                     signals.append(s)
             elif phase == "intraday":
-                s = self._check_intraday_tiered(stock_code, state, price_provider)
-                if s:
-                    signals.append(s)
+                self._update_peak_intraday(stock_code, state, price_provider)
             elif phase == "close":
                 s = self._check_close_tiered(
-                    stock_code, state, price_provider, trading_dates, current_date_index, current_date
+                    stock_code, state, price_provider, date_to_index, current_date_index
                 )
                 if s:
                     signals.append(s)
@@ -440,186 +431,111 @@ class TieredExitStrategy(ExitStrategy):
         state: _TieredPositionState,
         price_provider: Callable[[str, str], Optional[float]],
     ) -> Optional[ExitSignal]:
-        """检查开盘价：止损 + 保本"""
+        """检查开盘：处理昨日收盘触发的止损/移动止盈，按开盘价离场。"""
+        if not state.pending_stop_loss_sell and not state.pending_trailing_sell:
+            return None
+
         open_price = price_provider(stock_code, "open")
         if open_price is None:
             return None
 
-        stop_loss_pct = (
-            self.big_winner_stop_loss_pct if state.tier == "big_winner"
-            else self.default_stop_loss_pct
+        reason = "移动止盈" if state.pending_trailing_sell else "止损出局"
+        logger.info(
+            "分级止盈 [%s]: 昨日收盘触发%s，今日开盘价 %.2f 离场",
+            stock_code, reason, open_price,
         )
-        stop_loss_price = state.entry_price * (1 - stop_loss_pct)
+        return ExitSignal(
+            stock_code=stock_code,
+            reason=reason,
+            sell_price=open_price,
+            price_type="open",
+        )
 
-        # 保本止损
-        if state.breakeven_activated:
-            stop_loss_price = state.entry_price
-
-        if open_price <= stop_loss_price:
-            reason = "保本出局" if state.breakeven_activated else "止损出局"
-            logger.info(
-                "分级止盈 [%s][%s]: 开盘价 %.2f <= %s %.2f",
-                stock_code, state.tier, open_price, "保本价" if state.breakeven_activated else "止损价", stop_loss_price,
-            )
-            return ExitSignal(
-                stock_code=stock_code,
-                reason=reason,
-                sell_price=open_price,
-                price_type="open",
-            )
-
-        return None
-
-    def _check_intraday_tiered(
+    def _update_peak_intraday(
         self,
         stock_code: str,
         state: _TieredPositionState,
         price_provider: Callable[[str, str], Optional[float]],
-    ) -> Optional[ExitSignal]:
-        """检查盘中：止损 + 部分止盈 + 移动止盈"""
+    ) -> None:
+        """盘中更新峰值价格（使用最高价）。"""
         high_price = price_provider(stock_code, "high")
-        low_price = price_provider(stock_code, "low")
-        if high_price is None or low_price is None:
-            return None
-
-        if state.tier == "default" and not state.partial_sold:
-            # 默认模式：检查部分止盈（最高价触发）
-            take_profit_price = state.entry_price * (1 + self.default_partial_take_profit_pct)
-            if high_price >= take_profit_price:
-                state.partial_sold = True
-                state.breakeven_activated = True
-                state.peak_price = max(state.peak_price, high_price)
-                logger.info(
-                    "分级止盈 [%s][default]: 触发部分止盈 最高价 %.2f >= %.2f, 卖出 %.0f%%",
-                    stock_code, high_price, take_profit_price, self.default_partial_ratio * 100,
-                )
-                return ExitSignal(
-                    stock_code=stock_code,
-                    reason="部分止盈",
-                    exit_type="partial",
-                    exit_ratio=self.default_partial_ratio,
-                    sell_price=take_profit_price,
-                    price_type="intraday",
-                )
-
-        # 移动止盈（partial_sold 的默认模式，或 big_winner 模式）
-        if state.partial_sold or state.tier == "big_winner":
-            trailing_dd = (
-                self.big_winner_trailing_stop_pct if state.tier == "big_winner"
-                else self.default_trailing_stop_pct
-            )
-            trailing_stop = state.peak_price * (1 - trailing_dd)
-
-            # 止损线
-            stop_loss_pct = (
-                self.big_winner_stop_loss_pct if state.tier == "big_winner"
-                else self.default_stop_loss_pct
-            )
-            stop_loss_price = state.entry_price * (1 - stop_loss_pct)
-            if state.breakeven_activated:
-                stop_loss_price = state.entry_price
-
-            actual_stop = max(stop_loss_price, trailing_stop)
-
-            if low_price <= actual_stop:
-                reason = (
-                    "强势移动止盈" if state.tier == "big_winner"
-                    else "移动止盈"
-                )
-                logger.info(
-                    "分级止盈 [%s][%s]: 最低价 %.2f <= 止盈价 %.2f",
-                    stock_code, state.tier, low_price, actual_stop,
-                )
-                return ExitSignal(
-                    stock_code=stock_code,
-                    reason=reason,
-                    sell_price=actual_stop,
-                    price_type="intraday",
-                )
-            return None
-
-        # 默认模式未部分止盈：检查止损
-        stop_loss_price = state.entry_price * (1 - self.default_stop_loss_pct)
-        if state.breakeven_activated:
-            stop_loss_price = state.entry_price
-
-        if low_price <= stop_loss_price:
-            reason = "保本出局" if state.breakeven_activated else "止损出局"
-            logger.info(
-                "分级止盈 [%s][default]: 最低价 %.2f <= %s %.2f",
-                stock_code, low_price, "保本价" if state.breakeven_activated else "止损价", stop_loss_price,
-            )
-            return ExitSignal(
-                stock_code=stock_code,
-                reason=reason,
-                sell_price=stop_loss_price,
-                price_type="intraday",
-            )
-
-        return None
+        if high_price is not None and high_price > state.peak_price:
+            state.peak_price = high_price
 
     def _check_close_tiered(
         self,
         stock_code: str,
         state: _TieredPositionState,
         price_provider: Callable[[str, str], Optional[float]],
-        trading_dates: List[date],
+        date_to_index: Dict[date, int],
         current_date_index: int,
-        current_date: date,
     ) -> Optional[ExitSignal]:
-        """检查收盘：更新峰值 + 时间止损 + 强势模式检测"""
+        """检查收盘：更新峰值 + 止损 + 移动止盈 + 时间止损。"""
         close_price = price_provider(stock_code, "close")
         if close_price is None:
             return None
 
-        # 更新最高收盘价
+        # 即使 intraday 阶段未被调用，也获取 high 更新峰值，确保移动止盈线准确
+        high_price = price_provider(stock_code, "high")
+        if high_price is not None and high_price > state.peak_price:
+            state.peak_price = high_price
         if close_price > state.peak_price:
             state.peak_price = close_price
 
-        # 检查保本激活
-        if not state.breakeven_activated:
-            gain_pct = (close_price - state.entry_price) / state.entry_price
-            if gain_pct >= self.default_breakeven_trigger_pct:
-                state.breakeven_activated = True
+        # 计算当前盈利和峰值曾达到的最大盈利
+        gain_pct = (close_price - state.entry_price) / state.entry_price
+        max_gain_pct = (state.peak_price - state.entry_price) / state.entry_price
+
+        # 1. 止损检查：收盘价 < 止损价 → 标记次日开盘卖出
+        stop_loss_price = state.entry_price * (1 - self.stop_loss_pct)
+        if close_price <= stop_loss_price:
+            state.pending_stop_loss_sell = True
+            logger.info(
+                "分级止盈 [%s]: 收盘价 %.2f <= 止损价 %.2f，标记次日开盘卖出",
+                stock_code, close_price, stop_loss_price,
+            )
+            return None  # 次日开盘处理
+
+        # 2. 阶梯式移动止盈检查
+        # 基于峰值曾达到的最大盈利决定回撤容忍度，即使当前价格回落也锁定高等级保护
+        if max_gain_pct > 0:
+            trailing_dd = self._get_trailing_stop_pct(max_gain_pct)
+            new_trailing_stop = state.peak_price * (1 - trailing_dd)
+
+            # 移动止盈线只上移不下移（防御性编程，应对数据异常或未来逻辑变更）
+            trailing_stop = max(new_trailing_stop, state.last_trailing_stop)
+            state.last_trailing_stop = trailing_stop
+
+            if close_price <= trailing_stop:
+                state.pending_trailing_sell = True
                 logger.info(
-                    "分级止盈 [%s]: 收盘价涨幅 %.1f%% >= %.0f%%, 保本止损激活",
-                    stock_code, gain_pct * 100, self.default_breakeven_trigger_pct * 100,
+                    "分级止盈 [%s]: 收盘价 %.2f <= 移动止盈价 %.2f(峰值 %.2f, 峰值盈利 %.1f%%, 回撤 %.0f%%)，标记次日开盘卖出",
+                    stock_code, close_price, trailing_stop, state.peak_price,
+                    max_gain_pct * 100, trailing_dd * 100,
                 )
+                return None  # 次日开盘处理
 
-        # 强势模式检测（仅在默认模式且未部分止盈时检测）
-        if state.tier == "default" and not state.partial_sold:
-            gain_pct = (close_price - state.entry_price) / state.entry_price
-            # 计算从买入至今的交易日数
-            try:
-                entry_index = trading_dates.index(state.entry_date)
-                days_held = current_date_index - entry_index
-            except ValueError:
-                days_held = 999
-
-            if days_held <= self.big_winner_trigger_days and gain_pct >= self.big_winner_trigger_pct:
-                state.tier = "big_winner"
-                logger.info(
-                    "分级止盈 [%s]: 触发强势模式! %d天内涨幅 %.1f%% >= %.0f%%",
-                    stock_code, days_held, gain_pct * 100, self.big_winner_trigger_pct * 100,
-                )
-
-        # 时间止损
-        try:
-            entry_index = trading_dates.index(state.entry_date)
+        # 3. 动态时间止损
+        entry_index = date_to_index.get(state.entry_date)
+        if entry_index is not None:
             holding_days = current_date_index - entry_index
-            if holding_days >= self.time_stop_days:
+            if holding_days >= self.time_stop_days and gain_pct < self.time_stop_min_return:
                 logger.info(
-                    "分级止盈 [%s][%s]: 持股 %d 天 >= %d 天，到期平仓",
-                    stock_code, state.tier, holding_days, self.time_stop_days,
+                    "分级止盈 [%s]: 持股 %d 天 >= %d 天，收益率 %.1f%% < %.0f%%，时间止损平仓",
+                    stock_code, holding_days, self.time_stop_days,
+                    gain_pct * 100, self.time_stop_min_return * 100,
                 )
                 return ExitSignal(
                     stock_code=stock_code,
-                    reason="到期平仓",
+                    reason="时间止损",
                     sell_price=close_price,
                     price_type="close",
                 )
-        except ValueError:
-            pass
+        else:
+            logger.warning(
+                "分级止盈 [%s]: 买入日期 %s 不在交易日列表中，无法计算时间止损",
+                stock_code, state.entry_date,
+            )
 
         return None
 
@@ -628,6 +544,7 @@ class TieredExitStrategy(ExitStrategy):
 
     def reset(self) -> None:
         self._states.clear()
+        self._date_to_index = None
 
 
 # ============================================================

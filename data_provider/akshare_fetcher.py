@@ -579,14 +579,23 @@ class AkshareFetcher(BaseFetcher):
             )
 
             # 标准化腾讯数据列名
-            # 腾讯返回：date, open, close, high, low, volume, amount
+            # 不同 akshare 版本列名有差异：
+            # 旧版: date, open, close, high, low, amount（amount 实为成交量，单位手）
+            # 新版: date, open, close, high, low, volume, turnover, amount
             if df is not None and not df.empty:
-                rename_map = {
-                    'date': '日期', 'open': '开盘', 'high': '最高',
-                    'low': '最低', 'close': '收盘', 'volume': '成交量',
-                    'amount': '成交额'
-                }
-                df = df.rename(columns=rename_map)
+                if "volume" in df.columns:
+                    # 新版：volume 和 amount 均存在，直接重命名
+                    df = df.rename(columns={
+                        'date': '日期', 'open': '开盘', 'high': '最高',
+                        'low': '最低', 'close': '收盘', 'volume': '成交量',
+                        'amount': '成交额',
+                    })
+                else:
+                    # 旧版兼容：amount 列实际是成交量（手），重命名为 成交量
+                    df = df.rename(columns={
+                        'date': '日期', 'open': '开盘', 'high': '最高',
+                        'low': '最低', 'close': '收盘', 'amount': '成交量',
+                    })
 
                 # 腾讯数据通常包含 '涨跌幅'，如果没有则计算
                 if 'pct_chg' in df.columns:

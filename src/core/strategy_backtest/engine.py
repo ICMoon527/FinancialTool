@@ -223,7 +223,6 @@ class StrategyBacktestEngine:
         self._strategies: List[Any] = []  # 多策略支持
         self._stock_pool: List[str] = []
         self.max_positions = max_positions
-        self._pending_orders: List[Dict[str, Any]] = []  # 挂单列表
         self._should_stop = False
 
         # 退出策略
@@ -670,97 +669,90 @@ class StrategyBacktestEngine:
         """
         调仓。
 
-        新逻辑：
-        1. 持仓中的股票只有触发止盈或止损时才卖出（在 _check_stop_loss_take_profit 中处理）
-        2. 只有当持仓数量 < 最高持仓数时，才可以根据策略的最新排名挂单买入新股
-        3. 挂单会在第二天以开盘价成交
+        在信号日当天以收盘价直接买入，不再挂单到次日开盘。
 
         Args:
             target_stocks: 目标持仓股票列表（按优先级排序）
         """
-        logger.info(f"=== 开始调仓（挂单） ===")
-        
+        logger.info(f"=== 开始调仓（当天收盘价买入） ===")
+
         if not target_stocks:
             logger.info("目标股票列表为空，不进行调仓")
             return
 
         current_holdings = set(self.portfolio.positions.keys())
-        pending_stocks = set([order["stock_code"] for order in self._pending_orders])
-        
+
         # 记录持仓详细信息（包含成本）
         holding_details = []
         for stock_code in current_holdings:
             pos = self.portfolio.get_position(stock_code)
             if pos:
                 holding_details.append(f"{stock_code}(成本:{pos.avg_cost:.2f})")
-        
+
         logger.info(f"当前持仓: {holding_details} ({len(current_holdings)} 只)")
-        logger.info(f"已挂单: {list(pending_stocks)} ({len(pending_stocks)} 只)")
-        
+
         # 计算还可以买入多少只新股票
-        total_holdings = len(current_holdings) + len(pending_stocks)
         available_slots = 0
         if self.max_positions is not None:
-            available_slots = self.max_positions - total_holdings
+            available_slots = self.max_positions - len(current_holdings)
             if available_slots <= 0:
-                logger.info(f"当前持仓+挂单数 {total_holdings} 已达最高持仓数 {self.max_positions}，不买入新股")
+                logger.info(f"当前持仓数 {len(current_holdings)} 已达最高持仓数 {self.max_positions}，不买入新股")
                 return
-            logger.info(f"当前持仓+挂单数 {total_holdings}，最高持仓数 {self.max_positions}，可买入 {available_slots} 只新股")
+            logger.info(f"当前持仓数 {len(current_holdings)}，最高持仓数 {self.max_positions}，可买入 {available_slots} 只新股")
         else:
             logger.info("未设置最高持仓数限制，可以买入所有目标股票")
             available_slots = len(target_stocks)
 
         # 按排序顺序直接选择前N只股票（已按控盘度优先排序）
         eligible_stocks = [
-            stock_code for stock_code in target_stocks 
-            if stock_code not in current_holdings and stock_code not in pending_stocks
+            stock_code for stock_code in target_stocks
+            if stock_code not in current_holdings
         ]
-        
+
         if not eligible_stocks:
             stocks_to_buy = []
         else:
             # 直接取前 available_slots 只
             stocks_to_buy = eligible_stocks[:available_slots]
-            
+
             logger.info(f"按控盘度优先排序，选择前 {len(stocks_to_buy)} 只股票: {stocks_to_buy}")
 
         if not stocks_to_buy:
             logger.info("没有符合条件的新股可买入")
             return
 
-        logger.info(f"准备挂单买入 {len(stocks_to_buy)} 只新股: {stocks_to_buy}")
+        logger.info(f"准备买入 {len(stocks_to_buy)} 只新股: {stocks_to_buy}")
 
         # 计算每只股票可分配的资金（预留手续费和滑点）
-        if stocks_to_buy:
-            # 使用可用现金来计算每只股票的分配资金，预留交易成本
-            available_cash = self.portfolio.cash
-            logger.info(f"可用现金: {available_cash:.2f}")
-            if available_cash <= 0:
-                logger.warning("可用现金不足，无法挂单买入新股")
-                return
+        current_date = self.get_current_date()
+        available_cash = self.portfolio.cash
+        logger.info(f"可用现金: {available_cash:.2f}")
+        if available_cash <= 0:
+            logger.warning("可用现金不足，无法买入新股")
+            return
 
-            # 预留约 0.5% 的交易成本（手续费 + 滑点）
-            # 手续费：约 0.03%，最低 5 元
-            # 滑点：约 0.1%
-            # 总共预留 0.5% 比较安全
-            reserved_cost_pct = 0.005
-            equity_per_stock = (available_cash * (1 - reserved_cost_pct)) / len(stocks_to_buy)
-            logger.info(f"每只股票分配资金（已预留交易成本）: {equity_per_stock:.2f}")
+        # 预留约 0.5% 的交易成本（手续费 + 滑点）
+        reserved_cost_pct = 0.005
+        equity_per_stock = (available_cash * (1 - reserved_cost_pct)) / len(stocks_to_buy)
+        logger.info(f"每只股票分配资金（已预留交易成本）: {equity_per_stock:.2f}")
 
-            # 先获取今天的收盘价，计算大概需要买入多少股（明天会用开盘价重新计算精确数量）
-            for stock_code in stocks_to_buy:
-                close_price = self._get_stock_price(stock_code, self.get_current_date(), "close")
-                if close_price is None or close_price <= 0:
-                    logger.warning(f"股票 {stock_code} 今天收盘价无效，跳过挂单")
-                    continue
-                
-                # 估算数量，但明天会用开盘价重新计算精确数量
-                self._pending_orders.append({
-                    "stock_code": stock_code,
-                    "equity_per_stock": equity_per_stock
-                })
-                logger.info(f"挂单买入: {stock_code}（明天以开盘价成交）")
-        
+        for stock_code in stocks_to_buy:
+            # 获取当天收盘价
+            close_price = self._get_stock_price(stock_code, current_date, "close")
+            if close_price is None or close_price <= 0:
+                logger.warning(f"股票 {stock_code} 今天收盘价无效，跳过买入")
+                continue
+
+            # 计算买入数量（考虑交易成本）
+            estimated_price_with_slippage = close_price * (1 + self.slippage_rate)
+            effective_equity = equity_per_stock * 0.99
+            target_qty = int(effective_equity / estimated_price_with_slippage / 100) * 100
+            if target_qty > 0:
+                logger.info(f"以收盘价执行买入: {stock_code} {target_qty} 股 @ {close_price:.2f}")
+                self.place_order(stock_code, OrderType.BUY, target_qty, price=close_price, price_type="close")
+            else:
+                logger.warning(f"股票 {stock_code} 目标数量为0，跳过买入")
+
         logger.info(f"=== 调仓完成 ===")
 
     def _check_stop_loss_take_profit(
@@ -922,13 +914,12 @@ class StrategyBacktestEngine:
         """
         执行一个时间步。
 
-        新的执行流程：
-        1. 执行昨天挂的买单（以今天开盘价成交）
-        2. 检查今天开盘价是否触发止盈止损（如果触发，按开盘价卖出）
-        3. 检查今天最高价和最低价，如果触发止盈/止损则按照止盈/止损价卖出
-        4. 更新持仓价格到今天收盘价
-        5. 如果这是第五个交易日，在收盘时卖出
-        6. 执行策略选股，挂买单（明天成交）
+        执行流程：
+        1. 检查开盘价是否触发止盈止损（如果触发，按开盘价卖出）
+        2. 检查盘中最高价和最低价，如果触发止盈/止损则按照止盈/止损价卖出
+        3. 更新持仓价格到今天收盘价
+        4. 检查收盘条件（时间止损、收盘价止损等）
+        5. 执行策略选股，当天以收盘价买入
 
         Returns:
             是否还有下一个时间步
@@ -943,59 +934,10 @@ class StrategyBacktestEngine:
 
         current_date = self.trading_dates[self.current_date_index]
         self._data_provider.set_current_date(current_date)
-        
+
         logger.info(f"=== 开始日期 {current_date} ===")
-        
-        # 步骤 1：执行昨天挂的买单（以今天开盘价成交）
-        if self._pending_orders:
-            logger.info(f"执行昨天挂的 {len(self._pending_orders)} 个买单...")
-            pending_orders = self._pending_orders.copy()
-            self._pending_orders.clear()
-            
-            # 计算当前持仓数量，确保不超过最高持仓数限制
-            current_holdings = len(self.portfolio.positions)
-            available_slots = None
-            if self.max_positions is not None:
-                available_slots = self.max_positions - current_holdings
-                if available_slots <= 0:
-                    logger.info(f"当前持仓数 {current_holdings} 已达最高持仓数 {self.max_positions}，不执行任何挂单")
-                    available_slots = 0
-            
-            executed_count = 0
-            for order in pending_orders:
-                # 检查是否还可以继续买入
-                if self.max_positions is not None and executed_count >= available_slots:
-                    logger.info(f"已执行 {executed_count} 个买单，达到最高持仓数限制，跳过剩余 {len(pending_orders) - executed_count} 个挂单")
-                    break
-                
-                stock_code = order["stock_code"]
-                equity_per_stock = order["equity_per_stock"]
-                
-                # 如果已经持仓，跳过
-                if stock_code in self.portfolio.positions:
-                    logger.info(f"股票 {stock_code} 已持仓，跳过买入")
-                    continue
-                
-                # 获取今天的开盘价
-                open_price = self._get_stock_price(stock_code, current_date, "open")
-                if open_price is None or open_price <= 0:
-                    logger.warning(f"股票 {stock_code} 今天开盘价无效，跳过买入")
-                    continue
-                
-                # 计算买入数量（考虑交易成本）
-                # 预留 0.5% 的交易成本
-                estimated_price_with_slippage = open_price * (1 + self.slippage_rate)
-                # 可用资金要预留手续费和滑点
-                effective_equity = equity_per_stock * 0.99
-                target_qty = int(effective_equity / estimated_price_with_slippage / 100) * 100
-                if target_qty > 0:
-                    logger.info(f"以开盘价执行买入: {stock_code} {target_qty} 股 @ {open_price:.2f}")
-                    self.place_order(stock_code, OrderType.BUY, target_qty, price=open_price, price_type="open")
-                    executed_count += 1
-                else:
-                    logger.warning(f"股票 {stock_code} 目标数量为0，跳过买入")
-        
-        # 步骤 2：检查今天开盘价是否触发止盈止损（如果触发，按开盘价卖出）
+
+        # 步骤 1：检查今天开盘价是否触发止盈止损（如果触发，按开盘价卖出）
         logger.info("检查开盘价是否触发止盈止损...")
         # 先记录所有持仓的开盘价和涨跌幅
         for stock_code in list(self.portfolio.positions.keys()):
@@ -1005,15 +947,15 @@ class StrategyBacktestEngine:
                 if open_price:
                     change_pct = (open_price - pos.avg_cost) / pos.avg_cost * 100
                     logger.info(f"  {stock_code}: 开盘价={open_price:.2f}, 成本={pos.avg_cost:.2f}, 涨跌={change_pct:+.2f}%")
-        
+
         # 价格提供函数（绑定当前日期）
         def price_provider(stock_code: str, price_type: str) -> Optional[float]:
             return self._get_stock_price(stock_code, current_date, price_type)
-        
+
         # 计算天道指标并设置 indicator_provider
         self._compute_tiandao_indicators(current_date)
         self._setup_indicator_provider()
-        
+
         stocks_to_sell_open = self.exit_strategy.check_exits(
             current_date=current_date,
             positions=self.portfolio.positions,
@@ -1025,8 +967,8 @@ class StrategyBacktestEngine:
         sold_stocks = set()
         for signal in stocks_to_sell_open:
             self._process_exit_signal(signal, current_date, sold_stocks, "开盘")
-        
-        # 步骤 3：检查今天最高价和最低价，如果触发止盈/止损则按照止盈/止损价卖出
+
+        # 步骤 2：检查盘中最高价和最低价，如果触发止盈/止损则按照止盈/止损价卖出
         logger.info("检查盘中最高价和最低价是否触发止盈止损...")
         # 先记录所有持仓的最高价和最低价
         for stock_code in list(self.portfolio.positions.keys()):
@@ -1038,7 +980,7 @@ class StrategyBacktestEngine:
                 low_price = self._get_stock_price(stock_code, current_date, "low")
                 if high_price and low_price:
                     logger.info(f"  {stock_code}: 最高价={high_price:.2f}, 最低价={low_price:.2f}, 成本={pos.avg_cost:.2f}")
-        
+
         stocks_to_sell_intraday = self.exit_strategy.check_exits(
             current_date=current_date,
             positions=self.portfolio.positions,
@@ -1049,16 +991,16 @@ class StrategyBacktestEngine:
         )
         for signal in stocks_to_sell_intraday:
             self._process_exit_signal(signal, current_date, sold_stocks, "盘中")
-        
-        # 步骤 4：更新持仓价格到今天收盘价
+
+        # 步骤 3：更新持仓价格到今天收盘价
         logger.info("更新持仓价格到今天收盘价...")
         for stock_code in self.portfolio.positions.keys():
             price = self._get_stock_price(stock_code, current_date, "close")
             if price:
                 self.portfolio.update_position_price(stock_code, price)
-        
-        # 步骤 5：检查持股超时等收盘条件
-        logger.info("检查持股超时等收盘条件...")
+
+        # 步骤 4：检查收盘条件（时间止损、收盘价止损等）
+        logger.info("检查收盘条件...")
         # 先记录所有持仓的收盘价和涨跌幅
         for stock_code in list(self.portfolio.positions.keys()):
             if stock_code in sold_stocks:
@@ -1069,8 +1011,8 @@ class StrategyBacktestEngine:
                 if close_price:
                     change_pct = (close_price - pos.avg_cost) / pos.avg_cost * 100
                     logger.info(f"  {stock_code}: 收盘价={close_price:.2f}, 成本={pos.avg_cost:.2f}, 涨跌={change_pct:+.2f}%")
-        
-        stocks_to_sell_timeout = self.exit_strategy.check_exits(
+
+        stocks_to_sell_close = self.exit_strategy.check_exits(
             current_date=current_date,
             positions=self.portfolio.positions,
             price_provider=price_provider,
@@ -1078,25 +1020,23 @@ class StrategyBacktestEngine:
             current_date_index=self.current_date_index,
             phase="close",
         )
-        for signal in stocks_to_sell_timeout:
+        for signal in stocks_to_sell_close:
             self._process_exit_signal(signal, current_date, sold_stocks, "收盘")
-        
-        # 步骤 6：判断是否需要跑策略选股
+
+        # 步骤 5：判断是否需要跑策略选股
         need_run_strategy = False
-        
+
         # 条件1：今天有股票被卖出
         if len(sold_stocks) > 0:
             need_run_strategy = True
             logger.info(f"今天有 {len(sold_stocks)} 只股票被卖出，需要跑策略选股")
-        
+
         # 条件2：持仓未满（还有空仓可以买新股）
         if not need_run_strategy and self.max_positions is not None:
             current_holdings = len(self.portfolio.positions)
-            pending_count = len(self._pending_orders)
-            total_used = current_holdings + pending_count
-            if total_used < self.max_positions:
+            if current_holdings < self.max_positions:
                 need_run_strategy = True
-                logger.info(f"持仓未满（当前持仓: {current_holdings}, 挂单: {pending_count}, 最高持仓: {self.max_positions}），需要跑策略选股")
+                logger.info(f"持仓未满（当前持仓: {current_holdings}, 最高持仓: {self.max_positions}），需要跑策略选股")
         
         # 执行策略选股（如果需要）
         has_strategies = (self._strategy is not None) or (len(self._strategies) > 0)
@@ -1202,4 +1142,3 @@ class StrategyBacktestEngine:
         self.current_date_index = 0
         self._data_provider.clear_cache()
         self.exit_strategy.reset()
-        self._pending_orders.clear()

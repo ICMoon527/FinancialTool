@@ -463,15 +463,23 @@ class TiandaoOversoldStrategy(StockSelectorStrategy):
                 logger.warning(f"[数据修复] 腾讯接口返回空数据 {stock_code}")
                 return False
 
-            # 腾讯接口返回英文列名，只需重命名换手率列
-            # 列名: date, open, close, high, low, volume, turnover, amount
-            df = df.rename(columns={"turnover": "turnover_rate"})
+            # 腾讯接口返回英文列名，不同 akshare 版本列名有差异：
+            # 旧版: date, open, close, high, low, amount（amount 实为成交量，单位手）
+            # 新版: date, open, close, high, low, volume, turnover, amount
+            if "volume" not in df.columns:
+                # 旧版兼容：amount 列实际是成交量（手），重命名为 volume
+                df = df.rename(columns={"amount": "volume"})
+                # 旧版无换手率列，无需处理
+            else:
+                # 新版：重命名换手率列
+                df = df.rename(columns={"turnover": "turnover_rate"})
 
             # 单位转换：成交量统一为股（科创板原生为股，其余为手）
             if not tx_symbol.startswith("sh68"):
                 df["volume"] = df["volume"] * 100  # 手 → 股
-            # 成交额：万元 → 元
-            df["amount"] = df["amount"] * 10000
+            # 新版 amount 已是元，旧版无 amount 列（留空，DB 列为 NULL）
+            if "amount" in df.columns and not df["amount"].isna().all():
+                df["amount"] = df["amount"] * 10000  # 旧版兼容：万元 → 元
 
             # 写入数据库（覆盖已有记录）
             from src.storage import get_db
