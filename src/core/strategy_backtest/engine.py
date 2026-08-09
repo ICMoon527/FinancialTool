@@ -8,6 +8,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import signal
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from enum import Enum
@@ -225,6 +227,13 @@ class StrategyBacktestEngine:
         self.max_positions = max_positions
         self._should_stop = False
 
+        # 安装 Ctrl+C 信号处理器，支持安全停止回测（仅在主线程中有效）
+        import threading
+        self._sigint_installed = False
+        if threading.current_thread() is threading.main_thread():
+            self._original_sigint = signal.signal(signal.SIGINT, self._sigint_handler)
+            self._sigint_installed = True
+
         # 退出策略
         if exit_strategy is not None:
             self.exit_strategy = exit_strategy
@@ -296,6 +305,21 @@ class StrategyBacktestEngine:
         停止回测。
         """
         logger.info("收到停止回测信号")
+        self._should_stop = True
+
+    def _sigint_handler(self, signum, frame):
+        """
+        Ctrl+C 信号处理器，安全停止回测。
+        首次 Ctrl+C：设置停止标志，等待当前批次完成后退出。
+        再次 Ctrl+C：强制退出。
+        """
+        if self._should_stop:
+            logger.warning("强制退出回测引擎")
+            # 恢复原始处理器，避免 os._exit 也被拦截
+            if self._sigint_installed:
+                signal.signal(signal.SIGINT, self._original_sigint)
+            os._exit(1)
+        logger.warning("收到 Ctrl+C 终止信号，正在安全停止回测...（再次按 Ctrl+C 强制退出）")
         self._should_stop = True
 
     def get_current_date(self) -> Optional[date]:
@@ -1056,6 +1080,10 @@ class StrategyBacktestEngine:
                 leave=False,
                 ncols=100
             ):
+                # 检查停止标志
+                if self._should_stop:
+                    logger.info("策略选股被用户终止")
+                    break
                 try:
                     # 计算综合得分：所有匹配策略的平均得分
                     total_score = 0.0
@@ -1126,8 +1154,15 @@ class StrategyBacktestEngine:
 
         self.current_date_index = 0
 
-        while self._step():
-            pass
+        try:
+            while self._step():
+                if self._should_stop:
+                    logger.info("回测已被用户终止")
+                    break
+        finally:
+            # 恢复原始 SIGINT 处理器，避免影响后续操作
+            if self._sigint_installed:
+                signal.signal(signal.SIGINT, self._original_sigint)
 
         logger.info("回测完成")
         logger.info(f"最终权益: {self.portfolio.get_total_equity():.2f}")

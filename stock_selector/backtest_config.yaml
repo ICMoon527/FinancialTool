@@ -153,8 +153,8 @@ exit_strategy:
       strategy: "tiered"
       params:
         stop_loss_pct: 0.07
-        time_stop_days: 20
-        time_stop_min_return: 0.05
+        time_stop_days: 30
+        time_stop_min_return: 0.0
     # 天道系列退出策略（需配合天道超跌选股策略使用）
     tiandao_jinniu:
       name: "天道金牛清仓"

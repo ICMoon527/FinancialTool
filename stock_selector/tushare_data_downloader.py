@@ -1110,13 +1110,15 @@ class TushareDataDownloader:
                 need_to_wait = self.tushare_fetcher.will_need_to_wait()
                 
                 if need_to_wait:
-                    logger.warning(f"Tushare 需要等待配额，跳过此批")
-                    stats['stocks_failed'] += len(batch_stocks)
-                    stats['failed_stocks'].extend([
-                        {'code': code, 'error': 'Tushare 需要等待配额'} 
-                        for code in batch_stocks
-                    ])
-                    continue
+                    # 等待配额重置（最多 60 秒），而不是跳过此批
+                    reset_after = max(1, 60 - (time.time() - self.tushare_fetcher._minute_start))
+                    logger.warning(f"Tushare 需要等待配额，等待 {reset_after:.0f} 秒后重试...")
+                    pbar.set_description(f"总体进度 | 数据源: Tushare(等待配额)")
+                    pbar.update(0)
+                    time.sleep(reset_after)
+                    # 重置速率限制计数器，继续尝试此批
+                    self.tushare_fetcher.reset_rate_limit()
+                    logger.info(f"配额已重置，继续处理第 {batch_idx + 1}/{total_batches} 批")
                 
                 try:
                     logger.debug(f"Trying Tushare batch download for {len(batch_stocks)} stocks")
