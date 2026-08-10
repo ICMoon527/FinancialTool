@@ -112,25 +112,36 @@ class StockPoolManager:
     def get_stock_list(self, force_refresh: bool = False) -> List[str]:
         """
         Get the complete stock list.
-        
+
         Args:
             force_refresh: Force refresh even if cache is valid
-            
+
         Returns:
             List of stock codes
         """
+        # 非强制刷新且数据库有缓存时，直接使用缓存
         if not force_refresh and self.is_cache_valid():
             logger.info("Using cached stock pool")
             return self._get_cached_stock_list()
-        
+
+        # 强制刷新：尝试从网络获取最新数据
         logger.info("Fetching stock list from data sources...")
         stock_list = self._fetch_stock_list_from_sources()
-        
+
         if stock_list:
             self._save_stock_list_to_cache(stock_list)
             logger.info(f"Fetched and cached {len(stock_list)} stocks")
-        
-        return [code for code, _, _ in stock_list]
+            return [code for code, _, _ in stock_list]
+
+        # 所有网络数据源均失败，回退到数据库缓存
+        logger.warning("所有网络数据源获取股票列表失败，回退使用数据库缓存数据")
+        cached = self._get_cached_stock_list()
+        if cached:
+            logger.info(f"从数据库缓存读取了 {len(cached)} 只股票")
+            return cached
+
+        logger.error("所有数据源（包括数据库缓存）均无法获取股票列表")
+        return []
     
     def _get_cached_stock_list(self) -> List[str]:
         """Get stock list from cache."""

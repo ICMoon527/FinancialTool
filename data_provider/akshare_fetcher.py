@@ -23,7 +23,7 @@ AkshareFetcher - 主数据源 (Priority 1)
 - 筹码分布：获利比例、平均成本、筹码集中度
 """
 
-import concurrent.futures
+
 import logging
 import os
 import random
@@ -339,39 +339,41 @@ class AkshareFetcher(BaseFetcher):
         优先使用 ak.stock_info_a_code_name() 轻量接口获取全量 A 股代码-名称对；
         该接口仅返回代码和名称，不拉取行情数据，比 stock_zh_a_spot_em() 更稳定。
 
-        降级策略：若常规接口失败且实时行情快照缓存（_realtime_cache）有效，
-        则从缓存中提取代码-名称作为备用。
+        只尝试一次网络请求，超时或失败后降级到实时行情快照缓存。
 
         Returns:
             包含 code, name 列的 DataFrame，失败返回 None
         """
         import akshare as ak
 
-        # 主路径：轻量代码-名称接口（带超时保护，最多重试 3 次）
-        for attempt in range(3):
-            try:
-                self._set_random_user_agent()
-                self._enforce_rate_limit()
-                logger.info("[API调用] ak.stock_info_a_code_name() 获取股票列表... (尝试 %d/3)", attempt + 1)
-                # 在独立线程中执行，设置 30 秒超时，避免网络阻塞导致永久卡死
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                    future = executor.submit(ak.stock_info_a_code_name)
-                    df = future.result(timeout=30)
+        # 主路径：轻量代码-名称接口（只试一次，daemon 线程避免永久卡死）
+        try:
+            self._set_random_user_agent()
+            self._enforce_rate_limit()
+            logger.info("[API调用] ak.stock_info_a_code_name() 获取股票列表...")
+            # 使用 daemon 线程 + 30 秒超时，避免网络阻塞导致永久卡死
+            import threading
+            result_container = []
+            thread = threading.Thread(
+                target=lambda: result_container.append(ak.stock_info_a_code_name()),
+                daemon=True,
+            )
+            thread.start()
+            thread.join(timeout=30)
+            if thread.is_alive():
+                logger.warning("Akshare stock_info_a_code_name 超时，跳过")
+            elif result_container:
+                df = result_container[0]
                 if df is not None and not df.empty:
                     logger.info(f"Akshare 获取股票列表成功: {len(df)} 条")
                     result = df[['code', 'name']].copy()
                     return result
-            except concurrent.futures.TimeoutError:
-                logger.warning(
-                    "Akshare stock_info_a_code_name 超时 (尝试 %d/3)，等待 %d 秒后重试",
-                    attempt + 1, (attempt + 1) * 5,
-                )
-                if attempt < 2:
-                    time.sleep((attempt + 1) * 5)  # 渐进式等待：5s, 10s
-            except Exception as e:
-                logger.warning(f"Akshare stock_info_a_code_name 获取失败 (尝试 {attempt + 1}/3): {e}")
-                if attempt < 2:
-                    time.sleep((attempt + 1) * 3)  # 渐进式等待：3s, 6s
+                else:
+                    logger.warning("Akshare stock_info_a_code_name 返回空数据")
+            else:
+                logger.warning("Akshare stock_info_a_code_name 未返回结果")
+        except Exception as e:
+            logger.warning(f"Akshare stock_info_a_code_name 获取失败: {e}")
 
         # 降级：从实时行情快照缓存中提取
         current_time = time.time()
