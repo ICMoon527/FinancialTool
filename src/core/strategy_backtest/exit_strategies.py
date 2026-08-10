@@ -322,9 +322,7 @@ class _TieredPositionState:
     """分级止盈策略的持仓状态"""
     entry_date: date
     entry_price: float
-    peak_price: float = 0.0                    # 持仓期间最高价（收盘价）
-    pending_stop_loss_sell: bool = False       # 收盘价跌破止损，标记次日开盘卖出
-    pending_trailing_sell: bool = False        # 触发移动止盈，标记次日开盘卖出
+    peak_price: float = 0.0                    # 持仓期间最高价
     last_trailing_stop: float = 0.0            # 上一次计算的移动止盈价，保证只上移不下移
 
 
@@ -334,12 +332,13 @@ class TieredExitStrategy(ExitStrategy):
 
     止损：
       - 买入价 × (1 - stop_loss_pct)，默认 12%
-      - 收盘价跌破止损价 → 次日开盘无条件市价单离场
+      - 收盘价跌破止损价 → 当日收盘价直接离场
 
-    阶梯式移动止盈（基于持仓期间最高收盘价）：
+    阶梯式移动止盈（基于持仓期间最高价）：
       - 盈利 < 30% 时，回撤容忍 10%
       - 盈利 >= 30% 时，回撤容忍 8%
       - 盈利 >= 50% 时，回撤容忍 5%
+      - 当日收盘价触发移动止盈 → 当日收盘价直接离场
 
     动态时间止损：
       - 持股 20 天后，收益率 < 5% 则平仓
@@ -411,10 +410,10 @@ class TieredExitStrategy(ExitStrategy):
                 continue
 
             if phase == "open":
-                s = self._check_open_tiered(stock_code, state, price_provider)
-                if s:
-                    signals.append(s)
+                # 开盘阶段无操作（止损/止盈均在收盘时直接执行）
+                pass
             elif phase == "intraday":
+                # 盘中更新峰值价格
                 self._update_peak_intraday(stock_code, state, price_provider)
             elif phase == "close":
                 s = self._check_close_tiered(
@@ -424,32 +423,6 @@ class TieredExitStrategy(ExitStrategy):
                     signals.append(s)
 
         return signals
-
-    def _check_open_tiered(
-        self,
-        stock_code: str,
-        state: _TieredPositionState,
-        price_provider: Callable[[str, str], Optional[float]],
-    ) -> Optional[ExitSignal]:
-        """检查开盘：处理昨日收盘触发的止损/移动止盈，按开盘价离场。"""
-        if not state.pending_stop_loss_sell and not state.pending_trailing_sell:
-            return None
-
-        open_price = price_provider(stock_code, "open")
-        if open_price is None:
-            return None
-
-        reason = "移动止盈" if state.pending_trailing_sell else "止损出局"
-        logger.info(
-            "分级止盈 [%s]: 昨日收盘触发%s，今日开盘价 %.2f 离场",
-            stock_code, reason, open_price,
-        )
-        return ExitSignal(
-            stock_code=stock_code,
-            reason=reason,
-            sell_price=open_price,
-            price_type="open",
-        )
 
     def _update_peak_intraday(
         self,
@@ -470,7 +443,7 @@ class TieredExitStrategy(ExitStrategy):
         date_to_index: Dict[date, int],
         current_date_index: int,
     ) -> Optional[ExitSignal]:
-        """检查收盘：更新峰值 + 止损 + 移动止盈 + 时间止损。"""
+        """检查收盘：更新峰值 + 止损 + 移动止盈 + 时间止损，全部以收盘价直接执行。"""
         close_price = price_provider(stock_code, "close")
         if close_price is None:
             return None
@@ -486,15 +459,19 @@ class TieredExitStrategy(ExitStrategy):
         gain_pct = (close_price - state.entry_price) / state.entry_price
         max_gain_pct = (state.peak_price - state.entry_price) / state.entry_price
 
-        # 1. 止损检查：收盘价 < 止损价 → 标记次日开盘卖出
+        # 1. 止损检查：收盘价 < 止损价 → 当日收盘价直接离场
         stop_loss_price = state.entry_price * (1 - self.stop_loss_pct)
         if close_price <= stop_loss_price:
-            state.pending_stop_loss_sell = True
             logger.info(
-                "分级止盈 [%s]: 收盘价 %.2f <= 止损价 %.2f，标记次日开盘卖出",
+                "分级止盈 [%s]: 收盘价 %.2f <= 止损价 %.2f，当日收盘价离场",
                 stock_code, close_price, stop_loss_price,
             )
-            return None  # 次日开盘处理
+            return ExitSignal(
+                stock_code=stock_code,
+                reason="止损出局",
+                sell_price=close_price,
+                price_type="close",
+            )
 
         # 2. 阶梯式移动止盈检查
         # 基于峰值曾达到的最大盈利决定回撤容忍度，即使当前价格回落也锁定高等级保护
@@ -507,13 +484,17 @@ class TieredExitStrategy(ExitStrategy):
             state.last_trailing_stop = trailing_stop
 
             if close_price <= trailing_stop:
-                state.pending_trailing_sell = True
                 logger.info(
-                    "分级止盈 [%s]: 收盘价 %.2f <= 移动止盈价 %.2f(峰值 %.2f, 峰值盈利 %.1f%%, 回撤 %.0f%%)，标记次日开盘卖出",
+                    "分级止盈 [%s]: 收盘价 %.2f <= 移动止盈价 %.2f(峰值 %.2f, 峰值盈利 %.1f%%, 回撤 %.0f%%)，当日收盘价离场",
                     stock_code, close_price, trailing_stop, state.peak_price,
                     max_gain_pct * 100, trailing_dd * 100,
                 )
-                return None  # 次日开盘处理
+                return ExitSignal(
+                    stock_code=stock_code,
+                    reason="移动止盈",
+                    sell_price=close_price,
+                    price_type="close",
+                )
 
         # 3. 动态时间止损
         entry_index = date_to_index.get(state.entry_date)

@@ -359,6 +359,7 @@ class BacktestOrchestrator:
             max_positions=final_max_positions,
             max_holding_days=self.config.get("max_holding_days", 5),
             exit_strategy=exit_strategy_instance,
+            market_trend_filter=self.config.get("market_trend_filter"),
         )
 
         # 设置策略（支持多策略）

@@ -195,6 +195,7 @@ class StrategyBacktestEngine:
         max_positions: Optional[int] = None,
         max_holding_days: int = 5,
         exit_strategy: Optional["ExitStrategy"] = None,
+        market_trend_filter: Optional[Dict[str, Any]] = None,
     ):
         """
         初始化回测引擎。
@@ -211,6 +212,8 @@ class StrategyBacktestEngine:
             max_positions: 最大持仓数量
             max_holding_days: 最长持股时间（已弃用，请使用 exit_strategy）
             exit_strategy: 退出策略实例（推荐使用）
+            market_trend_filter: 大盘趋势过滤器配置，如 {"index_code": "000001.SH", "ma_period": 20}
+                                 为 None 或空字典时不启用
         """
         self._original_data_provider = data_provider
         self._data_provider = TimeIsolatedDataProvider(data_provider)
@@ -233,6 +236,10 @@ class StrategyBacktestEngine:
         if threading.current_thread() is threading.main_thread():
             self._original_sigint = signal.signal(signal.SIGINT, self._sigint_handler)
             self._sigint_installed = True
+
+        # 大盘趋势过滤器
+        self.market_trend_filter = market_trend_filter or {}
+        self._index_cache: Dict[str, pd.DataFrame] = {}  # 指数数据缓存
 
         # 退出策略
         if exit_strategy is not None:
@@ -411,6 +418,76 @@ class StrategyBacktestEngine:
         except (KeyError, ValueError, IndexError) as e:
             logger.warning(f"获取股票{price_type}价失败 {stock_code}: {e}")
         return None
+
+    def _check_market_trend(self, current_date: date) -> Optional[bool]:
+        """
+        检查大盘趋势过滤器。
+
+        当指数收盘价站上其 MA(ma_period) 时返回 True（允许开仓）；
+        否则返回 False（禁止开仓）。
+        如果过滤器未配置或数据获取失败，返回 None（不拦截）。
+
+        Returns:
+            True  - 趋势允许开仓
+            False - 趋势禁止开仓
+            None  - 无法判断（不拦截）
+        """
+        if not self.market_trend_filter:
+            return None
+
+        index_code = self.market_trend_filter.get("index_code", "000001.SH")
+        ma_period = self.market_trend_filter.get("ma_period", 20)
+
+        # 从缓存获取指数数据
+        if index_code not in self._index_cache:
+            try:
+                raw = self._original_data_provider.get_daily_data(index_code, days=ma_period + 30)
+                if isinstance(raw, tuple) and len(raw) == 2:
+                    df, _ = raw
+                else:
+                    df = raw
+                if df is not None and not df.empty and "date" in df.columns:
+                    df = df.copy()
+                    df["date"] = pd.to_datetime(df["date"]).dt.date
+                    df = df.sort_values("date").reset_index(drop=True)
+                    self._index_cache[index_code] = df
+                else:
+                    logger.warning("大盘趋势过滤器: 无法获取指数 %s 数据，跳过过滤", index_code)
+                    return None
+            except Exception as e:
+                logger.warning("大盘趋势过滤器: 获取指数 %s 数据失败: %s，跳过过滤", index_code, e)
+                return None
+
+        df = self._index_cache[index_code]
+
+        # 找到当前日期在指数数据中的位置
+        mask = df["date"] <= current_date
+        if not mask.any():
+            logger.debug("大盘趋势过滤器: 当前日期 %s 无指数数据，跳过过滤", current_date)
+            return None
+
+        df_up_to_date = df[mask].tail(ma_period + 5)
+        if len(df_up_to_date) < ma_period:
+            logger.debug("大盘趋势过滤器: 指数数据不足 %d 天，跳过过滤", ma_period)
+            return None
+
+        # 获取收盘价列
+        close_col = "close" if "close" in df_up_to_date.columns else "Close"
+        if close_col not in df_up_to_date.columns:
+            return None
+
+        closes = df_up_to_date[close_col].astype(float)
+        ma_value = closes.tail(ma_period).mean()
+        current_close = closes.iloc[-1]
+
+        passed = current_close > ma_value
+        logger.info(
+            "大盘趋势过滤器: %s 收盘 %.2f, MA%d %.2f, %s → %s",
+            index_code, current_close, ma_period, ma_value,
+            "站上均线" if passed else "跌破均线",
+            "允许开仓" if passed else "禁止开仓",
+        )
+        return passed
 
     def _compute_tiandao_indicators(self, current_date: date) -> None:
         """
@@ -749,6 +826,13 @@ class StrategyBacktestEngine:
 
         # 计算每只股票可分配的资金（预留手续费和滑点）
         current_date = self.get_current_date()
+
+        # 大盘趋势过滤器：指数在 MA20 下方时禁止开仓
+        trend_check = self._check_market_trend(current_date)
+        if trend_check is False:
+            logger.info("大盘趋势过滤器: 指数在均线下方，跳过本次买入")
+            return
+
         available_cash = self.portfolio.cash
         logger.info(f"可用现金: {available_cash:.2f}")
         if available_cash <= 0:
