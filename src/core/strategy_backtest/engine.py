@@ -10,6 +10,8 @@ from __future__ import annotations
 import logging
 import os
 import signal
+import warnings
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from enum import Enum
@@ -240,6 +242,14 @@ class StrategyBacktestEngine:
         # 大盘趋势过滤器
         self.market_trend_filter = market_trend_filter or {}
         self._index_cache: Dict[str, pd.DataFrame] = {}  # 指数数据缓存
+
+        # 滚动成交量历史（用于跌停封死判断）
+        VOLUME_WINDOW = 20
+        self._volume_history: Dict[str, deque] = defaultdict(lambda: deque(maxlen=VOLUME_WINDOW))
+        # 记录每只股票最后更新成交量历史的日期，配合 _update_volume_history 断言防重复
+        self._last_volume_update: Dict[str, date] = {}
+        # 当日 OHLCV 缓存，每日开始时加载一次，供 _is_limit_down_sealed 等使用
+        self._today_cache: Dict[str, Dict[str, float]] = {}
 
         # 退出策略
         if exit_strategy is not None:
@@ -488,6 +498,143 @@ class StrategyBacktestEngine:
             "允许开仓" if passed else "禁止开仓",
         )
         return passed
+
+    SEALED_VOLUME_RATIO = 0.1  # 封死判定：当日成交量 < 20日均量 × 此比例
+    VOLUME_WINDOW = 20  # 成交量均量窗口
+
+    def _is_limit_down_sealed(self, stock_code: str, close_price: float, current_date: date) -> bool:
+        """
+        判断股票是否跌停封死（无法卖出）。
+
+        主板统一按 round(prev_close × 0.9, 2) 计算跌停价。
+        收盘价高于跌停价 → 未封死。
+        收盘价 ≤ 跌停价 → 检查当日成交量是否小于 20 日均量的 10%：
+          - 是 → 封死，无法卖出
+          - 无历史数据 → 保守假设封死（冷启动期）
+
+        Args:
+            stock_code: 股票代码
+            close_price: 当日收盘价
+            current_date: 当前交易日
+
+        Returns:
+            True 表示跌停封死无法卖出，False 表示可以卖出
+        """
+        # 获取前一交易日收盘价
+        if self.current_date_index <= 0:
+            return False
+        prev_date = self.trading_dates[self.current_date_index - 1]
+        prev_close = self._get_stock_price(stock_code, prev_date, "close")
+        if prev_close is None or prev_close <= 0:
+            return False  # 无法获取昨收，保守假设未封死
+
+        # 计算跌停价（主板 ±10%，ST 已适用新规）
+        limit_down_price = round(prev_close * 0.9, 2)
+        if close_price > limit_down_price:
+            return False  # 未触及跌停
+
+        # 跌停价附近，检查成交量（从当日缓存读取，避免重复 I/O）
+        today_data = self._today_cache.get(stock_code)
+        today_volume = today_data.get("volume") if today_data else None
+        if today_volume is None or today_volume <= 0:
+            return True  # 无量 → 保守假设封死
+
+        vol_history = self._volume_history.get(stock_code)
+        min_history = max(5, self.VOLUME_WINDOW)  # 冷启动下限
+        if vol_history is None or len(vol_history) < min_history:
+            logger.debug(
+                "冷启动期 [%s]: 成交量历史 %d/%d 天，保守假设封死",
+                stock_code, len(vol_history) if vol_history else 0, min_history,
+            )
+            return True  # 冷启动期数据不足 → 保守假设封死
+
+        avg_volume = sum(vol_history) / len(vol_history)
+        if avg_volume <= 0:
+            return True
+
+        is_sealed = today_volume < avg_volume * self.SEALED_VOLUME_RATIO
+        logger.info(
+            "跌停封死判断 [%s]: 跌停价=%.2f, 收盘=%.2f, 当日量=%.0f, 20日均量=%.0f, 量比=%.2f%% → %s",
+            stock_code, limit_down_price, close_price,
+            today_volume, avg_volume,
+            today_volume / avg_volume * 100 if avg_volume > 0 else 0,
+            "封死" if is_sealed else "未封死",
+        )
+        return is_sealed
+
+    def _get_stock_volume(self, stock_code: str, trade_date: date) -> Optional[float]:
+        """
+        获取股票在指定日期的成交量。
+
+        .. deprecated::
+            请改用 _today_cache[stock_code]["volume"] 读取，
+            本方法保留仅作 _update_volume_history 的 fallback 兜底。
+
+        Args:
+            stock_code: 股票代码
+            trade_date: 交易日期
+
+        Returns:
+            成交量（股数），获取失败返回 None
+        """
+        warnings.warn(
+            "_get_stock_volume 已弃用，请改用 _today_cache 读取",
+            DeprecationWarning, stacklevel=2,
+        )
+        try:
+            data = self._data_provider.get_daily_data(stock_code, days=30)
+            if isinstance(data, tuple):
+                df, _ = data
+            else:
+                df = data
+            if df is None or df.empty:
+                return None
+
+            if "date" in df.columns:
+                df["date"] = pd.to_datetime(df["date"]).dt.date
+                target_df = df[df["date"] == trade_date]
+                if not target_df.empty:
+                    vol_col = "volume" if "volume" in target_df.columns else "Volume"
+                    if vol_col in target_df.columns:
+                        return float(target_df[vol_col].iloc[-1])
+            return None
+        except Exception:
+            return None
+
+    def _update_volume_history(self, current_date: date) -> None:
+        """
+        更新滚动成交量历史（STEP3）。
+
+        ⚠ 时序约束：本方法必须在 _is_limit_down_sealed(STEP1) 和买卖执行(STEP2) 之后调用，
+          确保当日成交量不会泄露进 20 日均量计算（未来函数变体）。
+
+        断言：每个股票每天只会更新一次，重复调用会抛出 AssertionError。
+        """
+        stock_codes_to_update = set(self.portfolio.positions.keys())
+        # 同时记录今日被清仓但仍有成交量历史的股票
+        for stock_code in list(self._volume_history.keys()):
+            if stock_code not in stock_codes_to_update:
+                stock_codes_to_update.add(stock_code)
+
+        for stock_code in stock_codes_to_update:
+            # 断言：每个股票每日只更新一次
+            last_date = self._last_volume_update.get(stock_code)
+            assert last_date is None or current_date > last_date, (
+                f"重复更新成交量历史: {stock_code}, 当前日期 {current_date}, 上次更新 {last_date}"
+            )
+
+            try:
+                # 优先从当日缓存读取成交量，避免重复 I/O
+                cached = self._today_cache.get(stock_code)
+                if cached is not None:
+                    volume = cached.get("volume", 0)
+                else:
+                    volume = self._get_stock_volume(stock_code, current_date)
+                if volume is not None and volume > 0:
+                    self._volume_history[stock_code].append(volume)
+                    self._last_volume_update[stock_code] = current_date
+            except Exception:
+                continue
 
     def _compute_tiandao_indicators(self, current_date: date) -> None:
         """
@@ -1043,6 +1190,30 @@ class StrategyBacktestEngine:
         current_date = self.trading_dates[self.current_date_index]
         self._data_provider.set_current_date(current_date)
 
+        # 加载当日所有持仓股票的 OHLCV 数据到缓存（一次性 I/O，避免封死判断中重复查询）
+        self._today_cache.clear()
+        for stock_code in list(self.portfolio.positions.keys()):
+            try:
+                data = self._data_provider.get_daily_data(stock_code, days=30)
+                if isinstance(data, tuple):
+                    df, _ = data
+                else:
+                    df = data
+                if df is not None and not df.empty and "date" in df.columns:
+                    df = df.copy()
+                    df["date"] = pd.to_datetime(df["date"]).dt.date
+                    target = df[df["date"] == current_date]
+                    if not target.empty:
+                        row = target.iloc[-1]
+                        row_dict = {}
+                        # 支持大小写列名
+                        for field in ("open", "close", "high", "low", "volume"):
+                            val = float(row.get(field, row.get(field.capitalize(), 0)))
+                            row_dict[field] = val
+                        self._today_cache[stock_code] = row_dict
+            except Exception:
+                continue
+
         logger.info(f"=== 开始日期 {current_date} ===")
 
         # 步骤 1：检查今天开盘价是否触发止盈止损（如果触发，按开盘价卖出）
@@ -1058,6 +1229,18 @@ class StrategyBacktestEngine:
 
         # 价格提供函数（绑定当前日期）
         def price_provider(stock_code: str, price_type: str) -> Optional[float]:
+            if price_type == "prev_close":
+                # 获取上一个交易日的收盘价（用于跌停板判断）
+                if self.current_date_index > 0:
+                    prev_date = self.trading_dates[self.current_date_index - 1]
+                    return self._get_stock_price(stock_code, prev_date, "close")
+                return None
+            if price_type == "is_limit_down_sealed":
+                # 判断是否跌停封死（返回 1.0 表示封死，0.0 表示未封死）
+                close_p = self._get_stock_price(stock_code, current_date, "close")
+                if close_p is None:
+                    return None
+                return 1.0 if self._is_limit_down_sealed(stock_code, close_p, current_date) else 0.0
             return self._get_stock_price(stock_code, current_date, price_type)
 
         # 计算天道指标并设置 indicator_provider
@@ -1107,7 +1290,10 @@ class StrategyBacktestEngine:
             if price:
                 self.portfolio.update_position_price(stock_code, price)
 
+        # ========== STEP1: 判断封死（通过 price_provider → _is_limit_down_sealed） ==========
         # 步骤 4：检查收盘条件（时间止损、收盘价止损等）
+        # 内部的 price_provider("is_limit_down_sealed") 会调用 _is_limit_down_sealed
+        # 读取 _today_cache 中的成交量，不涉及 _volume_history（当日数据未入库）
         logger.info("检查收盘条件...")
         # 先记录所有持仓的收盘价和涨跌幅
         for stock_code in list(self.portfolio.positions.keys()):
@@ -1130,6 +1316,9 @@ class StrategyBacktestEngine:
         )
         for signal in stocks_to_sell_close:
             self._process_exit_signal(signal, current_date, sold_stocks, "收盘")
+
+        # ========== STEP2: 执行买卖 ==========
+        # 卖出已通过 STEP1 判断，在此执行；后续 rebalance 为买入操作
 
         # 步骤 5：判断是否需要跑策略选股
         need_run_strategy = False
@@ -1212,6 +1401,10 @@ class StrategyBacktestEngine:
             logger.info("无需跑策略选股：没有股票被卖出且持仓已满")
 
         self.portfolio.record_equity(current_date)
+
+        # ========== STEP3: 更新 volume 历史（必须严格在 STEP1 判断封死 + STEP2 执行买卖之后） ==========
+        # 此时当日成交量才入库，供明日的 _is_limit_down_sealed 计算 20 日均量使用
+        self._update_volume_history(current_date)
         
         # 计算账户金额信息
         cash = self.portfolio.cash

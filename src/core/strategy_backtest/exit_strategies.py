@@ -462,6 +462,12 @@ class TieredExitStrategy(ExitStrategy):
         # 1. 止损检查：收盘价 < 止损价 → 当日收盘价直接离场
         stop_loss_price = state.entry_price * (1 - self.stop_loss_pct)
         if close_price <= stop_loss_price:
+            if price_provider(stock_code, "is_limit_down_sealed") == 1.0:
+                logger.info(
+                    "分级止盈 [%s]: 收盘价 %.2f <= 止损价 %.2f，但跌停封死无法成交，继续持有",
+                    stock_code, close_price, stop_loss_price,
+                )
+                return None
             logger.info(
                 "分级止盈 [%s]: 收盘价 %.2f <= 止损价 %.2f，当日收盘价离场",
                 stock_code, close_price, stop_loss_price,
@@ -484,6 +490,12 @@ class TieredExitStrategy(ExitStrategy):
             state.last_trailing_stop = trailing_stop
 
             if close_price <= trailing_stop:
+                if price_provider(stock_code, "is_limit_down_sealed") == 1.0:
+                    logger.info(
+                        "分级止盈 [%s]: 收盘价 %.2f <= 移动止盈价 %.2f，但跌停封死无法成交，继续持有",
+                        stock_code, close_price, trailing_stop,
+                    )
+                    return None
                 logger.info(
                     "分级止盈 [%s]: 收盘价 %.2f <= 移动止盈价 %.2f(峰值 %.2f, 峰值盈利 %.1f%%, 回撤 %.0f%%)，当日收盘价离场",
                     stock_code, close_price, trailing_stop, state.peak_price,
