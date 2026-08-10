@@ -1247,10 +1247,6 @@ def _evaluate_signals_incremental(full_df: 'pd.DataFrame', prev_len: int) -> lis
         jinniu_f = float(jinniu_val)
 
         if close_f < jinzuan_f:
-            logger.info(
-                f"[天道信号-逐bar] {tl} 买入: close={close_f:.4f}, jinzuan={jinzuan_f:.4f}, "
-                f"jinniu={jinniu_f:.4f}, 差值={jinzuan_f - close_f:.4f}"
-            )
             signals.append(
                 TiandaoSignal(
                     signal_type="buy",
@@ -1260,10 +1256,6 @@ def _evaluate_signals_incremental(full_df: 'pd.DataFrame', prev_len: int) -> lis
                 )
             )
         elif close_f > jinniu_f:
-            logger.info(
-                f"[天道信号-逐bar] {tl} 卖出: close={close_f:.4f}, jinniu={jinniu_f:.4f}, "
-                f"jinzuan={jinzuan_f:.4f}, 差值={close_f - jinniu_f:.4f}"
-            )
             signals.append(
                 TiandaoSignal(
                     signal_type="sell",
@@ -1272,13 +1264,6 @@ def _evaluate_signals_incremental(full_df: 'pd.DataFrame', prev_len: int) -> lis
                     reason="价格突破金牛线",
                 )
             )
-        else:
-            # 在区间内，无信号，记录调试信息（仅在13:00-14:00时段输出，避免日志过多）
-            if tl and "T13:" in tl:
-                logger.info(
-                    f"[天道信号-逐bar] {tl} 无信号: close={close_f:.4f}, jinzuan={jinzuan_f:.4f}, "
-                    f"jinniu={jinniu_f:.4f}, 区间内"
-                )
 
     return signals
 
