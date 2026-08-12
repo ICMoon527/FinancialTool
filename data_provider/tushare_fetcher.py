@@ -401,7 +401,7 @@ class TushareFetcher(BaseFetcher):
                 logger.warning(f"Tushare 配额可能超限: {e}")
                 raise RateLimitError(f"Tushare 配额超限: {e}") from e
             
-            raise DataFetchError(f"Tushare 批量获取数据失败: {e}") from e
+            raise DataFetchError(f"❌ Tushare 批量获取数据失败: {e}") from e
     
     @retry(
         stop=stop_after_attempt(3),

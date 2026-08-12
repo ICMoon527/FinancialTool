@@ -946,7 +946,7 @@ class TushareDataDownloader:
                             batch_added = stats['stocks_success'] - before_success
                             group_success += batch_added
                         else:
-                            logger.warning(f"Tushare 返回空数据，此批失败")
+                            logger.warning(f"❌ Tushare 返回空数据，此批失败")
                             stats['stocks_failed'] += len(batch_stocks)
                             group_failed += len(batch_stocks)
                             stats['failed_stocks'].extend([
@@ -954,11 +954,11 @@ class TushareDataDownloader:
                                 for code in batch_stocks
                             ])
                     except Exception as e:
-                        logger.warning(f"Tushare 批量获取失败: {e}，此批失败")
+                        logger.warning(f"❌ Tushare 批量获取失败: {e}，此批失败")
                         stats['stocks_failed'] += len(batch_stocks)
                         group_failed += len(batch_stocks)
                         stats['failed_stocks'].extend([
-                            {'code': code, 'error': f'Tushare 批量获取失败: {e}'}
+                            {'code': code, 'error': f'❌ Tushare 批量获取失败: {e}'}
                             for code in batch_stocks
                         ])
 
@@ -1134,17 +1134,17 @@ class TushareDataDownloader:
                         self._process_batch_data(batch_df, batch_stocks, start_date, end_date, stats)
                         continue
                     else:
-                        logger.warning(f"Tushare 返回空数据，此批失败")
+                        logger.warning(f"❌ Tushare 返回空数据，此批失败")
                         stats['stocks_failed'] += len(batch_stocks)
                         stats['failed_stocks'].extend([
                             {'code': code, 'error': 'Tushare 返回空数据'} 
                             for code in batch_stocks
                         ])
                 except Exception as e:
-                    logger.warning(f"Tushare 批量获取失败: {e}，此批失败")
+                    logger.warning(f"❌ Tushare 批量获取失败: {e}，此批失败")
                     stats['stocks_failed'] += len(batch_stocks)
                     stats['failed_stocks'].extend([
-                        {'code': code, 'error': f'Tushare 批量获取失败: {e}'} 
+                        {'code': code, 'error': f'❌ Tushare 批量获取失败: {e}'} 
                         for code in batch_stocks
                     ])
         
