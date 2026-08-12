@@ -499,7 +499,7 @@ class StrategyBacktestEngine:
         )
         return passed
 
-    SEALED_VOLUME_RATIO = 0.1  # 封死判定：当日成交量 < 20日均量 × 此比例
+    SEALED_VOLUME_RATIO = 0.15  # 封死判定：当日成交量 < 20日均量 × 此比例
     VOLUME_WINDOW = 20  # 成交量均量窗口
 
     def _is_limit_down_sealed(self, stock_code: str, close_price: float, current_date: date) -> bool:
