@@ -250,6 +250,9 @@ class StrategyBacktestEngine:
         self._last_volume_update: Dict[str, date] = {}
         # 当日 OHLCV 缓存，每日开始时加载一次，供 _is_limit_down_sealed 等使用
         self._today_cache: Dict[str, Dict[str, float]] = {}
+        # 封死检查计数器（用于验证缓存一致性）
+        self._sealed_check_count = 0
+        self._sealed_true_count = 0
 
         # 退出策略
         if exit_strategy is not None:
@@ -499,7 +502,7 @@ class StrategyBacktestEngine:
         )
         return passed
 
-    SEALED_VOLUME_RATIO = 0.15  # 封死判定：当日成交量 < 20日均量 × 此比例
+    SEALED_VOLUME_RATIO = 0.05  # 封死判定：当日成交量 < 20日均量 × 此比例
     VOLUME_WINDOW = 20  # 成交量均量窗口
 
     def _is_limit_down_sealed(self, stock_code: str, close_price: float, current_date: date) -> bool:
@@ -520,6 +523,9 @@ class StrategyBacktestEngine:
         Returns:
             True 表示跌停封死无法卖出，False 表示可以卖出
         """
+        # 计数器：记录封死检查总次数和判定为封死的次数
+        self._sealed_check_count += 1
+
         # 获取前一交易日收盘价
         if self.current_date_index <= 0:
             return False
@@ -537,6 +543,7 @@ class StrategyBacktestEngine:
         today_data = self._today_cache.get(stock_code)
         today_volume = today_data.get("volume") if today_data else None
         if today_volume is None or today_volume <= 0:
+            self._sealed_true_count += 1
             return True  # 无量 → 保守假设封死
 
         vol_history = self._volume_history.get(stock_code)
@@ -550,9 +557,12 @@ class StrategyBacktestEngine:
 
         avg_volume = sum(vol_history) / len(vol_history)
         if avg_volume <= 0:
+            self._sealed_true_count += 1
             return True
 
         is_sealed = today_volume < avg_volume * self.SEALED_VOLUME_RATIO
+        if is_sealed:
+            self._sealed_true_count += 1
         logger.info(
             "跌停封死判断 [%s]: 跌停价=%.2f, 收盘=%.2f, 当日量=%.0f, 20日均量=%.0f, 量比=%.2f%% → %s",
             stock_code, limit_down_price, close_price,
@@ -1443,6 +1453,13 @@ class StrategyBacktestEngine:
 
         logger.info("回测完成")
         logger.info(f"最终权益: {self.portfolio.get_total_equity():.2f}")
+
+        # 封死检查统计（用于验证缓存一致性）
+        print(f"=== 封死检查统计 ===")
+        print(f"总检查次数: {self._sealed_check_count}")
+        print(f"判定为封死次数: {self._sealed_true_count}")
+        if self._sealed_check_count > 0:
+            print(f"封死比例: {self._sealed_true_count / self._sealed_check_count * 100:.1f}%")
 
         return self.portfolio
 
