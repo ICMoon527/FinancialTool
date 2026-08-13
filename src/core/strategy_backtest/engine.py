@@ -437,7 +437,7 @@ class StrategyBacktestEngine:
         检查大盘趋势过滤器。
 
         当指数收盘价站上其 MA(ma_period) 时返回 True（允许开仓）；
-        否则返回 False（禁止开仓）。
+        如果配置了 ma_slope_N > 0，还要求 MA20 斜率 > 0 才允许开仓。
         如果过滤器未配置或数据获取失败，返回 None（不拦截）。
 
         Returns:
@@ -450,6 +450,10 @@ class StrategyBacktestEngine:
 
         index_code = self.market_trend_filter.get("index_code", "000001.SH")
         ma_period = self.market_trend_filter.get("ma_period", 20)
+        ma_slope_N = int(self.market_trend_filter.get("ma_slope_N", 0))
+
+        # 确保有足够数据计算 MA20 斜率（需要 ma_period + N 行有效数据）
+        needed_extra = max(5, ma_slope_N + 5)
 
         # 从缓存获取指数数据
         if index_code not in self._index_cache:
@@ -479,7 +483,7 @@ class StrategyBacktestEngine:
             logger.debug("大盘趋势过滤器: 当前日期 %s 无指数数据，跳过过滤", current_date)
             return None
 
-        df_up_to_date = df[mask].tail(ma_period + 5)
+        df_up_to_date = df[mask].tail(ma_period + needed_extra)
         if len(df_up_to_date) < ma_period:
             logger.debug("大盘趋势过滤器: 指数数据不足 %d 天，跳过过滤", ma_period)
             return None
@@ -490,14 +494,38 @@ class StrategyBacktestEngine:
             return None
 
         closes = df_up_to_date[close_col].astype(float)
-        ma_value = closes.tail(ma_period).mean()
+        # 计算 MA20 序列（用于斜率计算）
+        ma_series = closes.rolling(window=ma_period).mean()
+        ma_value = ma_series.iloc[-1]
         current_close = closes.iloc[-1]
 
-        passed = current_close > ma_value
+        # 条件 1：收盘价 > MA20（位置过滤）
+        position_passed = current_close > ma_value
+
+        # 条件 2：MA20 斜率 > 0（方向过滤）
+        slope_passed = True
+        slope_detail = ""
+        if ma_slope_N > 0:
+            # 需要 ma_series 中至少有 ma_slope_N + 1 个有效值
+            if ma_series.notna().sum() > ma_slope_N:
+                ma_today = ma_series.iloc[-1]
+                ma_past = ma_series.iloc[-1 - ma_slope_N]
+                if pd.isna(ma_today) or pd.isna(ma_past):
+                    slope_passed = True  # 数据不足时保守不拦截
+                    slope_detail = "（数据不足，跳过斜率过滤）"
+                else:
+                    slope = ma_today - ma_past
+                    slope_passed = slope > 0
+                    slope_detail = f"，MA20斜率({ma_slope_N}日)={slope:+.4f}，{'向上' if slope_passed else '向下'}"
+            else:
+                slope_detail = "（数据不足，跳过斜率过滤）"
+
+        passed = position_passed and slope_passed
         logger.info(
-            "大盘趋势过滤器: %s 收盘 %.2f, MA%d %.2f, %s → %s",
+            "大盘趋势过滤器: %s 收盘 %.2f, MA%d %.2f, %s%s → %s",
             index_code, current_close, ma_period, ma_value,
-            "站上均线" if passed else "跌破均线",
+            "站上均线" if position_passed else "跌破均线",
+            slope_detail,
             "允许开仓" if passed else "禁止开仓",
         )
         return passed
