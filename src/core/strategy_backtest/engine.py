@@ -7,9 +7,11 @@
 
 from __future__ import annotations
 
+import ctypes
 import logging
 import os
 import signal
+import threading
 import warnings
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
@@ -233,11 +235,13 @@ class StrategyBacktestEngine:
         self._should_stop = False
 
         # 安装 Ctrl+C 信号处理器，支持安全停止回测（仅在主线程中有效）
-        import threading
         self._sigint_installed = False
         if threading.current_thread() is threading.main_thread():
             self._original_sigint = signal.signal(signal.SIGINT, self._sigint_handler)
             self._sigint_installed = True
+
+        # 安装 Windows 控制台事件处理器（独立线程，不受 Fortran/C 扩展阻塞）
+        self._install_windows_console_handler()
 
         # 大盘趋势过滤器
         self.market_trend_filter = market_trend_filter or {}
@@ -342,6 +346,43 @@ class StrategyBacktestEngine:
         logger.warning("收到 Ctrl+C 终止信号，正在安全停止回测...（再次按 Ctrl+C 强制退出）")
         self._should_stop = True
 
+    def _install_windows_console_handler(self) -> None:
+        """
+        安装 Windows 控制台事件处理器（通过 ctypes）。
+
+        该处理器运行在独立线程中，不受 numpy/pandas 底层的 Intel Fortran 运行时
+        (libifcoremd.dll) 信号拦截影响，确保 Ctrl+C 在 C 扩展执行期间也能被正确处理。
+        """
+        self._console_handler_installed = False
+        self._console_handler_callback = None
+        try:
+            if os.name != "nt":
+                return  # 非 Windows 系统无需此处理器
+
+            kernel32 = ctypes.windll.kernel32
+
+            @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_uint)
+            def _handler(dwCtrlType: int) -> bool:
+                """Windows 控制台事件回调。"""
+                if dwCtrlType != 0:  # 0 = CTRL_C_EVENT
+                    return False  # 非 Ctrl+C 事件，交给其他处理器
+                self._should_stop = True
+                # 启动看门狗线程：5秒后强制退出，避免进程永久挂起
+                def _watchdog():
+                    import time
+                    time.sleep(5)
+                    os._exit(1)
+                t = threading.Thread(target=_watchdog, daemon=True)
+                t.start()
+                return True  # 已处理，不传递给其他处理器（包括 Fortran 运行时）
+
+            # 保存引用防止被 gc 回收
+            self._console_handler_callback = _handler
+            kernel32.SetConsoleCtrlHandler(_handler, True)
+            self._console_handler_installed = True
+        except Exception:
+            self._console_handler_installed = False
+
     def get_current_date(self) -> Optional[date]:
         """
         获取当前回测日期。
@@ -437,7 +478,8 @@ class StrategyBacktestEngine:
         检查大盘趋势过滤器。
 
         当指数收盘价站上其 MA(ma_period) 时返回 True（允许开仓）；
-        如果配置了 ma_slope_N > 0，还要求 MA20 斜率 > 0 才允许开仓。
+        如果配置了 ma_slope_N > 0，还要求 MA20 斜率 > -crash_threshold（日百分比）才允许开仓。
+        抄底策略不需要大盘向上，只需排除加速崩盘场景。crash_threshold=0 退化为旧行为 slope>0。
         如果过滤器未配置或数据获取失败，返回 None（不拦截）。
 
         Returns:
@@ -502,23 +544,29 @@ class StrategyBacktestEngine:
         # 条件 1：收盘价 > MA20（位置过滤）
         position_passed = current_close > ma_value
 
-        # 条件 2：MA20 斜率 > 0（方向过滤）
+        # 条件 2：MA20 斜率 > 崩盘阈值（方向过滤）
+        # 抄底策略只要求大盘不处于"加速崩盘"，不要求向上
+        # crash_threshold = 0 退化为旧行为：slope > 0
         slope_passed = True
         slope_detail = ""
         if ma_slope_N > 0:
-            # 需要 ma_series 中至少有 ma_slope_N + 1 个有效值
-            if ma_series.notna().sum() > ma_slope_N:
-                ma_today = ma_series.iloc[-1]
-                ma_past = ma_series.iloc[-1 - ma_slope_N]
-                if pd.isna(ma_today) or pd.isna(ma_past):
-                    slope_passed = True  # 数据不足时保守不拦截
-                    slope_detail = "（数据不足，跳过斜率过滤）"
-                else:
-                    slope = ma_today - ma_past
-                    slope_passed = slope > 0
-                    slope_detail = f"，MA20斜率({ma_slope_N}日)={slope:+.4f}，{'向上' if slope_passed else '向下'}"
+            crash_threshold = float(self.market_trend_filter.get("ma_slope_crash_threshold", 0))
+            valid_ma = ma_series.dropna()  # 剔除前期的 NaN，只保留有效 MA 值
+            # 显式校验：有效 MA 值必须足够覆盖 N+1 个点（今天 + N 天前）
+            if len(valid_ma) >= ma_slope_N + 1:
+                ma_today = valid_ma.iloc[-1]
+                ma_past = valid_ma.iloc[-1 - ma_slope_N]
+                # 日化斜率（百分比）：(MA20[today] - MA20[today-N]) / MA20[today-N] / N
+                slope_pct = (ma_today - ma_past) / ma_past / ma_slope_N
+                slope_passed = slope_pct > -crash_threshold
+                slope_detail = (
+                    f"，MA20斜率({ma_slope_N}日)={slope_pct*100:+.4f}%/天"
+                    f"，崩盘阈值={crash_threshold*100:.2f}%/天"
+                    f"，{'允许开仓' if slope_passed else '禁止开仓'}"
+                )
             else:
-                slope_detail = "（数据不足，跳过斜率过滤）"
+                # 数据不足时不拦截（保守放行），但必须留痕
+                slope_detail = f"，MA20有效值不足({len(valid_ma)}<{ma_slope_N+1})，跳过斜率过滤"
 
         passed = position_passed and slope_passed
         logger.info(
@@ -1012,12 +1060,8 @@ class StrategyBacktestEngine:
         # 计算每只股票可分配的资金（预留手续费和滑点）
         current_date = self.get_current_date()
 
-        # 大盘趋势过滤器：指数在 MA20 下方时禁止开仓
-        trend_check = self._check_market_trend(current_date)
-        if trend_check is False:
-            logger.info("大盘趋势过滤器: 指数在均线下方，跳过本次买入")
-            return
-
+        # 大盘趋势过滤器已在 _step 中提前判断，此处无需重复检查
+        
         available_cash = self.portfolio.cash
         logger.info(f"可用现金: {available_cash:.2f}")
         if available_cash <= 0:
@@ -1376,65 +1420,70 @@ class StrategyBacktestEngine:
         # 执行策略选股（如果需要）
         has_strategies = (self._strategy is not None) or (len(self._strategies) > 0)
         if has_strategies and need_run_strategy:
-            selected_stocks = []
-            from tqdm import tqdm
-            
-            strategies_to_use = self._strategies if len(self._strategies) > 0 else [self._strategy]
-            logger.info(f"开始策略选股，共 {len(self._stock_pool)} 只股票，使用 {len(strategies_to_use)} 个策略...")
-            
-            # 使用进度条遍历股票池
-            selected_with_scores = []
-            for stock_code in tqdm(
-                self._stock_pool,
-                desc=f"策略选股 [{current_date}]",
-                unit="只",
-                leave=False,
-                ncols=100
-            ):
-                # 检查停止标志
-                if self._should_stop:
-                    logger.info("策略选股被用户终止")
-                    break
-                try:
-                    # 计算综合得分：所有匹配策略的平均得分
-                    total_score = 0.0
-                    all_matched = True
-                    
-                    for strategy in strategies_to_use:
-                        # 回测中启用金钻趋势 > 金牛2 条件，过滤趋势已被破坏的标的
-                        match = strategy.select(stock_code, require_jinzuan_above_jinniu2=True)
-                        if not match or not match.matched:
-                            all_matched = False
-                            break
-                        total_score += match.score
-                        # 取策略的控盘度（用于排序）
-                        control_degree = match.control_degree
-                    
-                    # 只有当所有策略都匹配时才选中（与选股页面保持一致）
-                    if all_matched:
-                        avg_score = total_score / len(strategies_to_use)
-                        selected_with_scores.append((stock_code, avg_score, control_degree))
-                except Exception as e:
-                    logger.warning(f"策略执行失败 {stock_code}: {e}")
-            
-            # 按控盘度从高到低排序，控盘度相同时按策略得分从高到低排序
-            selected_with_scores_sorted = sorted(
-                selected_with_scores,
-                key=lambda x: (
-                    -(x[2] if x[2] is not None else 0),  # 控盘度
-                    -x[1],  # 策略得分
-                )
-            )
-            selected_stocks = [stock_code for stock_code, score, cd in selected_with_scores_sorted]
-            
-            if selected_with_scores_sorted:
-                logger.info(f"选中股票的分数（前10只）: {[(stock, round(score, 2), round(cd, 2) if cd else 0) for stock, score, cd in selected_with_scores_sorted[:10]]}")
+            # 大盘趋势过滤器：禁止开仓时跳过策略选股，避免无意义的遍历
+            trend_check = self._check_market_trend(current_date)
+            if trend_check == False:
+                logger.info("大盘趋势过滤器: 禁止开仓，跳过策略选股")
+            else:
+                selected_stocks = []
+                from tqdm import tqdm
 
-            logger.info(f"策略选股完成: 选中 {len(selected_stocks)} 只股票")
-            if selected_stocks:
-                logger.info(f"选中的股票: {selected_stocks[:10]}{'...' if len(selected_stocks) > 10 else ''}")
-            
-            self.rebalance(selected_stocks)
+                strategies_to_use = self._strategies if len(self._strategies) > 0 else [self._strategy]
+                logger.info(f"开始策略选股，共 {len(self._stock_pool)} 只股票，使用 {len(strategies_to_use)} 个策略...")
+
+                # 使用进度条遍历股票池
+                selected_with_scores = []
+                for stock_code in tqdm(
+                    self._stock_pool,
+                    desc=f"策略选股 [{current_date}]",
+                    unit="只",
+                    leave=False,
+                    ncols=100
+                ):
+                    # 检查停止标志
+                    if self._should_stop:
+                        logger.info("策略选股被用户终止")
+                        break
+                    try:
+                        # 计算综合得分：所有匹配策略的平均得分
+                        total_score = 0.0
+                        all_matched = True
+
+                        for strategy in strategies_to_use:
+                            # 回测中启用金钻趋势 > 金牛2 条件，过滤趋势已被破坏的标的
+                            match = strategy.select(stock_code, require_jinzuan_above_jinniu2=True)
+                            if not match or not match.matched:
+                                all_matched = False
+                                break
+                            total_score += match.score
+                            # 取策略的控盘度（用于排序）
+                            control_degree = match.control_degree
+
+                        # 只有当所有策略都匹配时才选中（与选股页面保持一致）
+                        if all_matched:
+                            avg_score = total_score / len(strategies_to_use)
+                            selected_with_scores.append((stock_code, avg_score, control_degree))
+                    except Exception as e:
+                        logger.warning(f"策略执行失败 {stock_code}: {e}")
+
+                # 按控盘度从高到低排序，控盘度相同时按策略得分从高到低排序
+                selected_with_scores_sorted = sorted(
+                    selected_with_scores,
+                    key=lambda x: (
+                        -(x[2] if x[2] is not None else 0),  # 控盘度
+                        -x[1],  # 策略得分
+                    )
+                )
+                selected_stocks = [stock_code for stock_code, score, cd in selected_with_scores_sorted]
+
+                if selected_with_scores_sorted:
+                    logger.info(f"选中股票的分数（前10只）: {[(stock, round(score, 2), round(cd, 2) if cd else 0) for stock, score, cd in selected_with_scores_sorted[:10]]}")
+
+                logger.info(f"策略选股完成: 选中 {len(selected_stocks)} 只股票")
+                if selected_stocks:
+                    logger.info(f"选中的股票: {selected_stocks[:10]}{'...' if len(selected_stocks) > 10 else ''}")
+
+                self.rebalance(selected_stocks)
         elif has_strategies and not need_run_strategy:
             logger.info("无需跑策略选股：没有股票被卖出且持仓已满")
 

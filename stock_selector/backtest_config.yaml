@@ -118,11 +118,12 @@ stock_pool: []
 # - 启用后，只在指数站上其 MA(ma_period) 时允许开仓
 # - 指数在均线下方时，跳过买入但不清仓已有持仓
 # - 设置为空 {} 或删除本节点即关闭过滤器
-# market_trend_filter: {}  # 默认关闭
-market_trend_filter:
-  index_code: "000001.SH"  # 上证指数
-  ma_period: 20
-  ma_slope_N: 1            # MA20 斜率计算周期（N ∈ {1,3,5}，0 表示关闭斜率过滤）
+market_trend_filter: {}  # 默认关闭
+# market_trend_filter:
+#   index_code: "000001.SH"  # 上证指数
+#   ma_period: 20
+#   ma_slope_N: 0            # MA20 斜率计算周期（N ∈ {1,3,5}，0 表示关闭斜率过滤）
+#   ma_slope_crash_threshold: 0.002  # 崩盘阈值（日百分比）：斜率 > -threshold 时允许开仓，0 表示退化为 slope>0
 
 # 止盈止损配置（旧版，保留向后兼容）
 # 说明：
