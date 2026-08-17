@@ -200,6 +200,7 @@ class StrategyBacktestEngine:
         max_holding_days: int = 5,
         exit_strategy: Optional["ExitStrategy"] = None,
         market_trend_filter: Optional[Dict[str, Any]] = None,
+        backtest_strategy_params: Optional[Dict[str, Dict[str, Any]]] = None,
     ):
         """
         初始化回测引擎。
@@ -218,6 +219,7 @@ class StrategyBacktestEngine:
             exit_strategy: 退出策略实例（推荐使用）
             market_trend_filter: 大盘趋势过滤器配置，如 {"index_code": "000001.SH", "ma_period": 20}
                                  为 None 或空字典时不启用
+            backtest_strategy_params: 回测策略参数字典，如 {"tiandao_xg_buy": {"require_jinzuan_above_jinniu2": True}}
         """
         self._original_data_provider = data_provider
         self._data_provider = TimeIsolatedDataProvider(data_provider)
@@ -246,6 +248,9 @@ class StrategyBacktestEngine:
         # 大盘趋势过滤器
         self.market_trend_filter = market_trend_filter or {}
         self._index_cache: Dict[str, pd.DataFrame] = {}  # 指数数据缓存
+
+        # 回测策略参数（如 require_jinzuan_above_jinniu2 等）
+        self.backtest_strategy_params: Dict[str, Dict[str, Any]] = backtest_strategy_params or {}
 
         # 滚动成交量历史（用于跌停封死判断）
         VOLUME_WINDOW = 20
@@ -1450,8 +1455,10 @@ class StrategyBacktestEngine:
                         all_matched = True
 
                         for strategy in strategies_to_use:
-                            # 回测中启用金钻趋势 > 金牛2 条件，过滤趋势已被破坏的标的
-                            match = strategy.select(stock_code, require_jinzuan_above_jinniu2=True)
+                            # 从配置读取策略参数（如 require_jinzuan_above_jinniu2）
+                            strategy_params = self.backtest_strategy_params.get(strategy.id, {})
+                            require_jinzuan = strategy_params.get("require_jinzuan_above_jinniu2", True)
+                            match = strategy.select(stock_code, require_jinzuan_above_jinniu2=require_jinzuan)
                             if not match or not match.matched:
                                 all_matched = False
                                 break
@@ -1504,6 +1511,95 @@ class StrategyBacktestEngine:
 
         return self.current_date_index < len(self.trading_dates)
 
+    def _analyze_drawdown(self) -> None:
+        """回撤归因分析：打印到终端并保存到日志文件。"""
+        equity_history = self.portfolio.equity_history
+        if len(equity_history) < 2:
+            return
+
+        # 1. 构建净值序列
+        dates, values = zip(*equity_history)
+        nav = pd.Series(values, index=pd.to_datetime(dates))
+
+        # 2. 配对买卖交易，计算每笔收益率
+        buys: List[Trade] = []
+        paired_trades: List[Dict[str, Any]] = []
+        for t in self.portfolio.trades:
+            if t.order_type == OrderType.BUY:
+                buys.append(t)
+            elif t.order_type == OrderType.SELL:
+                # 按 FIFO 匹配买入
+                for i, bt in enumerate(buys):
+                    if bt.stock_code == t.stock_code and bt.quantity == t.quantity:
+                        buy_cost = bt.quantity * bt.price + bt.commission + bt.slippage
+                        sell_value = t.quantity * t.price - t.commission - t.slippage
+                        pnl_pct = (sell_value - buy_cost) / buy_cost
+                        paired_trades.append({
+                            'stock': t.stock_code,
+                            'entry_date': bt.date,
+                            'exit_date': t.date,
+                            'pnl': pnl_pct,
+                        })
+                        buys.pop(i)
+                        break
+
+        # 3. 回撤归因计算
+        dd = nav / nav.cummax() - 1
+
+        mdd_end = dd.idxmin()
+        mdd_start = nav[:mdd_end].idxmax()
+
+        lines: List[str] = []
+        lines.append("=" * 60)
+        lines.append("回撤归因分析")
+        lines.append("=" * 60)
+        lines.append(f"最大回撤区间: {mdd_start.date()} → {mdd_end.date()}, 幅度 {dd.min():.1%}")
+
+        if paired_trades:
+            trades_df = pd.DataFrame(paired_trades)
+            trades_in_dd = trades_df[
+                (trades_df['entry_date'] >= mdd_start.date()) &
+                (trades_df['exit_date'] <= mdd_end.date())
+            ]
+
+            lines.append(f"\n回撤区间内交易数: {len(trades_in_dd)}")
+            if len(trades_in_dd) > 0:
+                loss_trades = trades_in_dd[trades_in_dd['pnl'] < 0]
+                lines.append(f"区间内亏损交易占比: {len(loss_trades) / len(trades_in_dd):.1%}")
+                if len(loss_trades) > 0:
+                    lines.append(f"区间内总亏损: {loss_trades['pnl'].sum():.1%}")
+                    worst = loss_trades.loc[loss_trades['pnl'].idxmin()]
+                    lines.append(f"最大单笔亏损: {worst['pnl']:.1%} ({worst['stock']})")
+
+        # 4. 回撤形状分析
+        daily_ret = nav.pct_change().dropna()
+        dd_ret = daily_ret[(daily_ret.index >= mdd_start) & (daily_ret.index <= mdd_end)]
+        bad_days_in_dd = dd_ret[dd_ret < -0.02]
+
+        lines.append(f"\n回撤区间内单日跌>2%的天数: {len(bad_days_in_dd)}, 累计贡献: {bad_days_in_dd.sum():.1%}")
+        if len(bad_days_in_dd) > 0:
+            crash_ratio = abs(bad_days_in_dd.sum() / dd.min())
+            if crash_ratio > 0.5:
+                lines.append(f"→ 暴跌型（少数几天贡献 {crash_ratio:.0%} 回撤，可通过对冲缓解）")
+            else:
+                lines.append(f"→ 阴跌型（均匀分布，只能缩仓或提高选股标准）")
+
+        lines.append("=" * 60)
+
+        # 打印到终端
+        print("\n".join(lines))
+
+        # 保存到日志文件
+        log_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
+            "strategy_backtest_results",
+        )
+        os.makedirs(log_dir, exist_ok=True)
+        log_path = os.path.join(log_dir, "drawdown_attribution.log")
+        with open(log_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+        logger.info("回撤归因分析已保存到: %s", log_path)
+
     def run(self) -> Portfolio:
         """
         运行完整回测。
@@ -1537,6 +1633,9 @@ class StrategyBacktestEngine:
         print(f"判定为封死次数: {self._sealed_true_count}")
         if self._sealed_check_count > 0:
             print(f"封死比例: {self._sealed_true_count / self._sealed_check_count * 100:.1f}%")
+
+        # 回撤归因分析
+        self._analyze_drawdown()
 
         return self.portfolio
 

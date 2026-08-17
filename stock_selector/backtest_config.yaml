@@ -188,3 +188,10 @@ exit_strategy:
         max_holding_days: 35
         stop_loss_buffer: 0.05   # 二次止损缓冲（金牛2下方5%）
   active: "conservative"
+
+# 回测策略参数
+# 用于配置各策略在回测执行中的特定参数（如选股条件、过滤开关等）
+# 策略ID: 参数名: 值
+backtest_strategy_params:
+  tiandao_xg_buy:
+    require_jinzuan_above_jinniu2: true  # 是否要求金钻趋势 > 金牛2（true=更严格，false=仅需td_xg信号）
