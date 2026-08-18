@@ -361,6 +361,7 @@ class BacktestOrchestrator:
             exit_strategy=exit_strategy_instance,
             market_trend_filter=self.config.get("market_trend_filter"),
             backtest_strategy_params=self.config.get("backtest_strategy_params"),
+            position_sizing=self.config.get("position_sizing"),
         )
 
         # 设置策略（支持多策略）

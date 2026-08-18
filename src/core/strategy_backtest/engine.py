@@ -19,6 +19,7 @@ from datetime import date, datetime, timedelta
 from enum import Enum
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+import numpy as np
 import pandas as pd
 
 from .data_access import TimeIsolatedDataProvider
@@ -201,6 +202,7 @@ class StrategyBacktestEngine:
         exit_strategy: Optional["ExitStrategy"] = None,
         market_trend_filter: Optional[Dict[str, Any]] = None,
         backtest_strategy_params: Optional[Dict[str, Dict[str, Any]]] = None,
+        position_sizing: Optional[Dict[str, Any]] = None,
     ):
         """
         初始化回测引擎。
@@ -220,6 +222,7 @@ class StrategyBacktestEngine:
             market_trend_filter: 大盘趋势过滤器配置，如 {"index_code": "000001.SH", "ma_period": 20}
                                  为 None 或空字典时不启用
             backtest_strategy_params: 回测策略参数字典，如 {"tiandao_xg_buy": {"require_jinzuan_above_jinniu2": True}}
+            position_sizing: 仓位管理配置，如 {"vol_target": {"enabled": True, "lookback": 20, ...}}
         """
         self._original_data_provider = data_provider
         self._data_provider = TimeIsolatedDataProvider(data_provider)
@@ -251,6 +254,11 @@ class StrategyBacktestEngine:
 
         # 回测策略参数（如 require_jinzuan_above_jinniu2 等）
         self.backtest_strategy_params: Dict[str, Dict[str, Any]] = backtest_strategy_params or {}
+
+        # 仓位管理配置（波动率目标仓位等）
+        self.position_sizing: Dict[str, Any] = position_sizing or {}
+        # 每日仓位比例记录 {date: ratio}
+        self._daily_position_ratio: Dict[date, float] = {}
 
         # 滚动成交量历史（用于跌停封死判断）
         VOLUME_WINDOW = 20
@@ -582,6 +590,130 @@ class StrategyBacktestEngine:
             "允许开仓" if passed else "禁止开仓",
         )
         return passed
+
+    @staticmethod
+    def _calc_index_symmetric_vol(index_close: "pd.Series", lookback: int = 20) -> float:
+        """
+        计算指数近 lookback 日年化波动率（全收益率）。
+
+        Args:
+            index_close: 指数收盘价序列（已排序）
+            lookback: 回看窗口（交易日）
+
+        Returns:
+            年化波动率（小数），数据不足或异常时返回 NaN
+        """
+        if len(index_close) < lookback + 1:
+            return float("nan")
+        ret = index_close.pct_change().dropna()
+        if len(ret) < lookback:
+            return float("nan")
+        std = ret.tail(lookback).std()
+        if pd.isna(std) or std <= 0:
+            return float("nan")
+        return float(std * np.sqrt(252))
+
+    @staticmethod
+    def _calc_index_downside_vol(index_close: "pd.Series", lookback: int = 20) -> float:
+        """
+        计算指数近 lookback 日年化下行半波动率（只数跌的日子）。
+
+        Args:
+            index_close: 指数收盘价序列（已排序）
+            lookback: 回看窗口（交易日）
+
+        Returns:
+            年化下行半波动率（小数），数据不足或异常时返回 NaN
+        """
+        if len(index_close) < lookback + 1:
+            return float("nan")
+        ret = index_close.pct_change().dropna()
+        if len(ret) < lookback:
+            return float("nan")
+        down = ret.tail(lookback).clip(upper=0.0)  # 只保留负收益
+        dvar = (down ** 2).mean()
+        if pd.isna(dvar) or dvar <= 0:
+            return float("nan")
+        return float(np.sqrt(dvar) * np.sqrt(252))
+
+    def _calc_position_ratio(self, current_date: date) -> float:
+        """
+        计算当前日期应使用的仓位比例 [0, 1]。
+
+        根据 position_sizing 配置，综合各层系数计算实际仓位。
+        当前仅支持 vol_target（波动率目标仓位）。
+
+        Args:
+            current_date: 当前交易日
+
+        Returns:
+            仓位比例 [0, 1]，1.0 表示满仓
+        """
+        # 默认满仓
+        ratio = 1.0
+
+        vol_cfg = self.position_sizing.get("vol_target", {})
+        if vol_cfg.get("enabled", False):
+            # 获取指数数据用于波动率计算
+            index_code = self.market_trend_filter.get("index_code", "000001.SH")
+            if index_code not in self._index_cache:
+                # 尝试加载指数数据
+                try:
+                    raw = self._original_data_provider.get_daily_data(index_code, days=vol_cfg.get("lookback", 20) + 30)
+                    if isinstance(raw, tuple) and len(raw) == 2:
+                        df, _ = raw
+                    else:
+                        df = raw
+                    if df is not None and not df.empty and "date" in df.columns:
+                        df = df.copy()
+                        df["date"] = pd.to_datetime(df["date"]).dt.date
+                        df = df.sort_values("date").reset_index(drop=True)
+                        self._index_cache[index_code] = df
+                except Exception:
+                    return 1.0
+
+            df = self._index_cache.get(index_code)
+            if df is None or df.empty:
+                return 1.0
+
+            mask = df["date"] <= current_date
+            closes = df.loc[mask, "close" if "close" in df.columns else "Close"].astype(float)
+            if closes.empty:
+                return 1.0
+
+            lookback = vol_cfg.get("lookback", 20)
+            mode = vol_cfg.get("mode", "downside")  # downside | symmetric
+            if mode == "symmetric":
+                vol = self._calc_index_symmetric_vol(closes, lookback=lookback)
+            else:
+                vol = self._calc_index_downside_vol(closes, lookback=lookback)
+            if pd.isna(vol) or vol <= 0:
+                return 1.0
+
+            target_vol = vol_cfg.get("target_vol", 0.10)
+            floor = vol_cfg.get("floor", 0.50)
+            cap = vol_cfg.get("cap", 1.0)
+            raw = target_vol / vol
+            ratio = float(np.clip(raw, floor, cap))
+
+            logger.debug(
+                "波动率目标仓位: 日期=%s, mode=%s, 年化波动率=%.2f%%, target=%.2f%%, raw=%.2f, clip=[%.2f, %.2f] → 仓位=%.2f",
+                current_date, mode, vol * 100, target_vol * 100, raw, floor, cap, ratio,
+            )
+
+        return ratio
+
+    def position_on(self, query_date: date) -> Optional[float]:
+        """
+        查询指定日期的实际仓位比例。
+
+        Args:
+            query_date: 查询日期
+
+        Returns:
+            仓位比例 [0, 1]，该日期无记录时返回 None
+        """
+        return self._daily_position_ratio.get(query_date)
 
     SEALED_VOLUME_RATIO = 0.05  # 封死判定：当日成交量 < 20日均量 × 此比例
     VOLUME_WINDOW = 20  # 成交量均量窗口
@@ -1075,7 +1207,17 @@ class StrategyBacktestEngine:
 
         # 预留约 0.5% 的交易成本（手续费 + 滑点）
         reserved_cost_pct = 0.005
-        equity_per_stock = (available_cash * (1 - reserved_cost_pct)) / len(stocks_to_buy)
+        base_equity = available_cash * (1 - reserved_cost_pct)
+
+        # 仓位管理：波动率目标仓位等
+        position_ratio = self._calc_position_ratio(current_date)
+        if position_ratio < 1.0:
+            logger.info(
+                "仓位管理: 实际仓位=%.0f%%（基础=%.2f, 调整后=%.2f）",
+                position_ratio * 100, base_equity, base_equity * position_ratio,
+            )
+
+        equity_per_stock = (base_equity * position_ratio) / len(stocks_to_buy)
         logger.info(f"每只股票分配资金（已预留交易成本）: {equity_per_stock:.2f}")
 
         for stock_code in stocks_to_buy:
@@ -1276,6 +1418,9 @@ class StrategyBacktestEngine:
 
         current_date = self.trading_dates[self.current_date_index]
         self._data_provider.set_current_date(current_date)
+
+        # 记录每日仓位比例（无论是否买入，用于诊断 pos_0924 等）
+        self._daily_position_ratio[current_date] = self._calc_position_ratio(current_date)
 
         # 加载当日所有持仓股票的 OHLCV 数据到缓存（一次性 I/O，避免封死判断中重复查询）
         self._today_cache.clear()
@@ -1583,6 +1728,38 @@ class StrategyBacktestEngine:
                 lines.append(f"→ 暴跌型（少数几天贡献 {crash_ratio:.0%} 回撤，可通过对冲缓解）")
             else:
                 lines.append(f"→ 阴跌型（均匀分布，只能缩仓或提高选股标准）")
+
+        lines.append("=" * 60)
+
+        # 5. 核心指标汇总（用于配置对比）
+        total_return = (nav.iloc[-1] / nav.iloc[0]) - 1
+        max_dd = dd.min()
+        calmar = total_return / abs(max_dd) if max_dd < 0 else float("inf")
+
+        # 诊断仓位比例
+        pos_0924 = self.position_on(date(2024, 9, 24))
+        pos_1011 = self.position_on(date(2024, 10, 11))
+        pos_0924_str = f"{pos_0924:.0%}" if pos_0924 is not None else "N/A"
+        pos_1011_str = f"{pos_1011:.0%}" if pos_1011 is not None else "N/A"
+
+        # 2024Q4 区间收益（2024-09-01 ~ 2024-10-31）
+        q4_start = pd.Timestamp("2024-09-01")
+        q4_end = pd.Timestamp("2024-10-31")
+        nav_q4 = nav[(nav.index >= q4_start) & (nav.index <= q4_end)]
+        ret_24q4 = (nav_q4.iloc[-1] / nav_q4.iloc[0]) - 1 if len(nav_q4) >= 2 else float("nan")
+        ret_24q4_str = f"{ret_24q4:+.1%}" if not pd.isna(ret_24q4) else "N/A"
+
+        lines.append(f"核心指标: cum={total_return:+.1%} | maxDD={max_dd:.1%} | calmar={calmar:.2f} | pos_0924={pos_0924_str} | pos_1011={pos_1011_str} | ret_24Q4={ret_24q4_str}")
+
+        # 6. 不对称性 sanity print
+        if self.position_sizing.get("vol_target", {}).get("enabled", False):
+            sanity_dates = [date(2022, 4, 20), date(2024, 8, 30), date(2024, 9, 24), date(2024, 10, 11)]
+            lines.append("--- 不对称性检查 ---")
+            for sd in sanity_dates:
+                rat = self.position_on(sd)
+                rat_str = f"{rat:.0%}" if rat is not None else "N/A"
+                lines.append(f"  {sd}  ratio={rat_str}")
+            lines.append("预期: 2022-04-20 ratio≈floor(50%); 其余三天 ratio≈1.0")
 
         lines.append("=" * 60)
 

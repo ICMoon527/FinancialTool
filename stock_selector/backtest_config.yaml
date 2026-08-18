@@ -195,3 +195,17 @@ exit_strategy:
 backtest_strategy_params:
   tiandao_xg_buy:
     require_jinzuan_above_jinniu2: true  # 是否要求金钻趋势 > 金牛2（true=更严格，false=仅需td_xg信号）
+
+# 仓位管理配置
+# 说明：基于市场波动率动态调整买入仓位，降低系统性风险下的回撤
+# 启用后，买入时的实际仓位 = 基础仓位 × 波动率系数
+position_sizing:
+  # 波动率目标仓位（基于上证指数近N日年化波动率）
+  # 市场平静时满仓，市场暴跌时自动减仓
+  vol_target:
+    enabled: false          # 配置0: 基线关闭; 配置1时改为 true
+    mode: downside           # downside | symmetric
+    lookback: 20            # 波动率回看窗口（交易日）
+    target_vol: 0.10        # 目标年化下行半波动率（平静期约0.08-0.10）
+    floor: 0.50             # 仓位下限（左侧策略+内生闸门，下限抬高）
+    cap: 1.0                # 仓位上限
