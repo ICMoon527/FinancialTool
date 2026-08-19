@@ -27,6 +27,7 @@ import {
 } from '../api/intraday';
 import type { WeightContribution, IntradaySignal } from '../api/intraday';
 import { validateStockCode } from '../utils/validation';
+import { playSignalSound } from '../utils/audio';
 import { Card, StockSearchInput } from '../components/common';
 import { CrosshairSyncEngine } from './CrosshairSyncEngine';
 import { systemConfigApi } from '../api/systemConfig';
@@ -331,6 +332,10 @@ const IntradayPage: React.FC = () => {
   const [configLoaded, setConfigLoaded] = useState(false);  // 轮询配置是否已从后端加载
   const signalBellsRef = useRef(signalBells);
   signalBellsRef.current = signalBells;
+  const [soundEnabled, setSoundEnabled] = useState(true);
+  const soundEnabledRef = useRef(true);
+  const soundCooldownRef = useRef(30);
+  const soundVolumeRef = useRef(0.3);
   const seenSignalTimesRef = useRef<Record<string, string>>({});
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [priceRangeEnabled, setPriceRangeEnabled] = useState(false);
@@ -837,6 +842,16 @@ const IntradayPage: React.FC = () => {
         }
         if (Object.keys(newBells).length > 0) {
           setSignalBells(prev => ({ ...prev, ...newBells }));
+          // 触发音效提醒：使用 ref 避免 stale closure
+          if (soundEnabledRef.current) {
+            const types = new Set(Object.values(newBells).map(b => b.type));
+            // 优先播放买入（更紧急），若同时有买入和卖出则只播放买入
+            if (types.has('buy')) {
+              playSignalSound('buy', soundCooldownRef.current, soundVolumeRef.current);
+            } else {
+              playSignalSound('sell', soundCooldownRef.current, soundVolumeRef.current);
+            }
+          }
         }
       }
     } catch {
@@ -975,6 +990,8 @@ const IntradayPage: React.FC = () => {
         screenAsync: cfg.screen_async_polling_interval_ms + 'ms',
         tradingStatus: cfg.trading_status,
       });
+      soundCooldownRef.current = cfg.signal_sound_cooldown_seconds ?? 30;
+      soundVolumeRef.current = cfg.signal_sound_volume ?? 0.3;
 
       // 非交易时间但有下一个交易时段 → 设定时器自动启动
       if (!cfg.trading_status.is_trading_time && cfg.trading_status.next_session_start) {
@@ -4883,17 +4900,51 @@ const IntradayPage: React.FC = () => {
             <div className="flex items-start gap-2 mb-2" style={{ height: 165 }}>
               {signalStats.length > 0 && (
                 <Card variant="default" padding="sm" className="w-44 flex-shrink-0">
-                  <h3 className="text-xs font-medium text-muted mb-2">
-                    信号统计
-                    {activeFilters.size > 0 && (
+                  <h3 className="text-xs font-medium text-muted mb-2 flex items-center justify-between">
+                    <span>信号统计</span>
+                    <div className="flex items-center gap-1">
+                      {activeFilters.size > 0 && (
+                        <button
+                          type="button"
+                          className="text-[10px] text-cyan hover:text-white transition-colors"
+                          onClick={() => setActiveFilters(new Set())}
+                        >
+                          清除筛选
+                        </button>
+                      )}
                       <button
                         type="button"
-                        className="ml-2 text-[10px] text-cyan hover:text-white transition-colors"
-                        onClick={() => setActiveFilters(new Set())}
+                        onClick={() => {
+                          setSoundEnabled(prev => {
+                            const next = !prev;
+                            soundEnabledRef.current = next;
+                            // 从静音切换到响铃时播放买入铃声，让用户确认音量大小和功能正常
+                            if (next && !prev) {
+                              playSignalSound('buy', 0, soundVolumeRef.current);
+                            }
+                            return next;
+                          });
+                        }}
+                        className="p-0.5 rounded hover:bg-white/10 transition-colors"
+                        title={soundEnabled ? '音效已开启，点击静音' : '音效已关闭，点击开启'}
                       >
-                        清除筛选
+                        <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke={soundEnabled ? '#00D4FF' : '#666'} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                          {soundEnabled ? (
+                            <>
+                              <path d="M11 5L6 9H2v6h4l5 4V5z" />
+                              <path d="M19.07 4.93a10 10 0 010 14.14" />
+                              <path d="M15.54 8.46a5 5 0 010 7.07" />
+                            </>
+                          ) : (
+                            <>
+                              <path d="M11 5L6 9H2v6h4l5 4V5z" />
+                              <line x1="23" y1="9" x2="17" y2="15" />
+                              <line x1="17" y1="9" x2="23" y2="15" />
+                            </>
+                          )}
+                        </svg>
                       </button>
-                    )}
+                    </div>
                   </h3>
                   <div className="space-y-1">
                     {signalStats.map((s) => {

@@ -280,7 +280,11 @@ class Config:
     intraday_polling_interval: int = 10      # 分时实时行情轮询间隔（秒）
     batch_download_polling_interval: int = 1  # 批量下载进度轮询间隔（秒）
     screen_async_polling_interval: int = 1    # 异步选股进度轮询间隔（秒）
-    
+
+    # === 分时信号音效配置 ===
+    signal_sound_cooldown_seconds: int = 30   # 同一类型信号音效冷却时间（秒）
+    signal_sound_volume: float = 0.3          # 音效音量（0.0~1.0）
+
     # === 机器人配置 ===
     bot_enabled: bool = True              # 是否启用机器人功能
     bot_command_prefix: str = "/"         # 命令前缀
@@ -595,6 +599,9 @@ class Config:
             intraday_polling_interval=int(os.getenv('INTRADAY_POLLING_INTERVAL', '30')),
             batch_download_polling_interval=int(os.getenv('BATCH_DOWNLOAD_POLLING_INTERVAL', '1')),
             screen_async_polling_interval=int(os.getenv('SCREEN_ASYNC_POLLING_INTERVAL', '1')),
+            # 分时信号音效配置
+            signal_sound_cooldown_seconds=int(os.getenv('SIGNAL_SOUND_COOLDOWN_SECONDS', '30')),
+            signal_sound_volume=float(os.getenv('SIGNAL_SOUND_VOLUME', '0.3')),
             # 机器人配置
             bot_enabled=os.getenv('BOT_ENABLED', 'true').lower() == 'true',
             bot_command_prefix=os.getenv('BOT_COMMAND_PREFIX', '/'),

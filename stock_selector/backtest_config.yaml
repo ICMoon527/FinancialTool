@@ -203,7 +203,7 @@ position_sizing:
   # 波动率目标仓位（基于上证指数近N日年化波动率）
   # 市场平静时满仓，市场暴跌时自动减仓
   vol_target:
-    enabled: false          # 配置0: 基线关闭; 配置1时改为 true
+    enabled: true          # 配置0: 基线关闭; 配置1时改为 true
     mode: downside           # downside | symmetric
     lookback: 20            # 波动率回看窗口（交易日）
     target_vol: 0.10        # 目标年化下行半波动率（平静期约0.08-0.10）

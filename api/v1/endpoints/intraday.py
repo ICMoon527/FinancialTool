@@ -193,6 +193,8 @@ def get_intraday_config() -> dict:
         "polling_interval_ms": config.intraday_polling_interval * 1000,
         "batch_download_polling_interval_ms": config.batch_download_polling_interval * 1000,
         "screen_async_polling_interval_ms": config.screen_async_polling_interval * 1000,
+        "signal_sound_cooldown_seconds": config.signal_sound_cooldown_seconds,
+        "signal_sound_volume": config.signal_sound_volume,
         "trading_status": trading_status,
     }
 

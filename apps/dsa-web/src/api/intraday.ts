@@ -228,6 +228,8 @@ export interface IntradayConfig {
   polling_interval_ms: number;
   batch_download_polling_interval_ms: number;
   screen_async_polling_interval_ms: number;
+  signal_sound_cooldown_seconds: number;
+  signal_sound_volume: number;
   trading_status: TradingStatus;
 }
 
@@ -240,6 +242,8 @@ export async function getIntradayConfig(): Promise<IntradayConfig> {
     polling_interval_ms: 30000,
     batch_download_polling_interval_ms: 1000,
     screen_async_polling_interval_ms: 1000,
+    signal_sound_cooldown_seconds: 30,
+    signal_sound_volume: 0.3,
     trading_status: {
       is_trading_day: false,
       is_trading_time: false,
