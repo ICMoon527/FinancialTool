@@ -636,6 +636,37 @@ class StrategyBacktestEngine:
             return float("nan")
         return float(np.sqrt(dvar) * np.sqrt(252))
 
+    @staticmethod
+    def _calc_index_downside_halflife_vol(index_close: "pd.Series", lookback: int = 20, halflife: int = 5) -> float:
+        """
+        计算指数近 lookback 日年化加权下行半波动率（半衰期衰减）。
+
+        近期下跌日权重高，远期下跌日权重低，下跌日被记住、上涨日被遗忘。
+        半衰期=5 时，5天前的下跌日权重仅为今天的一半。
+
+        Args:
+            index_close: 指数收盘价序列（已排序）
+            lookback: 回看窗口（交易日）
+            halflife: 半衰期（交易日），默认 5
+
+        Returns:
+            年化加权下行半波动率（小数），数据不足或异常时返回 NaN
+        """
+        if len(index_close) < lookback + 1:
+            return float("nan")
+        ret = index_close.pct_change().dropna()
+        if len(ret) < lookback:
+            return float("nan")
+        down = ret.tail(lookback).clip(upper=0.0).values  # 只保留负收益，转为 numpy 数组
+        # 指数衰减权重：最近日 i=0 权重最大，i=lookback-1 权重最小
+        i = np.arange(lookback, dtype=float)
+        weights = 0.5 ** (i / halflife)  # 半衰期衰减
+        weights /= weights.sum()  # 归一化
+        dvar = float(np.sum(weights * (down ** 2)))
+        if pd.isna(dvar) or dvar <= 0:
+            return float("nan")
+        return float(np.sqrt(dvar) * np.sqrt(252))
+
     def _calc_position_ratio(self, current_date: date) -> float:
         """
         计算当前日期应使用的仓位比例 [0, 1]。
@@ -682,9 +713,12 @@ class StrategyBacktestEngine:
                 return 1.0
 
             lookback = vol_cfg.get("lookback", 20)
-            mode = vol_cfg.get("mode", "downside")  # downside | symmetric
+            mode = vol_cfg.get("mode", "downside")  # downside | downside_halflife | symmetric
+            halflife = vol_cfg.get("halflife", 5)
             if mode == "symmetric":
                 vol = self._calc_index_symmetric_vol(closes, lookback=lookback)
+            elif mode == "downside_halflife":
+                vol = self._calc_index_downside_halflife_vol(closes, lookback=lookback, halflife=halflife)
             else:
                 vol = self._calc_index_downside_vol(closes, lookback=lookback)
             if pd.isna(vol) or vol <= 0:
@@ -696,10 +730,16 @@ class StrategyBacktestEngine:
             raw = target_vol / vol
             ratio = float(np.clip(raw, floor, cap))
 
-            logger.debug(
-                "波动率目标仓位: 日期=%s, mode=%s, 年化波动率=%.2f%%, target=%.2f%%, raw=%.2f, clip=[%.2f, %.2f] → 仓位=%.2f",
-                current_date, mode, vol * 100, target_vol * 100, raw, floor, cap, ratio,
-            )
+            if mode == "downside_halflife":
+                logger.debug(
+                    "波动率目标仓位: 日期=%s, mode=%s(halflife=%d), 年化波动率=%.2f%%, target=%.2f%%, raw=%.2f, clip=[%.2f, %.2f] → 仓位=%.2f",
+                    current_date, mode, halflife, vol * 100, target_vol * 100, raw, floor, cap, ratio,
+                )
+            else:
+                logger.debug(
+                    "波动率目标仓位: 日期=%s, mode=%s, 年化波动率=%.2f%%, target=%.2f%%, raw=%.2f, clip=[%.2f, %.2f] → 仓位=%.2f",
+                    current_date, mode, vol * 100, target_vol * 100, raw, floor, cap, ratio,
+                )
 
         return ratio
 
