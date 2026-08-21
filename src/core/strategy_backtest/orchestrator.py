@@ -403,6 +403,11 @@ class BacktestOrchestrator:
             if actual_start_date is None or d >= actual_start_date:
                 filtered_equity_history.append((d, e))
 
+        # 获取仓位比例历史（来自引擎的每日记录，按当日持仓市值总和/总权益计算）
+        pos_ratio_map = {}
+        if hasattr(self, 'engine') and hasattr(self.engine, 'get_position_ratio_map'):
+            pos_ratio_map = self.engine.get_position_ratio_map()
+
         results = {
             "initial_capital": self.portfolio.initial_capital,
             "final_equity": self.portfolio.get_total_equity(),
@@ -421,7 +426,11 @@ class BacktestOrchestrator:
                 for t in filtered_trades
             ],
             "equity_history": [
-                {"date": d.isoformat(), "equity": e}
+                {
+                    "date": d.isoformat(),
+                    "equity": e,
+                    "position_ratio": pos_ratio_map.get(d, 0.0),
+                }
                 for d, e in filtered_equity_history
             ],
         }

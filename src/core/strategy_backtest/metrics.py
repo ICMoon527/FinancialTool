@@ -396,6 +396,7 @@ class PerformanceMetrics:
             "max_drawdown_start": drawdown_start.isoformat() if drawdown_start else None,
             "max_drawdown_end": drawdown_end.isoformat() if drawdown_end else None,
             "calmar_ratio": self.get_calmar_ratio(),
+            "cum_max_dd_ratio": (self.get_total_return() / max_drawdown) if max_drawdown > 0 else 0.0,
             "win_rate": self.get_win_rate(),
             "profit_loss_ratio": self.get_profit_loss_ratio(),
             "information_ratio": self.get_information_ratio(),

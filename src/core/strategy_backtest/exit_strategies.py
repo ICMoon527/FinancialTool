@@ -541,6 +541,184 @@ class TieredExitStrategy(ExitStrategy):
 
 
 # ============================================================
+# 动态分级止盈 + 盈利保护（配置 2a-rev）
+# ============================================================
+
+
+@register_exit_strategy("tiered_profit_protect")
+class TieredProfitProtectStrategy(TieredExitStrategy):
+    """动态分级止盈 + 盈利保护。
+
+    在 TieredExitStrategy 的止损/止盈/时间止损基础上，增加一条盈利保护规则：
+      - 若持仓期间 peak_price（最高收盘价）> 买入价 × profit_protect_threshold（默认 1.12）
+      - 则止损线上移为 peak_price × profit_protect_retracement（默认 0.92）
+      - 最终止损线 = max(当前机制止损线, 盈利保护线)
+      - 触发后按当前机制的原执行时点卖出（收盘价）
+
+    原 TieredExitStrategy 的阶梯式移动止盈和动态时间止损保持不变。
+    """
+
+    display_name = "动态分级止盈+盈利保护"
+    description = "固定止损 + 阶梯式移动止盈 + 动态时间止损 + 盈利保护"
+
+    # 统计计数器（用于回测结果分析）
+    profit_protect_trigger_count: int = 0
+    profit_protect_trigger_gains: list = []
+
+    def __init__(
+        self,
+        stop_loss_pct: float = 0.07,
+        time_stop_days: int = 30,
+        time_stop_min_return: float = 0.0,
+        profit_protect_threshold: float = 1.12,
+        profit_protect_retracement: float = 0.92,
+    ):
+        super().__init__(
+            stop_loss_pct=stop_loss_pct,
+            time_stop_days=time_stop_days,
+            time_stop_min_return=time_stop_min_return,
+        )
+        self.profit_protect_threshold = profit_protect_threshold
+        self.profit_protect_retracement = profit_protect_retracement
+        self.profit_protect_trigger_count = 0
+        self.profit_protect_trigger_gains = []
+        # 用于跟踪哪些股票已经触发过盈利保护计数（避免重复计数）
+        self._profit_protect_triggered_stocks: set = set()
+
+    def validate_config(self) -> bool:
+        if not super().validate_config():
+            return False
+        if self.profit_protect_threshold <= 1.0:
+            logger.error("profit_protect_threshold 必须 > 1.0，当前值: %s", self.profit_protect_threshold)
+            return False
+        if self.profit_protect_retracement <= 0 or self.profit_protect_retracement >= 1:
+            logger.error("profit_protect_retracement 必须在 0-1 之间，当前值: %s", self.profit_protect_retracement)
+            return False
+        return True
+
+    def _check_close_tiered(
+        self,
+        stock_code: str,
+        state: _TieredPositionState,
+        price_provider: Callable[[str, str], Optional[float]],
+        date_to_index: Dict[date, int],
+        current_date_index: int,
+    ) -> Optional[ExitSignal]:
+        """检查收盘：在父类逻辑基础上叠加盈利保护规则。"""
+        close_price = price_provider(stock_code, "close")
+        if close_price is None:
+            return None
+
+        # 更新峰值
+        high_price = price_provider(stock_code, "high")
+        if high_price is not None and high_price > state.peak_price:
+            state.peak_price = high_price
+        if close_price > state.peak_price:
+            state.peak_price = close_price
+
+        # 计算当前盈利和峰值曾达到的最大盈利
+        gain_pct = (close_price - state.entry_price) / state.entry_price
+        max_gain_pct = (state.peak_price - state.entry_price) / state.entry_price
+
+        # 1. 止损检查（叠加盈利保护）
+        stop_loss_price = state.entry_price * (1 - self.stop_loss_pct)
+
+        # 盈利保护线：若 peak > 买入价 × threshold，则止损线上移为 peak × retracement
+        profit_protect_price = 0.0
+        if state.peak_price > state.entry_price * self.profit_protect_threshold:
+            profit_protect_price = state.peak_price * self.profit_protect_retracement
+            # 首次触发盈利保护时计数
+            if stock_code not in self._profit_protect_triggered_stocks:
+                self._profit_protect_triggered_stocks.add(stock_code)
+                self.profit_protect_trigger_count += 1
+                trigger_gain = (state.peak_price - state.entry_price) / state.entry_price
+                self.profit_protect_trigger_gains.append(trigger_gain)
+
+        # 最终止损线 = max(当前机制止损线, 盈利保护线)
+        final_stop_loss_price = max(stop_loss_price, profit_protect_price)
+
+        if close_price <= final_stop_loss_price:
+            if price_provider(stock_code, "is_limit_down_sealed") == 1.0:
+                logger.info(
+                    "分级止盈+盈利保护 [%s]: 收盘价 %.2f <= 最终止损价 %.2f(止损%.2f/盈利保护%.2f)，"
+                    "但跌停封死无法成交，继续持有",
+                    stock_code, close_price, final_stop_loss_price,
+                    stop_loss_price, profit_protect_price,
+                )
+                return None
+            logger.info(
+                "分级止盈+盈利保护 [%s]: 收盘价 %.2f <= 最终止损价 %.2f(止损%.2f/盈利保护%.2f)，"
+                "当日收盘价离场",
+                stock_code, close_price, final_stop_loss_price,
+                stop_loss_price, profit_protect_price,
+            )
+            return ExitSignal(
+                stock_code=stock_code,
+                reason="止损出局",
+                sell_price=close_price,
+                price_type="close",
+            )
+
+        # 2. 阶梯式移动止盈检查（与父类完全一致）
+        if max_gain_pct > 0:
+            trailing_dd = self._get_trailing_stop_pct(max_gain_pct)
+            new_trailing_stop = state.peak_price * (1 - trailing_dd)
+            trailing_stop = max(new_trailing_stop, state.last_trailing_stop)
+            state.last_trailing_stop = trailing_stop
+
+            if close_price <= trailing_stop:
+                if price_provider(stock_code, "is_limit_down_sealed") == 1.0:
+                    logger.info(
+                        "分级止盈+盈利保护 [%s]: 收盘价 %.2f <= 移动止盈价 %.2f，但跌停封死无法成交，继续持有",
+                        stock_code, close_price, trailing_stop,
+                    )
+                    return None
+                logger.info(
+                    "分级止盈+盈利保护 [%s]: 收盘价 %.2f <= 移动止盈价 %.2f(峰值 %.2f, 峰值盈利 %.1f%%, 回撤 %.0f%%)，"
+                    "当日收盘价离场",
+                    stock_code, close_price, trailing_stop, state.peak_price,
+                    max_gain_pct * 100, trailing_dd * 100,
+                )
+                return ExitSignal(
+                    stock_code=stock_code,
+                    reason="移动止盈",
+                    sell_price=close_price,
+                    price_type="close",
+                )
+
+        # 3. 动态时间止损（与父类完全一致）
+        entry_index = date_to_index.get(state.entry_date)
+        if entry_index is not None:
+            holding_days = current_date_index - entry_index
+            if holding_days >= self.time_stop_days and gain_pct < self.time_stop_min_return:
+                logger.info(
+                    "分级止盈+盈利保护 [%s]: 持股 %d 天 >= %d 天，收益率 %.1f%% < %.0f%%，时间止损平仓",
+                    stock_code, holding_days, self.time_stop_days,
+                    gain_pct * 100, self.time_stop_min_return * 100,
+                )
+                return ExitSignal(
+                    stock_code=stock_code,
+                    reason="时间止损",
+                    sell_price=close_price,
+                    price_type="close",
+                )
+        else:
+            logger.warning(
+                "分级止盈+盈利保护 [%s]: 买入日期 %s 不在交易日列表中，无法计算时间止损",
+                stock_code, state.entry_date,
+            )
+
+        return None
+
+    def reset(self) -> None:
+        """重置所有状态（包括盈利保护计数器）。"""
+        super().reset()
+        self.profit_protect_trigger_count = 0
+        self.profit_protect_trigger_gains.clear()
+        self._profit_protect_triggered_stocks.clear()
+
+
+# ============================================================
 # 天道指标数据快照
 # ============================================================
 

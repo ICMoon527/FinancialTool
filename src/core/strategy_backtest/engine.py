@@ -755,6 +755,15 @@ class StrategyBacktestEngine:
         """
         return self._daily_position_ratio.get(query_date)
 
+    def get_position_ratio_map(self) -> Dict[date, float]:
+        """
+        获取完整的仓位比例历史映射表。
+
+        Returns:
+            {交易日: 仓位比例} 字典
+        """
+        return self._daily_position_ratio.copy()
+
     SEALED_VOLUME_RATIO = 0.05  # 封死判定：当日成交量 < 20日均量 × 此比例
     VOLUME_WINDOW = 20  # 成交量均量窗口
 
@@ -802,10 +811,9 @@ class StrategyBacktestEngine:
         vol_history = self._volume_history.get(stock_code)
         min_history = max(5, self.VOLUME_WINDOW)  # 冷启动下限
         if vol_history is None or len(vol_history) < min_history:
-            logger.debug(
-                "冷启动期 [%s]: 成交量历史 %d/%d 天，保守假设封死",
-                stock_code, len(vol_history) if vol_history else 0, min_history,
-            )
+            self._sealed_true_count += 1
+            logger.debug("冷启动期 [%s]: 成交量历史 %d/%d 天，保守假设封死",
+                         stock_code, len(vol_history) if vol_history else 0, min_history)
             return True  # 冷启动期数据不足 → 保守假设封死
 
         avg_volume = sum(vol_history) / len(vol_history)
@@ -1039,6 +1047,11 @@ class StrategyBacktestEngine:
         if signal.exit_type == "full":
             sold_stocks.add(stock_code)
             self.exit_strategy.cleanup_position(stock_code)
+            if stock_code == "600156":
+                logger.info(
+                    "【600156诊断_卖出】日期=%s 卖出价=%.2f 原因=%s 价格类型=%s",
+                    current_date, sell_price, signal.reason, signal.price_type,
+                )
 
     def _process_rebuy_signal(self, signal: "ExitSignal", current_date: date) -> None:
         """
@@ -1173,6 +1186,11 @@ class StrategyBacktestEngine:
 
         self.portfolio.execute_trade(trade)
         logger.info(f"执行交易: {trade.order_type.value} {trade.quantity} {trade.stock_code} @ {trade.price:.2f} ({price_type}价)")
+        if trade.stock_code == "600156":
+            logger.info(
+                "【600156诊断_买入】日期=%s 买入价=%.2f 数量=%d",
+                current_date, trade.price, trade.quantity,
+            )
 
         return trade
 
@@ -1577,6 +1595,33 @@ class StrategyBacktestEngine:
                 if close_price:
                     change_pct = (close_price - pos.avg_cost) / pos.avg_cost * 100
                     logger.info(f"  {stock_code}: 收盘价={close_price:.2f}, 成本={pos.avg_cost:.2f}, 涨跌={change_pct:+.2f}%")
+
+        # 600156 诊断日志：打印完整时间线
+        for stock_code in list(self.portfolio.positions.keys()):
+            if stock_code == "600156" and stock_code not in sold_stocks:
+                pos = self.portfolio.get_position(stock_code)
+                if pos:
+                    close_price = self._get_stock_price(stock_code, current_date, "close")
+                    if close_price:
+                        sl_pct = 0.07
+                        stop_loss_price = pos.avg_cost * (1 - sl_pct)
+                        gain_pct = (close_price - pos.avg_cost) / pos.avg_cost * 100
+                        # 尝试获取 peak_price
+                        peak_str = "N/A"
+                        try:
+                            if hasattr(self.exit_strategy, '_states') and stock_code in self.exit_strategy._states:
+                                peak = self.exit_strategy._states[stock_code].peak_price
+                                peak_str = f"{peak:.2f}"
+                        except Exception:
+                            pass
+                        logger.info(
+                            "【600156诊断】日期=%s 收盘=%.2f 成本=%.2f 涨幅=%.1f%% 止损价(7%%)=%.2f "
+                            "peak=%s 跌破止损=%s 跌停封死=%s",
+                            current_date, close_price, pos.avg_cost, gain_pct,
+                            stop_loss_price, peak_str,
+                            "是" if close_price <= stop_loss_price else "否",
+                            "是" if self._is_limit_down_sealed(stock_code, close_price, current_date) else "否",
+                        )
 
         stocks_to_sell_close = self.exit_strategy.check_exits(
             current_date=current_date,

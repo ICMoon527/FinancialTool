@@ -1,6 +1,17 @@
 import numpy as np
 import pandas as pd
-from numba import jit
+
+try:
+    from numba import jit
+    _HAS_NUMBA = True
+except ImportError:
+    _HAS_NUMBA = False
+    # 当 numba 不可用时，提供一个纯 Python 的装饰器替代
+    def jit(nopython=True, cache=True, **kwargs):
+        """降级装饰器：当 numba 不可用时，直接返回原函数"""
+        def decorator(func):
+            return func
+        return decorator
 
 from indicators.base import BaseIndicator
 

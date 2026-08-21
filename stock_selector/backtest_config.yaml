@@ -187,7 +187,27 @@ exit_strategy:
       params:
         max_holding_days: 35
         stop_loss_buffer: 0.05   # 二次止损缓冲（金牛2下方5%）
-  active: "conservative"
+    # 配置2a-rev：动态分级止盈 + 盈利保护（加法实验，激进门槛 1.12/回撤 8%）
+    2a_rev:
+      name: "动态分级止盈+盈利保护(1.12/0.92)"
+      strategy: "tiered_profit_protect"
+      params:
+        stop_loss_pct: 0.07
+        time_stop_days: 30
+        time_stop_min_return: 0.0
+        profit_protect_threshold: 1.12
+        profit_protect_retracement: 0.92
+    # 配置2b-rev：盈利保护参数调整版（激进门槛 1.20/回撤 10%）
+    2b_rev:
+      name: "动态分级止盈+盈利保护(1.20/0.90)"
+      strategy: "tiered_profit_protect"
+      params:
+        stop_loss_pct: 0.07
+        time_stop_days: 30
+        time_stop_min_return: 0.0
+        profit_protect_threshold: 1.20
+        profit_protect_retracement: 0.90
+  active: "2a_rev"
 
 # 回测策略参数
 # 用于配置各策略在回测执行中的特定参数（如选股条件、过滤开关等）
