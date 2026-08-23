@@ -541,184 +541,6 @@ class TieredExitStrategy(ExitStrategy):
 
 
 # ============================================================
-# 动态分级止盈 + 盈利保护（配置 2a-rev）
-# ============================================================
-
-
-@register_exit_strategy("tiered_profit_protect")
-class TieredProfitProtectStrategy(TieredExitStrategy):
-    """动态分级止盈 + 盈利保护。
-
-    在 TieredExitStrategy 的止损/止盈/时间止损基础上，增加一条盈利保护规则：
-      - 若持仓期间 peak_price（最高收盘价）> 买入价 × profit_protect_threshold（默认 1.12）
-      - 则止损线上移为 peak_price × profit_protect_retracement（默认 0.92）
-      - 最终止损线 = max(当前机制止损线, 盈利保护线)
-      - 触发后按当前机制的原执行时点卖出（收盘价）
-
-    原 TieredExitStrategy 的阶梯式移动止盈和动态时间止损保持不变。
-    """
-
-    display_name = "动态分级止盈+盈利保护"
-    description = "固定止损 + 阶梯式移动止盈 + 动态时间止损 + 盈利保护"
-
-    # 统计计数器（用于回测结果分析）
-    profit_protect_trigger_count: int = 0
-    profit_protect_trigger_gains: list = []
-
-    def __init__(
-        self,
-        stop_loss_pct: float = 0.07,
-        time_stop_days: int = 30,
-        time_stop_min_return: float = 0.0,
-        profit_protect_threshold: float = 1.12,
-        profit_protect_retracement: float = 0.92,
-    ):
-        super().__init__(
-            stop_loss_pct=stop_loss_pct,
-            time_stop_days=time_stop_days,
-            time_stop_min_return=time_stop_min_return,
-        )
-        self.profit_protect_threshold = profit_protect_threshold
-        self.profit_protect_retracement = profit_protect_retracement
-        self.profit_protect_trigger_count = 0
-        self.profit_protect_trigger_gains = []
-        # 用于跟踪哪些股票已经触发过盈利保护计数（避免重复计数）
-        self._profit_protect_triggered_stocks: set = set()
-
-    def validate_config(self) -> bool:
-        if not super().validate_config():
-            return False
-        if self.profit_protect_threshold <= 1.0:
-            logger.error("profit_protect_threshold 必须 > 1.0，当前值: %s", self.profit_protect_threshold)
-            return False
-        if self.profit_protect_retracement <= 0 or self.profit_protect_retracement >= 1:
-            logger.error("profit_protect_retracement 必须在 0-1 之间，当前值: %s", self.profit_protect_retracement)
-            return False
-        return True
-
-    def _check_close_tiered(
-        self,
-        stock_code: str,
-        state: _TieredPositionState,
-        price_provider: Callable[[str, str], Optional[float]],
-        date_to_index: Dict[date, int],
-        current_date_index: int,
-    ) -> Optional[ExitSignal]:
-        """检查收盘：在父类逻辑基础上叠加盈利保护规则。"""
-        close_price = price_provider(stock_code, "close")
-        if close_price is None:
-            return None
-
-        # 更新峰值
-        high_price = price_provider(stock_code, "high")
-        if high_price is not None and high_price > state.peak_price:
-            state.peak_price = high_price
-        if close_price > state.peak_price:
-            state.peak_price = close_price
-
-        # 计算当前盈利和峰值曾达到的最大盈利
-        gain_pct = (close_price - state.entry_price) / state.entry_price
-        max_gain_pct = (state.peak_price - state.entry_price) / state.entry_price
-
-        # 1. 止损检查（叠加盈利保护）
-        stop_loss_price = state.entry_price * (1 - self.stop_loss_pct)
-
-        # 盈利保护线：若 peak > 买入价 × threshold，则止损线上移为 peak × retracement
-        profit_protect_price = 0.0
-        if state.peak_price > state.entry_price * self.profit_protect_threshold:
-            profit_protect_price = state.peak_price * self.profit_protect_retracement
-            # 首次触发盈利保护时计数
-            if stock_code not in self._profit_protect_triggered_stocks:
-                self._profit_protect_triggered_stocks.add(stock_code)
-                self.profit_protect_trigger_count += 1
-                trigger_gain = (state.peak_price - state.entry_price) / state.entry_price
-                self.profit_protect_trigger_gains.append(trigger_gain)
-
-        # 最终止损线 = max(当前机制止损线, 盈利保护线)
-        final_stop_loss_price = max(stop_loss_price, profit_protect_price)
-
-        if close_price <= final_stop_loss_price:
-            if price_provider(stock_code, "is_limit_down_sealed") == 1.0:
-                logger.info(
-                    "分级止盈+盈利保护 [%s]: 收盘价 %.2f <= 最终止损价 %.2f(止损%.2f/盈利保护%.2f)，"
-                    "但跌停封死无法成交，继续持有",
-                    stock_code, close_price, final_stop_loss_price,
-                    stop_loss_price, profit_protect_price,
-                )
-                return None
-            logger.info(
-                "分级止盈+盈利保护 [%s]: 收盘价 %.2f <= 最终止损价 %.2f(止损%.2f/盈利保护%.2f)，"
-                "当日收盘价离场",
-                stock_code, close_price, final_stop_loss_price,
-                stop_loss_price, profit_protect_price,
-            )
-            return ExitSignal(
-                stock_code=stock_code,
-                reason="止损出局",
-                sell_price=close_price,
-                price_type="close",
-            )
-
-        # 2. 阶梯式移动止盈检查（与父类完全一致）
-        if max_gain_pct > 0:
-            trailing_dd = self._get_trailing_stop_pct(max_gain_pct)
-            new_trailing_stop = state.peak_price * (1 - trailing_dd)
-            trailing_stop = max(new_trailing_stop, state.last_trailing_stop)
-            state.last_trailing_stop = trailing_stop
-
-            if close_price <= trailing_stop:
-                if price_provider(stock_code, "is_limit_down_sealed") == 1.0:
-                    logger.info(
-                        "分级止盈+盈利保护 [%s]: 收盘价 %.2f <= 移动止盈价 %.2f，但跌停封死无法成交，继续持有",
-                        stock_code, close_price, trailing_stop,
-                    )
-                    return None
-                logger.info(
-                    "分级止盈+盈利保护 [%s]: 收盘价 %.2f <= 移动止盈价 %.2f(峰值 %.2f, 峰值盈利 %.1f%%, 回撤 %.0f%%)，"
-                    "当日收盘价离场",
-                    stock_code, close_price, trailing_stop, state.peak_price,
-                    max_gain_pct * 100, trailing_dd * 100,
-                )
-                return ExitSignal(
-                    stock_code=stock_code,
-                    reason="移动止盈",
-                    sell_price=close_price,
-                    price_type="close",
-                )
-
-        # 3. 动态时间止损（与父类完全一致）
-        entry_index = date_to_index.get(state.entry_date)
-        if entry_index is not None:
-            holding_days = current_date_index - entry_index
-            if holding_days >= self.time_stop_days and gain_pct < self.time_stop_min_return:
-                logger.info(
-                    "分级止盈+盈利保护 [%s]: 持股 %d 天 >= %d 天，收益率 %.1f%% < %.0f%%，时间止损平仓",
-                    stock_code, holding_days, self.time_stop_days,
-                    gain_pct * 100, self.time_stop_min_return * 100,
-                )
-                return ExitSignal(
-                    stock_code=stock_code,
-                    reason="时间止损",
-                    sell_price=close_price,
-                    price_type="close",
-                )
-        else:
-            logger.warning(
-                "分级止盈+盈利保护 [%s]: 买入日期 %s 不在交易日列表中，无法计算时间止损",
-                stock_code, state.entry_date,
-            )
-
-        return None
-
-    def reset(self) -> None:
-        """重置所有状态（包括盈利保护计数器）。"""
-        super().reset()
-        self.profit_protect_trigger_count = 0
-        self.profit_protect_trigger_gains.clear()
-        self._profit_protect_triggered_stocks.clear()
-
-
-# ============================================================
 # 天道指标数据快照
 # ============================================================
 
@@ -730,270 +552,120 @@ class TiandaoIndicatorSnapshot:
     td_jinniu: float = 0.0     # 金牛（压力位 / 通道上轨）
     td_jinniu2: float = 0.0    # 金牛2（慢速跟随线 / EMA(金钻趋势, 25)）
     td_bbi: float = 0.0        # BBI（多空分界线）
+    pressure: float = 0.0      # REF(金牛, 1) — 昨日金牛值，用作压力位
+    support: float = 0.0       # REF(金钻, 1) — 昨日金钻值，用作支撑位（仅监控）
 
 
 # ============================================================
-# 天道系列退出策略公用状态
+# 策略 D：通道压力线分批止盈（tiandao-pressure）
 # ============================================================
 
 
 @dataclass
-class _TiandaoBaseState:
-    """天道系列策略的公用持仓状态"""
+class _TiandaoPressureState:
+    """通道压力线分批止盈的持仓状态"""
     entry_date: date
     entry_price: float
-    partial_sold: bool = False
-    rebuy_count: int = 0       # 已加仓次数
+    peak: float = 0.0
+    last_trailing_stop: float = 0.0
+    tier1_done: bool = False
+    tier2_done: bool = False
 
 
-# ============================================================
-# 策略 A：天道金牛清仓
-# ============================================================
+@register_exit_strategy("tiandao_pressure")
+class TiandaoPressureExitStrategy(ExitStrategy):
+    """通道压力线分批止盈策略。
 
+    在动态分级止盈的基础上，增加根据天道指标压力位的分批止盈：
+      pressure = REF(金牛, 1)  — 昨日金牛值，作为压力位
+      support  = REF(金钻, 1)  — 昨日金钻值，仅备用监控，不参与卖出
 
-@register_exit_strategy("tiandao_jinniu")
-class TiandaoJinniuExitStrategy(ExitStrategy):
-    """天道金牛清仓策略。
+    卖出优先级（逐阶段检查，先触发先执行）：
+      C > A/B > 7%止损 > 时间止损
 
-    买入后在通道下轨（金钻趋势）附近持有，反弹到通道上轨（金牛线）清仓止盈；
-    止损设在买入价下方 5%（买入价 × 0.95），5% 固定止损，不依赖金钻趋势线。
+    - A档：首次触碰压力位，以 pressure 价卖出 1/3
+    - B档：从压力位回落，尾盘卖出剩余 1/2（即原仓 1/3）
+    - C档：动态分级移动止盈，全程跟踪，对剩余仓位生效
     """
 
-    display_name = "天道金牛清仓"
-    description = "天道超跌买入后，反弹到金牛压力位清仓，买入价×0.95止损"
+    display_name = "通道压力线分批止盈"
+    description = "固定止损 + 通道压力线分批止盈(A/B/C档) + 动态时间止损"
 
     def __init__(
         self,
-        max_holding_days: int = 30,
-        stop_loss_buffer: float = 0.05,
-        indicator_provider: Optional[Callable[[str], Optional[TiandaoIndicatorSnapshot]]] = None,
+        stop_loss_pct: float = 0.07,
+        time_stop_days: int = 30,
+        time_stop_min_return: float = 0.0,
     ):
-        self.max_holding_days = max_holding_days
-        self.stop_loss_buffer = stop_loss_buffer
-        self._indicator_provider = indicator_provider
-        self._states: Dict[str, _TiandaoBaseState] = {}
+        self.stop_loss_pct = stop_loss_pct
+        self.time_stop_days = time_stop_days
+        self.time_stop_min_return = time_stop_min_return
+        self._states: Dict[str, _TiandaoPressureState] = {}
 
-    def validate_config(self) -> bool:
-        if self.max_holding_days < 1:
-            logger.error("max_holding_days 必须 >= 1，当前值: %s", self.max_holding_days)
-            return False
-        if self.stop_loss_buffer <= 0 or self.stop_loss_buffer >= 0.5:
-            logger.error("stop_loss_buffer 必须在 0-0.5 之间，当前值: %s", self.stop_loss_buffer)
-            return False
-        return True
+        # ── 诊断统计字段 ──
+        # 各卖出分支触发次数
+        self._stop_loss_count = 0      # 7%止损
+        self._time_stop_count = 0      # 时间止损
+        self._tier1_count = 0          # A档压力位卖出1/3
+        self._tier2_count = 0          # B档回落卖出1/2
+        self._c_tier_count = 0         # C档移动止盈
+        # 每笔完整交易的持仓天数
+        self._holding_days: List[int] = []
+        # peak 逐日轨迹（用于诊断 peak 初始化是否正确）: {stock_code: [(date, close, peak)]}
+        self._daily_peak_log: Dict[str, List[tuple]] = {}
+        # REF 检查采样: {stock_code: [(date, pressure)]}  pressure=REF(金牛,1)
+        self._ref_check: Dict[str, List[tuple]] = {}
+        # 记录持仓起始（买入）日期，用于分析 peak 是否从买入日开始
+        self._entry_dates: Dict[str, date] = {}
+
+    # ── 生命周期 ──
 
     def initialize_position(self, stock_code: str, entry_price: float, entry_date: date) -> None:
-        self._states[stock_code] = _TiandaoBaseState(
+        self._states[stock_code] = _TiandaoPressureState(
             entry_date=entry_date,
             entry_price=entry_price,
+            peak=entry_price,
         )
-
-    def check_exits(
-        self,
-        current_date: date,
-        positions: Dict[str, Any],
-        price_provider: Callable[[str, str], Optional[float]],
-        trading_dates: List[date],
-        current_date_index: int,
-        phase: str,
-    ) -> List[ExitSignal]:
-        signals: List[ExitSignal] = []
-
-        for stock_code in list(positions.keys()):
-            if stock_code not in self._states:
-                continue
-            state = self._states[stock_code]
-
-            # T+1 规则
-            if state.entry_date == current_date:
-                continue
-
-            # 获取天道指标
-            indicators = None
-            if self._indicator_provider:
-                indicators = self._indicator_provider(stock_code)
-
-            if phase == "open":
-                s = self._check_open(stock_code, state, price_provider, indicators)
-                if s:
-                    signals.append(s)
-            elif phase == "intraday":
-                s = self._check_intraday(stock_code, state, price_provider, indicators)
-                if s:
-                    signals.append(s)
-            elif phase == "close":
-                s = self._check_close(stock_code, state, price_provider, trading_dates, current_date_index)
-                if s:
-                    signals.append(s)
-
-        return signals
-
-    def _check_open(
-        self,
-        stock_code: str,
-        state: _TiandaoBaseState,
-        price_provider: Callable[[str, str], Optional[float]],
-        indicators: Optional[TiandaoIndicatorSnapshot],
-    ) -> Optional[ExitSignal]:
-        """检查开盘价：是否直接开在金牛线上方"""
-        open_price = price_provider(stock_code, "open")
-        if open_price is None:
-            return None
-
-        if indicators is None or indicators.td_jinniu <= 0:
-            return None
-
-        if open_price >= indicators.td_jinniu:
-            logger.info(
-                "天道金牛清仓 [%s]: 开盘价 %.2f >= 金牛线 %.2f，清仓止盈",
-                stock_code, open_price, indicators.td_jinniu,
-            )
-            return ExitSignal(
-                stock_code=stock_code,
-                reason="金牛清仓(开盘)",
-                sell_price=open_price,
-                price_type="open",
-            )
-
-        return None
-
-    def _check_intraday(
-        self,
-        stock_code: str,
-        state: _TiandaoBaseState,
-        price_provider: Callable[[str, str], Optional[float]],
-        indicators: Optional[TiandaoIndicatorSnapshot],
-    ) -> Optional[ExitSignal]:
-        """检查盘中：金牛止盈 或 买入价5%止损"""
-        high_price = price_provider(stock_code, "high")
-        low_price = price_provider(stock_code, "low")
-        if high_price is None or low_price is None:
-            return None
-
-        if indicators is None:
-            return None
-
-        # 优先级1：金牛线止盈（最高价触发）
-        if indicators.td_jinniu > 0 and high_price >= indicators.td_jinniu:
-            logger.info(
-                "天道金牛清仓 [%s]: 最高价 %.2f >= 金牛线 %.2f，清仓止盈",
-                stock_code, high_price, indicators.td_jinniu,
-            )
-            return ExitSignal(
-                stock_code=stock_code,
-                reason="金牛清仓(盘中)",
-                sell_price=indicators.td_jinniu,
-                price_type="intraday",
-            )
-
-        # 优先级2：买入价5%止损
-        stop_loss_price = state.entry_price * (1 - self.stop_loss_buffer)
-        if low_price <= stop_loss_price:
-            logger.info(
-                "天道金牛清仓 [%s]: 最低价 %.2f <= 止损价 %.2f (买入价%.2f × %.0f%%)，止损清仓",
-                stock_code, low_price, stop_loss_price,
-                state.entry_price, (1 - self.stop_loss_buffer) * 100,
-            )
-            return ExitSignal(
-                stock_code=stock_code,
-                reason="买入价止损",
-                sell_price=stop_loss_price,
-                price_type="intraday",
-            )
-
-        return None
-
-    def _check_close(
-        self,
-        stock_code: str,
-        state: _TiandaoBaseState,
-        price_provider: Callable[[str, str], Optional[float]],
-        trading_dates: List[date],
-        current_date_index: int,
-    ) -> Optional[ExitSignal]:
-        """检查收盘：持股超时"""
-        try:
-            entry_index = trading_dates.index(state.entry_date)
-            holding_days = current_date_index - entry_index
-            if holding_days >= self.max_holding_days:
-                close_price = price_provider(stock_code, "close")
-                if close_price is None:
-                    return None
-                logger.info(
-                    "天道金牛清仓 [%s]: 持股 %d 天 >= %d 天，到期清仓",
-                    stock_code, holding_days, self.max_holding_days,
-                )
-                return ExitSignal(
-                    stock_code=stock_code,
-                    reason="到期清仓",
-                    sell_price=close_price,
-                    price_type="close",
-                )
-        except ValueError:
-            logger.warning("股票 %s 的买入日期 %s 不在交易日列表中", stock_code, state.entry_date)
-
-        return None
+        self._entry_dates[stock_code] = entry_date
 
     def cleanup_position(self, stock_code: str) -> None:
+        # 记录完整持仓周期（卖出时计算）
+        state = self._states.get(stock_code)
+        if state is not None and self._last_index is not None:
+            try:
+                idx = self._trading_dates.index(state.entry_date)
+                holding = self._last_index - idx
+                if holding >= 0:
+                    self._holding_days.append(holding)
+            except (ValueError, AttributeError):
+                pass
         self._states.pop(stock_code, None)
+        self._entry_dates.pop(stock_code, None)
+        self._daily_peak_log.pop(stock_code, None)
+        self._ref_check.pop(stock_code, None)
 
     def reset(self) -> None:
         self._states.clear()
-
-
-# ============================================================
-# 策略 B：天道BBI滚动
-# ============================================================
-
-
-@dataclass
-class _BbiRollingState(_TiandaoBaseState):
-    """BBI滚动策略扩展状态"""
-    released_cash: float = 0.0   # 减仓释放的现金（用于后续加仓）
-
-
-@register_exit_strategy("tiandao_bbi_rolling")
-class TiandaoBbiRollingExitStrategy(ExitStrategy):
-    """天道BBI滚动策略。
-
-    买入后反弹到BBI多空分界线减仓50%锁定利润；
-    回踩金钻趋势支撑位加仓买回（低吸）；
-    反弹到金牛线清仓；跌破支撑位下方5%止损。
-    """
-
-    display_name = "天道BBI滚动"
-    description = "BBI多空线滚动操作：反弹减仓、回踩加仓、金牛清仓、破支撑止损"
-
-    def __init__(
-        self,
-        max_holding_days: int = 40,
-        max_rebuy_count: int = 1,
-        stop_loss_buffer: float = 0.05,
-        indicator_provider: Optional[Callable[[str], Optional[TiandaoIndicatorSnapshot]]] = None,
-    ):
-        self.max_holding_days = max_holding_days
-        self.max_rebuy_count = max_rebuy_count
-        self.stop_loss_buffer = stop_loss_buffer
-        self._indicator_provider = indicator_provider
-        self._states: Dict[str, _BbiRollingState] = {}
+        self._entry_dates.clear()
+        self._daily_peak_log.clear()
+        self._ref_check.clear()
+        self._holding_days.clear()
+        self._stop_loss_count = 0
+        self._time_stop_count = 0
+        self._tier1_count = 0
+        self._tier2_count = 0
+        self._c_tier_count = 0
 
     def validate_config(self) -> bool:
-        if self.max_holding_days < 1:
-            logger.error("max_holding_days 必须 >= 1")
+        if self.stop_loss_pct <= 0 or self.stop_loss_pct >= 1:
+            logger.error("stop_loss_pct 必须在 0-1 之间，当前值: %s", self.stop_loss_pct)
             return False
-        if self.stop_loss_buffer <= 0 or self.stop_loss_buffer >= 0.5:
-            logger.error("stop_loss_buffer 必须在 0-0.5 之间")
-            return False
-        if self.max_rebuy_count < 0:
-            logger.error("max_rebuy_count 必须 >= 0")
+        if self.time_stop_days < 1:
+            logger.error("time_stop_days 必须 >= 1，当前值: %s", self.time_stop_days)
             return False
         return True
 
-    def initialize_position(self, stock_code: str, entry_price: float, entry_date: date) -> None:
-        self._states[stock_code] = _BbiRollingState(
-            entry_date=entry_date,
-            entry_price=entry_price,
-        )
+    # ── 核心逻辑 ──
 
     def check_exits(
         self,
@@ -1004,371 +676,288 @@ class TiandaoBbiRollingExitStrategy(ExitStrategy):
         current_date_index: int,
         phase: str,
     ) -> List[ExitSignal]:
+        if phase != "close":
+            return []
+
+        self._trading_dates = trading_dates
+        self._last_index = current_date_index
+
         signals: List[ExitSignal] = []
-
         for stock_code in list(positions.keys()):
-            if stock_code not in self._states:
-                continue
-            state = self._states[stock_code]
-
-            # T+1 规则
-            if state.entry_date == current_date:
+            state = self._states.get(stock_code)
+            if state is None:
                 continue
 
-            # 获取天道指标
-            indicators = None
-            if self._indicator_provider:
-                indicators = self._indicator_provider(stock_code)
-
-            if phase == "intraday":
-                s = self._check_intraday(stock_code, state, price_provider, indicators)
-                if s:
-                    signals.append(s)
-            elif phase == "close":
-                s = self._check_close(stock_code, state, price_provider, trading_dates, current_date_index)
-                if s:
-                    signals.append(s)
-
-        return signals
-
-    def _check_intraday(
-        self,
-        stock_code: str,
-        state: _BbiRollingState,
-        price_provider: Callable[[str, str], Optional[float]],
-        indicators: Optional[TiandaoIndicatorSnapshot],
-    ) -> Optional[ExitSignal]:
-        """检查盘中：BBI减仓、回踩加仓、金牛止盈、止损"""
-        high_price = price_provider(stock_code, "high")
-        low_price = price_provider(stock_code, "low")
-        if high_price is None or low_price is None:
-            return None
-
-        if indicators is None:
-            return None
-
-        # 优先级1：金牛线止盈（全清）
-        if indicators.td_jinniu > 0 and high_price >= indicators.td_jinniu:
-            logger.info(
-                "天道BBI滚动 [%s]: 最高价 %.2f >= 金牛线 %.2f，清仓止盈",
-                stock_code, high_price, indicators.td_jinniu,
-            )
-            return ExitSignal(
-                stock_code=stock_code,
-                reason="金牛清仓",
-                sell_price=indicators.td_jinniu,
-                price_type="intraday",
-            )
-
-        if not state.partial_sold:
-            # 未减仓状态：检查是否触发BBI减仓
-            if indicators.td_bbi > 0 and high_price >= indicators.td_bbi:
-                state.partial_sold = True
-                logger.info(
-                    "天道BBI滚动 [%s]: 最高价 %.2f >= BBI %.2f，减仓50%%",
-                    stock_code, high_price, indicators.td_bbi,
-                )
-                return ExitSignal(
-                    stock_code=stock_code,
-                    reason="BBI减仓50%",
-                    exit_type="partial",
-                    exit_ratio=0.5,
-                    sell_price=indicators.td_bbi,
-                    price_type="intraday",
-                )
-        else:
-            # 已减仓状态：检查回踩加仓 或 止损
-            if indicators.td_jinzuan > 0:
-                stop_loss_price = indicators.td_jinzuan * (1 - self.stop_loss_buffer)
-
-                # 先检查止损（优先级高于加仓）
-                if low_price <= stop_loss_price:
-                    logger.info(
-                        "天道BBI滚动 [%s]: 最低价 %.2f <= 止损价 %.2f (金钻%.2f × %.0f%%)，清仓止损",
-                        stock_code, low_price, stop_loss_price,
-                        indicators.td_jinzuan, (1 - self.stop_loss_buffer) * 100,
-                    )
-                    return ExitSignal(
-                        stock_code=stock_code,
-                        reason="跌破支撑止损",
-                        sell_price=stop_loss_price,
-                        price_type="intraday",
-                    )
-
-                # 回踩金钻趋势线 → 加仓买回
-                if state.rebuy_count < self.max_rebuy_count and low_price <= indicators.td_jinzuan:
-                    state.rebuy_count += 1
-                    logger.info(
-                        "天道BBI滚动 [%s]: 最低价 %.2f <= 金钻趋势 %.2f，加仓买回50%% (第%d次)",
-                        stock_code, low_price, indicators.td_jinzuan, state.rebuy_count,
-                    )
-                    return ExitSignal(
-                        stock_code=stock_code,
-                        reason="回踩加仓",
-                        exit_type="rebuy",
-                        exit_ratio=0.5,
-                        sell_price=indicators.td_jinzuan,
-                        price_type="intraday",
-                    )
-
-        return None
-
-    def _check_close(
-        self,
-        stock_code: str,
-        state: _BbiRollingState,
-        price_provider: Callable[[str, str], Optional[float]],
-        trading_dates: List[date],
-        current_date_index: int,
-    ) -> Optional[ExitSignal]:
-        """检查收盘：持股超时"""
-        try:
-            entry_index = trading_dates.index(state.entry_date)
-            holding_days = current_date_index - entry_index
-            if holding_days >= self.max_holding_days:
-                close_price = price_provider(stock_code, "close")
-                if close_price is None:
-                    return None
-                logger.info(
-                    "天道BBI滚动 [%s]: 持股 %d 天 >= %d 天，到期清仓",
-                    stock_code, holding_days, self.max_holding_days,
-                )
-                return ExitSignal(
-                    stock_code=stock_code,
-                    reason="到期清仓",
-                    sell_price=close_price,
-                    price_type="close",
-                )
-        except ValueError:
-            pass
-
-        return None
-
-    def cleanup_position(self, stock_code: str) -> None:
-        self._states.pop(stock_code, None)
-
-    def reset(self) -> None:
-        self._states.clear()
-
-
-# ============================================================
-# 策略 C：天道金牛2分级保护
-# ============================================================
-
-
-@register_exit_strategy("tiandao_jinniu2_protection")
-class TiandaoJinniu2ProtectionExitStrategy(ExitStrategy):
-    """天道金牛2分级保护策略。
-
-    以金牛2（EMA(金钻趋势, 25)）为动态保护线：
-    - 跌破金牛2 → 趋势转弱，减仓50%
-    - 跌破金牛2 × 0.95 → 趋势走坏，清仓止损
-    - 收盘站上金牛2 → 趋势恢复，加仓买回
-    - 反弹到金牛线 → 清仓止盈
-    """
-
-    display_name = "天道金牛2保护"
-    description = "金牛2分级保护：趋势转弱减仓、趋势走坏清仓、趋势恢复加仓、金牛清仓"
-
-    def __init__(
-        self,
-        max_holding_days: int = 35,
-        stop_loss_buffer: float = 0.05,
-        indicator_provider: Optional[Callable[[str], Optional[TiandaoIndicatorSnapshot]]] = None,
-    ):
-        self.max_holding_days = max_holding_days
-        self.stop_loss_buffer = stop_loss_buffer
-        self._indicator_provider = indicator_provider
-        self._states: Dict[str, _TiandaoBaseState] = {}
-
-    def validate_config(self) -> bool:
-        if self.max_holding_days < 1:
-            logger.error("max_holding_days 必须 >= 1")
-            return False
-        if self.stop_loss_buffer <= 0 or self.stop_loss_buffer >= 0.5:
-            logger.error("stop_loss_buffer 必须在 0-0.5 之间")
-            return False
-        return True
-
-    def initialize_position(self, stock_code: str, entry_price: float, entry_date: date) -> None:
-        self._states[stock_code] = _TiandaoBaseState(
-            entry_date=entry_date,
-            entry_price=entry_price,
-        )
-
-    def check_exits(
-        self,
-        current_date: date,
-        positions: Dict[str, Any],
-        price_provider: Callable[[str, str], Optional[float]],
-        trading_dates: List[date],
-        current_date_index: int,
-        phase: str,
-    ) -> List[ExitSignal]:
-        signals: List[ExitSignal] = []
-
-        for stock_code in list(positions.keys()):
-            if stock_code not in self._states:
-                continue
-            state = self._states[stock_code]
-
-            # T+1 规则
-            if state.entry_date == current_date:
-                continue
-
-            # 获取天道指标
-            indicators = None
-            if self._indicator_provider:
-                indicators = self._indicator_provider(stock_code)
-
-            if phase == "intraday":
-                s = self._check_intraday(stock_code, state, price_provider, indicators)
-                if s:
-                    signals.append(s)
-            elif phase == "close":
-                s = self._check_close(stock_code, state, price_provider, indicators, trading_dates, current_date_index)
-                if s:
-                    signals.append(s)
-
-        return signals
-
-    def _check_intraday(
-        self,
-        stock_code: str,
-        state: _TiandaoBaseState,
-        price_provider: Callable[[str, str], Optional[float]],
-        indicators: Optional[TiandaoIndicatorSnapshot],
-    ) -> Optional[ExitSignal]:
-        """检查盘中：金牛止盈、金牛2减仓、金牛2下方止损"""
-        high_price = price_provider(stock_code, "high")
-        low_price = price_provider(stock_code, "low")
-        if high_price is None or low_price is None:
-            return None
-
-        if indicators is None:
-            return None
-
-        # 获取开盘价，用于计算实际可成交的卖出价
-        # 当股票跳空低开直接跌破触发价时，不能以触发价卖出（当天该价格不存在）
-        open_price = price_provider(stock_code, "open")
-
-        # 优先级1：金牛线止盈（全清）
-        if indicators.td_jinniu > 0 and high_price >= indicators.td_jinniu:
-            logger.info(
-                "天道金牛2保护 [%s]: 最高价 %.2f >= 金牛线 %.2f，清仓止盈",
-                stock_code, high_price, indicators.td_jinniu,
-            )
-            return ExitSignal(
-                stock_code=stock_code,
-                reason="金牛清仓",
-                sell_price=indicators.td_jinniu,
-                price_type="intraday",
-            )
-
-        if indicators.td_jinniu2 <= 0:
-            return None
-
-        if not state.partial_sold:
-            # 未减仓：检查是否跌破金牛2（趋势转弱）
-            if low_price <= indicators.td_jinniu2:
-                state.partial_sold = True
-                # 卖出价不能高于开盘价（如果跳空低开跌破金牛2，金牛2当天不存在）
-                actual_sell_price = (
-                    min(open_price, indicators.td_jinniu2)
-                    if open_price is not None
-                    else indicators.td_jinniu2
-                )
-                logger.info(
-                    "天道金牛2保护 [%s]: 最低价 %.2f <= 金牛2 %.2f，趋势转弱减仓50%%（卖出价=%.2f）",
-                    stock_code, low_price, indicators.td_jinniu2, actual_sell_price,
-                )
-                return ExitSignal(
-                    stock_code=stock_code,
-                    reason="趋势转弱减仓",
-                    exit_type="partial",
-                    exit_ratio=0.5,
-                    sell_price=actual_sell_price,
-                    price_type="intraday",
-                )
-        else:
-            # 已减仓：检查是否跌破金牛2 × 0.95（趋势走坏）
-            stop_loss_price = indicators.td_jinniu2 * (1 - self.stop_loss_buffer)
-            if low_price <= stop_loss_price:
-                # 卖出价不能高于开盘价（如果跳空低开跌破止损价，止损价当天不存在）
-                actual_sell_price = (
-                    min(open_price, stop_loss_price)
-                    if open_price is not None
-                    else stop_loss_price
-                )
-                logger.info(
-                    "天道金牛2保护 [%s]: 最低价 %.2f <= 止损价 %.2f (金牛2 %.2f × %.0f%%)，趋势走坏清仓（卖出价=%.2f）",
-                    stock_code, low_price, stop_loss_price,
-                    indicators.td_jinniu2, (1 - self.stop_loss_buffer) * 100,
-                    actual_sell_price,
-                )
-                return ExitSignal(
-                    stock_code=stock_code,
-                    reason="趋势走坏清仓",
-                    sell_price=actual_sell_price,
-                    price_type="intraday",
-                )
-
-        return None
-
-    def _check_close(
-        self,
-        stock_code: str,
-        state: _TiandaoBaseState,
-        price_provider: Callable[[str, str], Optional[float]],
-        indicators: Optional[TiandaoIndicatorSnapshot],
-        trading_dates: List[date],
-        current_date_index: int,
-    ) -> Optional[ExitSignal]:
-        """检查收盘：趋势恢复加仓 或 持股超时"""
-        if indicators is not None and state.partial_sold:
+            # ── 获取价格数据 ──
             close_price = price_provider(stock_code, "close")
-            if close_price is not None and indicators.td_jinniu2 > 0:
-                # 收盘价重新站上金牛2 → 趋势恢复，加仓买回
-                if close_price > indicators.td_jinniu2:
-                    state.partial_sold = False
+            high_price = price_provider(stock_code, "high")
+            pressure = price_provider(stock_code, "pressure")
+            if close_price is None:
+                continue
+
+            # ── 更新峰值（收盘价 + 最高价） ──
+            if high_price is not None and high_price > state.peak:
+                state.peak = high_price
+            if close_price > state.peak:
+                state.peak = close_price
+
+            # ── 记录诊断轨迹 ──
+            self._daily_peak_log.setdefault(stock_code, []).append(
+                (current_date, close_price, state.peak)
+            )
+            # REF 检查采样：记录日期与 pressure（=REF(金牛,1)）
+            # 注意：不依赖当日 td_jinniu 字段，因回测尾部数据缺口时该字段可能被算成 0，
+            # 只依赖 pressure 序列本身做连续性与前日一致性校验
+            self._ref_check.setdefault(stock_code, []).append(
+                (current_date, pressure if pressure is not None else 0.0)
+            )
+
+            gain_pct = (close_price - state.entry_price) / state.entry_price
+            max_gain_pct = (state.peak - state.entry_price) / state.entry_price
+
+            # ── 优先级 C > A/B > 止损 > 时间止损 ──
+
+            # --- C档：动态分级移动止盈（全程跟踪，无论 tier 状态） ---
+            if max_gain_pct > 0:
+                trailing_dd = self._get_trailing_stop_pct(max_gain_pct)
+                new_trailing_stop = state.peak * (1 - trailing_dd)
+                trailing_stop = max(new_trailing_stop, state.last_trailing_stop)
+                state.last_trailing_stop = trailing_stop
+
+                if close_price <= trailing_stop:
+                    if price_provider(stock_code, "is_limit_down_sealed") == 1.0:
+                        logger.info(
+                            "通道压力线 [%s]: C档移动止盈触发，但跌停封死无法成交，继续持有",
+                            stock_code,
+                        )
+                        continue
+                    self._c_tier_count += 1
                     logger.info(
-                        "天道金牛2保护 [%s]: 收盘价 %.2f > 金牛2 %.2f，趋势恢复加仓买回",
-                        stock_code, close_price, indicators.td_jinniu2,
+                        "通道压力线 [%s]: C档移动止盈，收盘价 %.2f <= 移动止盈价 %.2f(峰值 %.2f, 峰值盈利 %.1f%%)，全部卖出",
+                        stock_code, close_price, trailing_stop, state.peak, max_gain_pct * 100,
                     )
-                    return ExitSignal(
+                    signals.append(ExitSignal(
                         stock_code=stock_code,
-                        reason="趋势恢复加仓",
-                        exit_type="rebuy",
+                        reason="C档移动止盈",
+                        exit_type="full",
                         exit_ratio=1.0,
                         sell_price=close_price,
                         price_type="close",
-                    )
+                    ))
+                    continue  # C档已触发，跳过后续检查
 
-        # 持股超时
-        try:
-            entry_index = trading_dates.index(state.entry_date)
-            holding_days = current_date_index - entry_index
-            if holding_days >= self.max_holding_days:
-                close_price = price_provider(stock_code, "close")
-                if close_price is None:
-                    return None
+            # --- A档：首次触碰压力位，卖 1/3 ---
+            if not state.tier1_done and pressure is not None and pressure > 0 and high_price is not None and high_price >= pressure:
+                if price_provider(stock_code, "is_limit_down_sealed") == 1.0:
+                    logger.info(
+                        "通道压力线 [%s]: A档压力位触发，但跌停封死无法成交，继续持有",
+                        stock_code,
+                    )
+                    continue
+                state.tier1_done = True
+                self._tier1_count += 1
                 logger.info(
-                    "天道金牛2保护 [%s]: 持股 %d 天 >= %d 天，到期清仓",
-                    stock_code, holding_days, self.max_holding_days,
+                    "通道压力线 [%s]: A档触发，最高价 %.2f >= 压力位 %.2f，以压力位价格卖出 1/3",
+                    stock_code, high_price, pressure,
                 )
-                return ExitSignal(
+                signals.append(ExitSignal(
                     stock_code=stock_code,
-                    reason="到期清仓",
+                    reason="A档压力位卖出1/3",
+                    exit_type="partial",
+                    exit_ratio=1.0 / 3.0,
+                    sell_price=pressure,
+                    price_type="intraday",
+                ))
+                continue  # A档已触发，跳过B档
+
+            # --- B档：突破后回落，再卖 1/2（即原仓的 1/3） ---
+            if state.tier1_done and not state.tier2_done and pressure is not None and pressure > 0 and close_price < pressure:
+                if price_provider(stock_code, "is_limit_down_sealed") == 1.0:
+                    logger.info(
+                        "通道压力线 [%s]: B档回落触发，但跌停封死无法成交，继续持有",
+                        stock_code,
+                    )
+                    continue
+                state.tier2_done = True
+                self._tier2_count += 1
+                logger.info(
+                    "通道压力线 [%s]: B档触发，收盘价 %.2f < 压力位 %.2f，尾盘卖出剩余 1/2",
+                    stock_code, close_price, pressure,
+                )
+                signals.append(ExitSignal(
+                    stock_code=stock_code,
+                    reason="B档压力位回落卖出1/2剩余",
+                    exit_type="partial",
+                    exit_ratio=0.5,
                     sell_price=close_price,
                     price_type="close",
+                ))
+                continue  # B档已触发，跳过止损
+
+            # --- 止损检查（与基线完全一致） ---
+            stop_loss_price = state.entry_price * (1 - self.stop_loss_pct)
+            if close_price <= stop_loss_price:
+                if price_provider(stock_code, "is_limit_down_sealed") == 1.0:
+                    logger.info(
+                        "通道压力线 [%s]: 止损触发，但跌停封死无法成交，继续持有",
+                        stock_code,
+                    )
+                    continue
+                self._stop_loss_count += 1
+                logger.info(
+                    "通道压力线 [%s]: 止损触发，收盘价 %.2f <= 止损价 %.2f(买入价 %.2f × %.0f%%)，全部卖出",
+                    stock_code, close_price, stop_loss_price, state.entry_price, self.stop_loss_pct * 100,
                 )
-        except ValueError:
-            pass
+                signals.append(ExitSignal(
+                    stock_code=stock_code,
+                    reason="止损出局",
+                    exit_type="full",
+                    exit_ratio=1.0,
+                    sell_price=close_price,
+                    price_type="close",
+                ))
+                continue
 
-        return None
+            # --- 时间止损（与基线完全一致） ---
+            entry_index = None
+            for i, d in enumerate(trading_dates):
+                if d == state.entry_date:
+                    entry_index = i
+                    break
+            if entry_index is not None:
+                holding_days = current_date_index - entry_index
+                if holding_days >= self.time_stop_days and gain_pct <= self.time_stop_min_return:
+                    self._time_stop_count += 1
+                    logger.info(
+                        "通道压力线 [%s]: 时间止损，持股 %d 天 >= %d 天，收益率 %.1f%% <= %.0f%%，全部卖出",
+                        stock_code, holding_days, self.time_stop_days,
+                        gain_pct * 100, self.time_stop_min_return * 100,
+                    )
+                    signals.append(ExitSignal(
+                        stock_code=stock_code,
+                        reason="时间止损",
+                        exit_type="full",
+                        exit_ratio=1.0,
+                        sell_price=close_price,
+                        price_type="close",
+                    ))
+                    continue
 
-    def cleanup_position(self, stock_code: str) -> None:
-        self._states.pop(stock_code, None)
+        return signals
 
-    def reset(self) -> None:
-        self._states.clear()
+    def _get_trailing_stop_pct(self, gain_pct: float) -> float:
+        """阶梯式回撤容忍度（与 TieredExitStrategy 基线完全一致）。
+
+        任何盈利 >0 时最低也有 10% 回撤容忍，避免峰值盈利不足 10%
+        时移动止盈线等于当日最高价导致的"刚买就卖"。
+        """
+        if gain_pct >= 0.50:
+            return 0.05
+        elif gain_pct >= 0.30:
+            return 0.08
+        else:
+            return 0.10
+
+    def get_diagnostics(self) -> List[str]:
+        """生成 tiandao-pressure 配置的诊断信息（供 drawdown_attribution.log 追加）。
+
+        Returns:
+            诊断文本行列表。
+        """
+        lines: List[str] = []
+        lines.append("=" * 60)
+        lines.append(f"【tiandao-pressure 通道压力线诊断】 配置名: tiandao_pressure | 策略: {self.__class__.__name__}")
+        lines.append(f"  stop_loss_pct={self.stop_loss_pct} | time_stop_days={self.time_stop_days} | time_stop_min_return={self.time_stop_min_return}")
+        lines.append("  盈利保护(profit_protect): 未启用 ✅（本策略无 profit_protect_threshold/retracement 字段）")
+        lines.append("")
+
+        # 2. peak 初始化检查：选取 2024-10-08 买入的前 5 只股票
+        target_buy_date = date(2024, 10, 8)
+        candidates = [sc for sc, ed in self._entry_dates.items() if ed == target_buy_date]
+        lines.append("### 2. peak 初始化检查（2024-10-08 买入，最多5只） ###")
+        if not candidates:
+            lines.append("  2024-10-08 当天无买入记录")
+        else:
+            for sc in candidates[:5]:
+                log = self._daily_peak_log.get(sc, [])
+                lines.append(f"  [{sc}] 买入日={target_buy_date} 轨迹（date | close | peak | peak*0.90）:")
+                for d, close, peak in log:
+                    lines.append(f"    {d} | {close:.2f} | {peak:.2f} | {peak*0.90:.2f}")
+        lines.append("")
+
+        # 3. 卖出分支触发统计
+        lines.append("### 3. 卖出分支触发统计 ###")
+        c_total = self._c_tier_count
+        others = self._stop_loss_count + self._time_stop_count + self._tier1_count + self._tier2_count
+        lines.append(
+            f"  7%止损={self._stop_loss_count} | 时间止损={self._time_stop_count} | "
+            f"Tier1(A档)={self._tier1_count} | Tier2(B档)={self._tier2_count} | C档(peak移动止盈)={self._c_tier_count}"
+        )
+        if others > 0 and c_total > others:
+            lines.append(f"  ⚠️ C档次数({c_total}) >> 其他分支总和({others})，peak 逻辑可能是主要问题")
+        lines.append("")
+
+        # 4. 持仓周期分布
+        lines.append("### 4. 持仓周期分布（完整清仓的持仓天数） ###")
+        if self._holding_days:
+            bins = {"1天": 0, "2-3天": 0, "4-7天": 0, "8-15天": 0, "15+天": 0}
+            total = len(self._holding_days)
+            for h in self._holding_days:
+                if h <= 1:
+                    bins["1天"] += 1
+                elif h <= 3:
+                    bins["2-3天"] += 1
+                elif h <= 7:
+                    bins["4-7天"] += 1
+                elif h <= 15:
+                    bins["8-15天"] += 1
+                else:
+                    bins["15+天"] += 1
+            short_ratio = (bins["1天"] + bins["2-3天"]) / total
+            lines.append(f"  清仓交易总数: {total}")
+            for k, v in bins.items():
+                lines.append(f"    {k}: {v}（{v/total:.1%}）")
+            if short_ratio > 0.5:
+                lines.append(f"  ⚠️ 1-3天占比 {short_ratio:.1%} > 50%，疑为'买入即清仓'循环")
+        else:
+            lines.append("  无完整清仓记录")
+        lines.append("")
+
+        # 5. REF 检查：任选一只持仓天数较长的股票，连续5天
+        # 校验方案：pressure = REF(金牛,1)，故当日 pressure 应等于前一日快照的 td_jinniu。
+        # 但前一日 td_jinniu 在数据缺口时可能为 0，无法可靠读取。改用 pressure 序列自身的
+        # 连续性来确认 REF 平移正确：金牛为慢速平滑线，相邻交易日 pressure 应平滑过渡、
+        # 变化幅度极小（XMA 慢线日变幅通常 < 2%），且不会出现跳变。
+        lines.append("### 5. REF 检查（pressure 序列连续性校验，pressure=REF(金牛,1)） ###")
+        sampled = None
+        for sc, snap in self._ref_check.items():
+            if len(snap) >= 5:
+                sampled = sc
+                break
+        if sampled is None and self._ref_check:
+            sampled = next(iter(self._ref_check))
+            snap = self._ref_check[sampled]
+            if len(snap) > 5:
+                snap = snap[-5:]
+        else:
+            snap = self._ref_check.get(sampled, [])[-5:]
+        if sampled is None:
+            lines.append("  无可用采样数据")
+        else:
+            lines.append(f"  [{sampled}]（date | pressure=REF(金牛,1) | 相对前日变化 | 连续?）")
+            prev_pressure = None
+            for d, pressure in snap:
+                if prev_pressure is not None and prev_pressure > 0:
+                    change = abs(pressure - prev_pressure) / prev_pressure
+                    cont = "✅" if change <= 0.03 else "❓"
+                    lines.append(
+                        f"    {d} | pressure={pressure:.2f} | {change:.2%} {cont}"
+                    )
+                else:
+                    lines.append(f"    {d} | pressure={pressure:.2f} | --（首个样本） ✅")
+                prev_pressure = pressure
+        lines.append("")
+        lines.append("=" * 60)
+        return lines
+
+

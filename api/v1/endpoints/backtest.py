@@ -122,9 +122,21 @@ def get_latest_backtest_results():
                 "message": "没有找到回测结果目录"
             }
         
-        # 回测结果保存在根目录（不是子目录）
-        latest_dir = results_dir
+        # 回测结果现在保存在根目录下的子文件夹中（命名：选股策略_止盈止损_起始日期_结束日期）。
+        # 扫描子文件夹并选取最近一次回测结果；若无子文件夹则回退到根目录。
+        import os
+        latest_dir = None
         dir_name = ""
+        for candidate in results_dir.iterdir():
+            if candidate.is_dir():
+                if latest_dir is None or candidate.stat().st_mtime > latest_dir.stat().st_mtime:
+                    latest_dir = candidate
+        if latest_dir is None:
+            # 无子文件夹时兼容旧版存储（直接放在根目录）
+            latest_dir = results_dir
+            dir_name = ""
+        else:
+            dir_name = latest_dir.name
         logger.info(f"找到回测结果目录: {latest_dir}")
         
         # 收集图片路径 - 支持原始文件名和新的 QuantStats 文件名，添加时间戳

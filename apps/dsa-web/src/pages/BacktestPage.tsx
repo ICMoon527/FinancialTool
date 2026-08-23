@@ -493,6 +493,7 @@ const BacktestPage: React.FC = () => {
         const preset = exitStrategiesData.presets[selectedExitPreset];
         requestBody.exitStrategy = {
           strategy: preset.strategy,
+          name: preset.name,  // 止盈止损中文名，用于结果子目录命名
           params: editedExitParams,
         };
       }

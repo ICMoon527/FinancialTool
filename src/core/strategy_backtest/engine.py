@@ -267,6 +267,9 @@ class StrategyBacktestEngine:
         self._last_volume_update: Dict[str, date] = {}
         # 当日 OHLCV 缓存，每日开始时加载一次，供 _is_limit_down_sealed 等使用
         self._today_cache: Dict[str, Dict[str, float]] = {}
+
+        # 日志输出目录：默认不设置（使用固定路径），由 orchestrator 设定后写入对应结果子目录
+        self.log_output_dir = None
         # 封死检查计数器（用于验证缓存一致性）
         self._sealed_check_count = 0
         self._sealed_true_count = 0
@@ -917,6 +920,8 @@ class StrategyBacktestEngine:
         Args:
             current_date: 当前交易日
         """
+        # 保存前一天的缓存，用于计算 pressure = REF(金牛, 1) / support = REF(金钻, 1)
+        prev_cache = self._tiandao_cache.copy()
         self._tiandao_cache.clear()
         for stock_code in list(self.portfolio.positions.keys()):
             try:
@@ -967,6 +972,11 @@ class StrategyBacktestEngine:
                     td_jinniu2=float(row.get("td_jinniu2", 0) or 0),
                     td_bbi=float(row.get("td_bbi", 0) or 0),
                 )
+                # 设置 pressure = REF(金牛, 1) 和 support = REF(金钻, 1)
+                prev_snapshot = prev_cache.get(stock_code)
+                if prev_snapshot is not None:
+                    snapshot.pressure = prev_snapshot.td_jinniu
+                    snapshot.support = prev_snapshot.td_jinzuan
                 self._tiandao_cache[stock_code] = snapshot
                 logger.debug(
                     "天道指标 [%s]: 金钻=%.2f 金牛=%.2f 金牛2=%.2f BBI=%.2f",
@@ -1531,6 +1541,12 @@ class StrategyBacktestEngine:
                 if close_p is None:
                     return None
                 return 1.0 if self._is_limit_down_sealed(stock_code, close_p, current_date) else 0.0
+            if price_type == "pressure":
+                snap = self._tiandao_cache.get(stock_code)
+                return snap.pressure if snap else None
+            if price_type == "support":
+                snap = self._tiandao_cache.get(stock_code)
+                return snap.support if snap else None
             return self._get_stock_price(stock_code, current_date, price_type)
 
         # 计算天道指标并设置 indicator_provider
@@ -1848,14 +1864,25 @@ class StrategyBacktestEngine:
 
         lines.append("=" * 60)
 
+        # 7. tiandao-pressure 特有诊断（配置确认 + peak初始化 + 分支统计 + 持仓分布 + REF检查）
+        es = self.exit_strategy
+        if hasattr(es, "get_diagnostics"):
+            try:
+                lines.extend(es.get_diagnostics())
+            except Exception as e:
+                logger.debug("通道压力线诊断生成失败: %s", e)
+
         # 打印到终端
         print("\n".join(lines))
 
-        # 保存到日志文件
-        log_dir = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
-            "strategy_backtest_results",
-        )
+        # 保存到日志文件（优先写入 orchestrator 指定的结果子目录，否则用固定路径）
+        if self.log_output_dir:
+            log_dir = self.log_output_dir
+        else:
+            log_dir = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
+                "strategy_backtest_results",
+            )
         os.makedirs(log_dir, exist_ok=True)
         log_path = os.path.join(log_dir, "drawdown_attribution.log")
         with open(log_path, "w", encoding="utf-8") as f:

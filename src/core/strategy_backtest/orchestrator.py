@@ -373,6 +373,9 @@ class BacktestOrchestrator:
         self.engine.set_stock_pool(stock_pool)
         self.engine.set_trading_dates(trading_dates)
 
+        # 让回撤归因等日志写入当前结果子目录
+        self.engine.log_output_dir = str(self.output_dir)
+
         self.portfolio = self.engine.run()
 
         return self.portfolio

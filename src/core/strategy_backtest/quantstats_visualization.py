@@ -453,9 +453,10 @@ class QuantStatsVisualizer:
         results['html_report'] = self.generate_html_report(title=report_title)
         
         # 生成关键图形
-        results['equity_curve'] = self.plot_equity_curve()
-        results['drawdown_curve'] = self.plot_drawdown_curve()
-        results['monthly_heatmap'] = self.plot_monthly_heatmap()
+        # 注：不再额外产出独立 PNG 图（qs_*.png），其内容已由 quantstats_report.html 内嵌 SVG 呈现
+        # results['equity_curve'] = self.plot_equity_curve()
+        # results['drawdown_curve'] = self.plot_drawdown_curve()
+        # results['monthly_heatmap'] = self.plot_monthly_heatmap()
         
         # 计算并保存指标
         metrics = self.calculate_key_metrics()

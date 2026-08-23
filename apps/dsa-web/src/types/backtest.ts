@@ -131,6 +131,7 @@ export interface StrategyBacktestRunAsyncRequest {
 
 export interface ExitStrategyConfig {
   strategy: string;  // 策略类型: "simple" | "tiered"
+  name?: string;  // 止盈止损显示名（前端 preset 的中文名），用于结果子目录命名
   params: Record<string, number>;  // 策略参数
 }
 

@@ -281,11 +281,32 @@ class StrategyBacktestService:
             from pathlib import Path
             project_root = Path(__file__).parent.parent.parent
             config_path = str(project_root / "stock_selector" / "backtest_config.yaml")
-            
+
+            # 止盈止损中文名：优先取前端传入的 name，其次取策略类型键
+            # （供结果子目录名与报告标题共用）
+            if isinstance(exit_strategy, dict):
+                exit_display_name = exit_strategy.get("name") or exit_strategy.get("strategy", "默认止盈")
+            else:
+                exit_display_name = "默认止盈"
+
+            # 构建子目录名：选股策略名_止盈止损名_起始日期_结束日期（与前端显示名一致）
+            try:
+                result_subdir = (
+                    f"{strategy_name}_{exit_display_name}_"
+                    f"{start_date_obj.isoformat()}_{end_date_obj.isoformat()}"
+                )
+                # 清理文件名不允许的字符，避免路径异常
+                import re
+                result_subdir = re.sub(r'[\\/:*?"<>|]', "-", result_subdir)
+            except Exception as e:
+                logger.warning("构造回测结果子目录名失败，回退到默认目录: %s", e)
+                result_subdir = None
+
             # 创建编排器 - 使用配置文件
             orchestrator = BacktestOrchestrator(
                 config_path=config_path,
-                output_dir="strategy_backtest_results"
+                output_dir=str(Path("strategy_backtest_results") / result_subdir)
+                if result_subdir else "strategy_backtest_results"
             )
             
             # 更新任务状态，保存orchestrator引用用于终止
@@ -305,7 +326,8 @@ class StrategyBacktestService:
                 end_date=end_date_obj,
                 max_positions=max_positions,
                 exit_strategy=exit_strategy,
-                strategy_name=strategy_name,
+                # 报告标题：选股策略名_止盈止损名（不含日期，日期报告中已有）
+                strategy_name=f"{strategy_name}_{exit_display_name}",
             )
             
             # 更新任务状态为完成
