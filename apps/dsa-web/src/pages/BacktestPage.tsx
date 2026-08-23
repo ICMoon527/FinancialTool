@@ -609,7 +609,7 @@ const BacktestPage: React.FC = () => {
     <div className="min-h-screen flex flex-col">
       {/* 页面头部 */}
       <header className="flex-shrink-0 px-4 py-3 border-b border-white/5">
-        <div className="flex items-start gap-2 max-w-6xl flex-wrap">
+        <div className="flex items-start gap-2 w-full flex-wrap">
           {/* 策略选择 */}
           <div ref={strategyContainerRef} className="relative">
             <button
