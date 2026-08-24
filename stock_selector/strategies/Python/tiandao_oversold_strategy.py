@@ -64,6 +64,7 @@ class TiandaoOversoldStrategy(StockSelectorStrategy):
         daily_data: Optional[pd.DataFrame] = None,
         precomputed_metrics: Optional[Dict[str, Any]] = None,
         require_jinzuan_above_jinniu2: bool = False,
+        min_prior_drawdown_pct: Optional[float] = None,
     ) -> StrategyMatch:
         """
         对单只股票执行天道超跌反弹策略。
@@ -74,6 +75,8 @@ class TiandaoOversoldStrategy(StockSelectorStrategy):
             daily_data: 可选的预加载日线数据
             precomputed_metrics: 可选的预计算指标
             require_jinzuan_above_jinniu2: 是否要求金钻趋势线在金牛2线上方（回测中启用，选股页面不启用）
+            min_prior_drawdown_pct: 可选的最小买入前回撤阈值（%）。设置后，要求买入前从
+                近20日最高收盘价的回撤幅度 ≥ 该百分比才允许选入（用于过滤"跌得不够深的假超跌"）。
 
         Returns:
             StrategyMatch 结果对象
@@ -266,12 +269,30 @@ class TiandaoOversoldStrategy(StockSelectorStrategy):
                                         # 选股标签页(默认)：当日K线有部分在金钻趋势线下（实体或下影线等）
                                         core_xg_signal = low_val < td_jinzuan
 
+                            # ========== 最小买入前回撤过滤（可选）==========
+                            # 因子筛查发现：买入前从近期高点回撤不足的票整体收益偏负，
+                            # 提供可选阈值剔除"跌得不够深的假超跌"。
+                            drawdown_pct = None
+                            if min_prior_drawdown_pct is not None and core_xg_signal and not is_gap_event:
+                                close_series = daily_data["Close"]
+                                prev_high = float(close_series.rolling(20, min_periods=5).max().iloc[-1])
+                                if pd.isna(prev_high) or prev_high <= 0:
+                                    prev_high = close_val
+                                if prev_high > 0:
+                                    drawdown_pct = max(0.0, (prev_high - close_val) / prev_high) * 100.0
+                                    if drawdown_pct < float(min_prior_drawdown_pct):
+                                        core_xg_signal = False
+                                        conditions_failed.append(
+                                            f"买入前回撤不足(min_prior_drawdown_pct={min_prior_drawdown_pct:g}%, 实际={drawdown_pct:.1f}%)"
+                                        )
+
                             match_details["conditions"]["core_xg"] = {
                                 "passed": core_xg_signal,
                                 "td_xg": td_xg,
                                 "td_jinzuan": round(td_jinzuan, 3),
                                 "td_jinniu2": round(td_jinniu2, 3),
                                 "low": round(low_val, 3),
+                                "prior_drawdown_pct": round(drawdown_pct, 2) if drawdown_pct is not None else None,
                             }
 
                             if core_xg_signal:

@@ -1704,7 +1704,12 @@ class StrategyBacktestEngine:
                             # 从配置读取策略参数（如 require_jinzuan_above_jinniu2）
                             strategy_params = self.backtest_strategy_params.get(strategy.id, {})
                             require_jinzuan = strategy_params.get("require_jinzuan_above_jinniu2", True)
-                            match = strategy.select(stock_code, require_jinzuan_above_jinniu2=require_jinzuan)
+                            min_drawdown = strategy_params.get("min_prior_drawdown_pct")
+                            match = strategy.select(
+                                stock_code,
+                                require_jinzuan_above_jinniu2=require_jinzuan,
+                                min_prior_drawdown_pct=min_drawdown,
+                            )
                             if not match or not match.matched:
                                 all_matched = False
                                 break

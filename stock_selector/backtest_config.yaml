@@ -183,6 +183,11 @@ exit_strategy:
 backtest_strategy_params:
   tiandao_xg_buy:
     require_jinzuan_above_jinniu2: true  # 是否要求金钻趋势 > 金牛2（true=更严格，false=仅需td_xg信号）
+    # 最小买入前回撤过滤（可选，%）：
+    # 要求买入前从近20日最高收盘价的回撤幅度 ≥ 该百分比才允许选入，用于剔除"跌得不够深的假超跌"。
+    # 实测(2021-07~2026-07, tiandao_pressure)为负优化：cum 161%→129%(-32pp)、maxDD 反而加深、calmar 0.58→0.44，
+    # 且并未减少交易笔数(161→166)。浅回撤买入贡献了尾部大赢家，故默认关闭。
+    # min_prior_drawdown_pct: 10
 
 # 仓位管理配置
 # 说明：基于市场波动率动态调整买入仓位，降低系统性风险下的回撤
