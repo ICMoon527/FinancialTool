@@ -21,9 +21,9 @@ import type {
 
 export const backtestApi = {
     /**
-     * 获取最近一次回测结果
+     * 获取最近一次回测结果（可用 dir 指定具体回测文件夹）
      */
-    getLatestBacktestResults: async (): Promise<{
+    getLatestBacktestResults: async (dir?: string): Promise<{
         success: boolean;
         resultDir?: string;
         result_dir?: string;
@@ -38,7 +38,24 @@ export const backtestApi = {
         quantstatsMetrics?: any;
         quantstats_metrics?: any;
     }> => {
-        const response = await apiClient.get('/api/v1/backtest/strategy/results/latest');
+        const params = dir ? { dir } : {};
+        const response = await apiClient.get('/api/v1/backtest/strategy/results/latest', { params });
+        return toCamelCase(response.data);
+    },
+
+    /**
+     * 列出所有历史回测文件夹
+     */
+    listBacktestResults: async (): Promise<{
+        success: boolean;
+        message?: string;
+        items?: {
+            name: string;
+            modifiedAt?: number;
+            modified_at?: number;
+        }[];
+    }> => {
+        const response = await apiClient.get('/api/v1/backtest/strategy/results/list');
         return toCamelCase(response.data);
     },
 

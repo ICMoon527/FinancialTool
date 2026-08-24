@@ -167,6 +167,10 @@ const BacktestPage: React.FC = () => {
   const [quantstatsHtml, setQuantstatsHtml] = useState<string | null>(null);
   const [quantstatsMetrics, setQuantstatsMetrics] = useState<any>(null);
 
+  // 历史回测选择状态
+  const [historyItems, setHistoryItems] = useState<{ name: string; modifiedAt: number }[]>([]);
+  const [selectedHistoryDir, setSelectedHistoryDir] = useState<string>(''); // 空串表示最新
+
   // 轮询定时器引用
   const pollTimerRef = useRef<number | null>(null);
   const isMountedRef = useRef<boolean>(true);
@@ -219,8 +223,8 @@ const BacktestPage: React.FC = () => {
   }, []);
 
   // 获取最近回测结果的函数
-  const fetchLatestBacktestResults = useCallback(async () => {
-    console.log('=== fetchLatestBacktestResults 被调用 ===');
+  const fetchLatestBacktestResults = useCallback(async (dir?: string) => {
+    console.log('=== fetchLatestBacktestResults 被调用 ===', { dir });
     console.log('⏳ 调用时间:', new Date().toISOString());
     
     if (!isMountedRef.current) {
@@ -230,7 +234,7 @@ const BacktestPage: React.FC = () => {
     
     try {
       console.log('📡 正在请求API获取最近回测结果...');
-      const response = await backtestApi.getLatestBacktestResults();
+      const response = await backtestApi.getLatestBacktestResults(dir);
       
       if (!isMountedRef.current) {
         console.warn('收到响应时组件已卸载，跳过');
@@ -276,6 +280,43 @@ const BacktestPage: React.FC = () => {
       console.error('❌ 获取最近回测结果失败:', err);
     }
   }, []); // 移除所有依赖项！
+
+  // 加载历史回测列表
+  const loadHistoryList = useCallback(async () => {
+    try {
+      const response = await backtestApi.listBacktestResults();
+      if (response.success && response.items) {
+        const items = response.items.map(item => ({
+          name: item.name,
+          modifiedAt: item.modifiedAt ?? item.modified_at ?? 0,
+        }));
+        setHistoryItems(items);
+      }
+    } catch (err) {
+      console.error('❌ 获取历史回测列表失败:', err);
+    }
+  }, []);
+
+  // 切换历史回测视图
+  const handleHistoryChange = useCallback((dir: string) => {
+    setSelectedHistoryDir(dir);
+    // 空串表示最新结果
+    fetchLatestBacktestResults(dir ? dir : undefined);
+  }, [fetchLatestBacktestResults]);
+
+  // 将回测文件夹名解析为友好展示标签（策略名 · 止盈名 · 日期区间）
+  const formatHistoryLabel = useCallback((name: string) => {
+    // 命名格式：选股策略_止盈止损_起始日期_结束日期
+    const parts = name.split('_').filter(Boolean);
+    if (parts.length >= 4) {
+      const strategy = parts.slice(0, -3).join('_');
+      const exit = parts[parts.length - 3];
+      const start = parts[parts.length - 2];
+      const end = parts[parts.length - 1];
+      return `${strategy} · ${exit} · ${start} 至 ${end}`;
+    }
+    return name;
+  }, []);
 
   // 获取任务状态的函数
   const fetchTaskStatus = useCallback(async (currentTaskId: string) => {
@@ -334,7 +375,10 @@ const BacktestPage: React.FC = () => {
             console.log('⌛ 等待 2.5 秒...');
             await new Promise(resolve => setTimeout(resolve, 2500));
             console.log('🔄 开始刷新最新回测结果...');
+            // 回测完成后切回最新结果，并刷新历史列表
+            setSelectedHistoryDir('');
             await fetchLatestBacktestResults();
+            await loadHistoryList();
             console.log('✅ 刷新完成！');
           }
         }
@@ -354,7 +398,7 @@ const BacktestPage: React.FC = () => {
         pollTimerRef.current = null;
       }
     }
-  }, [fetchLatestBacktestResults]);
+  }, [fetchLatestBacktestResults, loadHistoryList]);
 
   // 加载默认配置和策略列表
   useEffect(() => {
@@ -410,11 +454,12 @@ const BacktestPage: React.FC = () => {
     
     // 获取最近回测结果
     fetchLatestBacktestResults();
+    loadHistoryList();
     
     loadDefaults();
     fetchStrategies();
     loadExitStrategies();
-  }, [fetchLatestBacktestResults, fetchStrategies]);
+  }, [fetchLatestBacktestResults, fetchStrategies, loadHistoryList]);
 
   // 当有taskId时，获取任务状态
   useEffect(() => {
@@ -846,7 +891,27 @@ const BacktestPage: React.FC = () => {
 
           {/* 回测结果 */}
           <div className="space-y-6">
-            <h2 className="text-lg font-semibold text-white">回测结果</h2>
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-semibold text-white">回测结果</h2>
+              {historyItems.length > 0 && (
+                <div className="flex items-center gap-2">
+                  <label className="text-xs text-muted whitespace-nowrap" htmlFor="history-select">历史回测:</label>
+                  <select
+                    id="history-select"
+                    className="input-terminal text-xs py-2 px-3 min-w-64"
+                    value={selectedHistoryDir}
+                    onChange={(e) => handleHistoryChange(e.target.value)}
+                  >
+                    <option value="">（最新一次回测）</option>
+                    {historyItems.map(item => (
+                      <option key={item.name} value={item.name}>
+                        {formatHistoryLabel(item.name)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+            </div>
             
             {/* QuantStats 专业分析报告 - 优先显示 */}
             {quantstatsHtml && (

@@ -90,143 +90,165 @@ def log_generator():
 
 # ============ 策略回测端点 ============
 
+def _find_results_dir() -> "Path":
+    """查找回测结果根目录（优先使用 strategy_backtest_results）。"""
+    from pathlib import Path
+    project_root = _get_project_root()
+    possible_dirs = [
+        project_root / "strategy_backtest_results",
+        project_root / "backtest_results",
+    ]
+    for dir_path in possible_dirs:
+        if dir_path.exists():
+            return dir_path
+    return None
+
+
+def _collect_backtest_results(results_dir: "Path", dir_name: str):
+    """收集指定回测子文件夹（dir_name 为空时表示直接位于根目录）的结果数据。"""
+    import json
+    import time
+
+    if dir_name:
+        target_dir = results_dir / dir_name
+        if not target_dir.exists() or not target_dir.is_dir():
+            raise HTTPException(
+                status_code=404,
+                detail={"error": "not_found", "message": f"未找到回测结果目录: {dir_name}"},
+            )
+    else:
+        target_dir = results_dir
+
+    logger.info(f"读取回测结果目录: {target_dir}")
+
+    # 收集图片路径 - 支持原始文件名和新的 QuantStats 文件名，添加时间戳
+    current_timestamp = int(time.time())
+
+    image_paths = {}
+    image_files = [
+        "equity_curve.png", "drawdown_curve.png", "metrics_heatmap.png", "metrics_radar.png",
+        "qs_equity_curve.png", "qs_drawdown_curve.png", "qs_monthly_heatmap.png",
+    ]
+
+    for img_name in image_files:
+        img_path = target_dir / img_name
+        if img_path.exists():
+            # 返回相对路径用于静态文件服务，添加时间戳参数
+            if dir_name:
+                relative_path = f"{results_dir.name}/{dir_name}/{img_name}"
+            else:
+                relative_path = f"{results_dir.name}/{img_name}"
+            image_with_timestamp = f"{relative_path}?t={current_timestamp}"
+            image_paths[img_name.replace('.png', '')] = image_with_timestamp
+
+    # 收集 QuantStats HTML 报告
+    html_report = None
+    html_path = target_dir / "quantstats_report.html"
+    if html_path.exists():
+        if dir_name:
+            relative_html_path = f"{results_dir.name}/{dir_name}/quantstats_report.html"
+        else:
+            relative_html_path = f"{results_dir.name}/quantstats_report.html"
+        html_report = f"{relative_html_path}?t={current_timestamp}"
+
+    # 收集 QuantStats metrics JSON
+    quantstats_metrics = None
+    metrics_json_path = target_dir / "quantstats_metrics.json"
+    if metrics_json_path.exists():
+        try:
+            with open(metrics_json_path, 'r', encoding='utf-8') as f:
+                quantstats_metrics = json.load(f)
+        except Exception as e:
+            logger.warning(f"无法读取 quantstats_metrics.json: {e}")
+
+    # 检查数据文件（先 results.json，再 backtest_results.json）
+    results_data = None
+    for json_filename in ["results.json", "backtest_results.json"]:
+        json_path = target_dir / json_filename
+        if json_path.exists():
+            try:
+                with open(json_path, 'r', encoding='utf-8') as f:
+                    results_data = json.load(f)
+                    break
+            except Exception as e:
+                logger.warning(f"无法读取 {json_filename}: {e}")
+
+    return {
+        "success": True,
+        "result_dir": str(target_dir),
+        "images": image_paths,
+        "has_data": results_data is not None,
+        "data": results_data,
+        "quantstats_html": html_report,
+        "quantstats_metrics": quantstats_metrics,
+    }
+
+
 @router.get(
     "/strategy/results/latest",
     summary="获取最近一次回测结果",
-    description="获取最近一次成功完成的回测结果，包括数据和图片路径",
+    description="获取最近一次成功完成的回测结果，包括数据和图片路径；可通过 dir 参数指定具体回测文件夹",
 )
-def get_latest_backtest_results():
-    """获取最近一次回测结果"""
+def get_latest_backtest_results(dir: str = Query(None, description="指定回测结果子文件夹名，缺省时取最近一次")):
+    """获取回测结果。dir 缺省时取最近一次成功完成的回测。"""
     try:
-        from pathlib import Path
-        import json
-        
-        # 查找项目根目录
-        project_root = _get_project_root()
-        
-        # 查找可能的回测结果目录 - 优先使用 strategy_backtest_results（新的 QuantStats 目录）
-        possible_dirs = [
-            project_root / "strategy_backtest_results",
-            project_root / "backtest_results"
-        ]
-        
-        results_dir = None
-        for dir_path in possible_dirs:
-            if dir_path.exists():
-                results_dir = dir_path
-                break
-        
+        results_dir = _find_results_dir()
         if results_dir is None:
-            return {
-                "success": False,
-                "message": "没有找到回测结果目录"
-            }
-        
-        # 回测结果现在保存在根目录下的子文件夹中（命名：选股策略_止盈止损_起始日期_结束日期）。
-        # 扫描子文件夹并选取最近一次回测结果；若无子文件夹则回退到根目录。
-        import os
-        latest_dir = None
+            return {"success": False, "message": "没有找到回测结果目录"}
+
+        # 回测结果保存在根目录下的子文件夹中（命名：选股策略_止盈止损_起始日期_结束日期）。
         dir_name = ""
-        for candidate in results_dir.iterdir():
-            if candidate.is_dir():
-                if latest_dir is None or candidate.stat().st_mtime > latest_dir.stat().st_mtime:
-                    latest_dir = candidate
-        if latest_dir is None:
-            # 无子文件夹时兼容旧版存储（直接放在根目录）
-            latest_dir = results_dir
-            dir_name = ""
+        if dir:
+            dir_name = dir
         else:
-            dir_name = latest_dir.name
-        logger.info(f"找到回测结果目录: {latest_dir}")
-        
-        # 收集图片路径 - 支持原始文件名和新的 QuantStats 文件名，添加时间戳
-        import time
-        current_timestamp = int(time.time())
-        
-        image_paths = {}
-        image_files = [
-            "equity_curve.png", "drawdown_curve.png", "metrics_heatmap.png", "metrics_radar.png",
-            "qs_equity_curve.png", "qs_drawdown_curve.png", "qs_monthly_heatmap.png"
-        ]
-        
-        for img_name in image_files:
-            img_path = latest_dir / img_name
-            if img_path.exists():
-                # 获取文件修改时间
-                img_mtime = img_path.stat().st_mtime
-                # 返回相对路径，用于静态文件服务，添加时间戳参数
-                if dir_name:
-                    relative_path = f"{results_dir.name}/{dir_name}/{img_name}"
-                else:
-                    relative_path = f"{results_dir.name}/{img_name}"
-                # 添加时间戳
-                image_with_timestamp = f"{relative_path}?t={current_timestamp}"
-                image_paths[img_name.replace('.png', '')] = image_with_timestamp
-                logger.info(f"找到图片: {img_path}, 修改时间: {img_mtime}")
-        
-        # 收集 QuantStats HTML 报告
-        html_report = None
-        html_filename = "quantstats_report.html"
-        html_path = latest_dir / html_filename
-        if html_path.exists():
-            html_mtime = html_path.stat().st_mtime
-            if dir_name:
-                relative_html_path = f"{results_dir.name}/{dir_name}/{html_filename}"
-            else:
-                relative_html_path = f"{results_dir.name}/{html_filename}"
-            # 添加时间戳
-            html_report = f"{relative_html_path}?t={current_timestamp}"
-            logger.info(f"找到HTML报告: {html_path}, 修改时间: {html_mtime}")
-        
-        # 收集 QuantStats metrics JSON
-        quantstats_metrics = None
-        quantstats_json = "quantstats_metrics.json"
-        metrics_json_path = latest_dir / quantstats_json
-        if metrics_json_path.exists():
-            try:
-                with open(metrics_json_path, 'r', encoding='utf-8') as f:
-                    import json
-                    quantstats_metrics = json.load(f)
-            except Exception as e:
-                logger.warning(f"无法读取 {quantstats_json}: {e}")
-        
-        # 检查是否有数据文件（比如 JSON）
-        results_data = None
-        # 先尝试 results.json，再尝试 backtest_results.json
-        possible_json_files = ["results.json", "backtest_results.json"]
-        for json_filename in possible_json_files:
-            json_path = latest_dir / json_filename
-            if json_path.exists():
-                try:
-                    with open(json_path, 'r', encoding='utf-8') as f:
-                        results_data = json.load(f)
-                        break
-                except Exception as e:
-                    logger.warning(f"无法读取 {json_filename}: {e}")
-        
-        # 打印调试信息
-        logger.info(f"准备返回数据:")
-        logger.info(f"  - 包含图片: {list(image_paths.keys())}")
-        logger.info(f"  - 包含HTML报告: {html_report is not None}")
-        logger.info(f"  - 包含Metrics: {quantstats_metrics is not None}")
-        if results_data:
-            logger.info(f"  - 包含Results数据")
-        
-        return {
-            "success": True,
-            "result_dir": str(latest_dir),
-            "images": image_paths,
-            "has_data": results_data is not None,
-            "data": results_data,
-            "quantstats_html": html_report,
-            "quantstats_metrics": quantstats_metrics
-        }
-        
+            # 扫描子文件夹并选取最近一次回测结果；若无子文件夹则回退到根目录。
+            latest_dir = None
+            for candidate in results_dir.iterdir():
+                if candidate.is_dir():
+                    if latest_dir is None or candidate.stat().st_mtime > latest_dir.stat().st_mtime:
+                        latest_dir = candidate
+            if latest_dir is not None:
+                dir_name = latest_dir.name
+
+        return _collect_backtest_results(results_dir, dir_name)
+
     except Exception as exc:
         logger.error(f"获取最近回测结果失败: {exc}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail={"error": "internal_error", "message": f"获取最近回测结果失败: {str(exc)}"}
+            detail={"error": "internal_error", "message": f"获取最近回测结果失败: {str(exc)}"},
+        )
+
+
+@router.get(
+    "/strategy/results/list",
+    summary="列出所有历史回测结果",
+    description="列出 strategy_backtest_results 下所有回测子文件夹及其修改时间，按时间倒序",
+)
+def list_backtest_results():
+    """列出所有历史回测文件夹。"""
+    try:
+        results_dir = _find_results_dir()
+        if results_dir is None:
+            return {"success": False, "message": "没有找到回测结果目录", "items": []}
+
+        items = []
+        for candidate in results_dir.iterdir():
+            if candidate.is_dir():
+                items.append({
+                    "name": candidate.name,
+                    "modified_at": int(candidate.stat().st_mtime),
+                })
+        # 按修改时间倒序（最近的在最前）
+        items.sort(key=lambda x: x["modified_at"], reverse=True)
+
+        return {"success": True, "items": items}
+
+    except Exception as exc:
+        logger.error(f"列出历史回测结果失败: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"列出历史回测结果失败: {str(exc)}"},
         )
 
 
