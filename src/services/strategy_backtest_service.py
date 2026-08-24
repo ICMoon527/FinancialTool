@@ -289,10 +289,11 @@ class StrategyBacktestService:
             else:
                 exit_display_name = "默认止盈"
 
-            # 构建子目录名：选股策略名_止盈止损名_起始日期_结束日期（与前端显示名一致）
+            # 构建子目录名：选股策略名_止盈止损名_最大持仓数_起始日期_结束日期（与前端显示名一致）
             try:
                 result_subdir = (
                     f"{strategy_name}_{exit_display_name}_"
+                    f"最大持仓{max_positions}_"
                     f"{start_date_obj.isoformat()}_{end_date_obj.isoformat()}"
                 )
                 # 清理文件名不允许的字符，避免路径异常

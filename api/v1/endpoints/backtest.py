@@ -252,6 +252,51 @@ def list_backtest_results():
         )
 
 
+@router.delete(
+    "/strategy/results/{dir_name}",
+    summary="删除指定历史回测结果文件夹",
+    description="删除 strategy_backtest_results 下指定的回测子文件夹",
+)
+def delete_backtest_results(dir_name: str):
+    """删除指定回测结果文件夹。"""
+    import shutil
+    try:
+        if not dir_name:
+            raise HTTPException(
+                status_code=400,
+                detail={"error": "invalid_dir", "message": "目录名不能为空"},
+            )
+        # 防止路径穿越
+        if "/" in dir_name or "\\" in dir_name or ".." in dir_name:
+            raise HTTPException(
+                status_code=400,
+                detail={"error": "invalid_dir", "message": "目录名不合法"},
+            )
+        results_dir = _find_results_dir()
+        if results_dir is None:
+            return {"success": False, "message": "没有找到回测结果目录"}
+
+        target_dir = results_dir / dir_name
+        if not target_dir.exists() or not target_dir.is_dir():
+            raise HTTPException(
+                status_code=404,
+                detail={"error": "not_found", "message": f"未找到回测结果目录: {dir_name}"},
+            )
+
+        shutil.rmtree(target_dir)
+        logger.info(f"已删除回测结果目录: {target_dir}")
+        return {"success": True, "message": f"已删除回测结果目录: {dir_name}"}
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"删除回测结果失败: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"删除回测结果失败: {str(exc)}"},
+        )
+
+
 @router.get(
     "/config",
     summary="获取回测默认配置",

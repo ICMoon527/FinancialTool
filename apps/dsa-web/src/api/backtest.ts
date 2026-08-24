@@ -60,6 +60,18 @@ export const backtestApi = {
     },
 
     /**
+     * 删除指定的历史回测结果文件夹
+     */
+    deleteBacktestResults: async (dirName: string): Promise<{
+        success: boolean;
+        message?: string;
+    }> => {
+        const encoded = encodeURIComponent(dirName);
+        const response = await apiClient.delete(`/api/v1/backtest/strategy/results/${encoded}`);
+        return toCamelCase(response.data);
+    },
+
+    /**
      * 获取回测默认配置
      */
     getBacktestConfig: async (): Promise<{

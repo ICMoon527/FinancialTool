@@ -170,6 +170,7 @@ const BacktestPage: React.FC = () => {
   // 历史回测选择状态
   const [historyItems, setHistoryItems] = useState<{ name: string; modifiedAt: number }[]>([]);
   const [selectedHistoryDir, setSelectedHistoryDir] = useState<string>(''); // 空串表示最新
+  const [historyDropdownOpen, setHistoryDropdownOpen] = useState<boolean>(false); // 历史回测下拉是否展开
 
   // 轮询定时器引用
   const pollTimerRef = useRef<number | null>(null);
@@ -297,6 +298,34 @@ const BacktestPage: React.FC = () => {
     }
   }, []);
 
+  // 将回测文件夹名解析为友好展示标签（策略名 · 止盈名 · 最大持仓 · 日期区间）
+  const formatHistoryLabel = useCallback((name: string) => {
+    // 命名格式：选股策略_止盈止损_最大持仓N_起始日期_结束日期
+    // 兼容旧格式：选股策略_止盈止损_起始日期_结束日期（无"最大持仓"段）
+    const parts = name.split('_').filter(Boolean);
+    if (parts.length >= 4) {
+      // 定位日期段（倒数第2、倒数第1），识别可选的"最大持仓N"段
+      const start = parts[parts.length - 2];
+      const end = parts[parts.length - 1];
+      let maxHold = '';
+      const prefix = parts.slice(0, -2);
+      for (let i = prefix.length - 1; i >= 0; i--) {
+        if (/^最大持仓\d+$/.test(prefix[i])) {
+          maxHold = prefix[i];
+          prefix.splice(i, 1);
+          break;
+        }
+      }
+      const strategy = prefix.slice(0, -1).join('_');
+      const exit = prefix[prefix.length - 1] || '';
+      let label = `${strategy} · ${exit}`;
+      if (maxHold) label += ` · ${maxHold}`;
+      label += ` · ${start} 至 ${end}`;
+      return label;
+    }
+    return name;
+  }, []);
+
   // 切换历史回测视图
   const handleHistoryChange = useCallback((dir: string) => {
     setSelectedHistoryDir(dir);
@@ -304,19 +333,29 @@ const BacktestPage: React.FC = () => {
     fetchLatestBacktestResults(dir ? dir : undefined);
   }, [fetchLatestBacktestResults]);
 
-  // 将回测文件夹名解析为友好展示标签（策略名 · 止盈名 · 日期区间）
-  const formatHistoryLabel = useCallback((name: string) => {
-    // 命名格式：选股策略_止盈止损_起始日期_结束日期
-    const parts = name.split('_').filter(Boolean);
-    if (parts.length >= 4) {
-      const strategy = parts.slice(0, -3).join('_');
-      const exit = parts[parts.length - 3];
-      const start = parts[parts.length - 2];
-      const end = parts[parts.length - 1];
-      return `${strategy} · ${exit} · ${start} 至 ${end}`;
+  // 删除指定的历史回测文件夹
+  const handleDeleteHistory = useCallback(async (dir: string) => {
+    const label = formatHistoryLabel(dir);
+    if (!window.confirm(`确定要删除历史回测「${label}」吗？\n该操作会删除对应的结果文件夹，且不可恢复。`)) {
+      return;
     }
-    return name;
-  }, []);
+    try {
+      const response = await backtestApi.deleteBacktestResults(dir);
+      if (response.success) {
+        // 若删除的是当前选中的回测，切回最新
+        if (selectedHistoryDir === dir) {
+          setSelectedHistoryDir('');
+          await fetchLatestBacktestResults();
+        }
+        await loadHistoryList();
+      } else {
+        window.alert(response.message || '删除失败');
+      }
+    } catch (err) {
+      console.error('❌ 删除历史回测失败:', err);
+      window.alert('删除历史回测失败，请稍后重试');
+    }
+  }, [selectedHistoryDir, fetchLatestBacktestResults, loadHistoryList, formatHistoryLabel]);
 
   // 获取任务状态的函数
   const fetchTaskStatus = useCallback(async (currentTaskId: string) => {
@@ -895,20 +934,71 @@ const BacktestPage: React.FC = () => {
               <h2 className="text-lg font-semibold text-white">回测结果</h2>
               {historyItems.length > 0 && (
                 <div className="flex items-center gap-2">
-                  <label className="text-xs text-muted whitespace-nowrap" htmlFor="history-select">历史回测:</label>
-                  <select
-                    id="history-select"
-                    className="input-terminal text-xs py-2 px-3 min-w-64"
-                    value={selectedHistoryDir}
-                    onChange={(e) => handleHistoryChange(e.target.value)}
-                  >
-                    <option value="">（最新一次回测）</option>
-                    {historyItems.map(item => (
-                      <option key={item.name} value={item.name}>
-                        {formatHistoryLabel(item.name)}
-                      </option>
-                    ))}
-                  </select>
+                  <label className="text-xs text-muted whitespace-nowrap">历史回测:</label>
+                  <div className="relative">
+                    <button
+                      type="button"
+                      className="input-terminal text-xs py-2 px-3 min-w-[432px] flex items-center justify-between gap-2"
+                      onClick={() => setHistoryDropdownOpen(prev => !prev)}
+                    >
+                      <span className="truncate">
+                        {selectedHistoryDir
+                          ? formatHistoryLabel(selectedHistoryDir)
+                          : '（最新一次回测）'}
+                      </span>
+                      <svg className={`w-4 h-4 transition-transform ${historyDropdownOpen ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
+                      </svg>
+                    </button>
+                    {historyDropdownOpen && (
+                      <>
+                        {/* 点击空白处关闭下拉 */}
+                        <div className="fixed inset-0 z-10" onClick={() => setHistoryDropdownOpen(false)} />
+                        <div className="absolute top-full left-0 right-0 mt-1 max-h-72 overflow-y-auto rounded-lg border border-white/10 bg-[#1a1f2e] shadow-lg z-20">
+                          <button
+                            type="button"
+                            className={`w-full text-left text-xs px-3 py-2 hover:bg-white/5 ${selectedHistoryDir === '' ? 'text-blue-400' : 'text-gray-200'}`}
+                            onClick={() => {
+                              handleHistoryChange('');
+                              setHistoryDropdownOpen(false);
+                            }}
+                          >
+                            （最新一次回测）
+                          </button>
+                          {historyItems.map(item => (
+                            <div
+                              key={item.name}
+                              className={`flex items-center justify-between px-3 py-2 hover:bg-white/5 ${selectedHistoryDir === item.name ? 'text-blue-400' : 'text-gray-200'}`}
+                            >
+                              <button
+                                type="button"
+                                className="flex-1 text-left text-xs"
+                                onClick={() => {
+                                  handleHistoryChange(item.name);
+                                  setHistoryDropdownOpen(false);
+                                }}
+                              >
+                                <span className="truncate block">{formatHistoryLabel(item.name)}</span>
+                              </button>
+                              <button
+                                type="button"
+                                title="删除该历史回测"
+                                className="ml-2 p-1 rounded text-red-400 hover:text-red-300 hover:bg-red-500/10"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDeleteHistory(item.name);
+                                }}
+                              >
+                                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                </svg>
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
