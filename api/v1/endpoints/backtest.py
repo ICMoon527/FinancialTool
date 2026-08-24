@@ -90,7 +90,7 @@ def log_generator():
 
 # ============ 策略回测端点 ============
 
-def _find_results_dir() -> "Path":
+def _find_results_dir() -> Optional[Path]:
     """查找回测结果根目录（优先使用 strategy_backtest_results）。"""
     from pathlib import Path
     project_root = _get_project_root()
