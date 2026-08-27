@@ -146,7 +146,7 @@ const BacktestPage: React.FC = () => {
   // 退出策略状态
   const [exitStrategiesData, setExitStrategiesData] = useState<ExitStrategiesResponse | null>(null);
   const [selectedExitPreset, setSelectedExitPreset] = useState<string>('');
-  const [editedExitParams, setEditedExitParams] = useState<Record<string, number>>({});
+  const [editedExitParams, setEditedExitParams] = useState<Record<string, number | string>>({});
   const [isExitStrategyListOpen, setIsExitStrategyListOpen] = useState(false);
   const exitStrategyContainerRef = useRef<HTMLDivElement>(null);
 
@@ -300,15 +300,22 @@ const BacktestPage: React.FC = () => {
 
   // 将回测文件夹名解析为友好展示标签（策略名 · 止盈名 · 最大持仓 · 日期区间）
   const formatHistoryLabel = useCallback((name: string) => {
-    // 命名格式：选股策略_止盈止损_最大持仓N_起始日期_结束日期
-    // 兼容旧格式：选股策略_止盈止损_起始日期_结束日期（无"最大持仓"段）
+    // 命名格式：选股策略_止盈止损_最大持仓N_[止损模式]_起始日期_结束日期
+    // 兼容旧格式：选股策略_止盈止损_起始日期_结束日期（无"最大持仓"段、无"止损模式"段）
     const parts = name.split('_').filter(Boolean);
     if (parts.length >= 4) {
-      // 定位日期段（倒数第2、倒数第1），识别可选的"最大持仓N"段
+      // 定位日期段（倒数第2、倒数第1），识别可选的"最大持仓N"段和"止损模式"段
       const start = parts[parts.length - 2];
       const end = parts[parts.length - 1];
       let maxHold = '';
+      let stopMode = '';
       const prefix = parts.slice(0, -2);
+      for (let i = prefix.length - 1; i >= 0; i--) {
+        if (!stopMode && /^尾盘止损$|^盘中止损$/.test(prefix[i])) {
+          stopMode = prefix[i];
+          prefix.splice(i, 1);
+        }
+      }
       for (let i = prefix.length - 1; i >= 0; i--) {
         if (/^最大持仓\d+$/.test(prefix[i])) {
           maxHold = prefix[i];
@@ -320,6 +327,7 @@ const BacktestPage: React.FC = () => {
       const exit = prefix[prefix.length - 1] || '';
       let label = `${strategy} · ${exit}`;
       if (maxHold) label += ` · ${maxHold}`;
+      if (stopMode) label += ` · ${stopMode}`;
       label += ` · ${start} 至 ${end}`;
       return label;
     }
@@ -683,10 +691,20 @@ const BacktestPage: React.FC = () => {
 
   // 更新退出策略参数
   const handleExitParamChange = useCallback((paramKey: string, value: string) => {
-    setEditedExitParams(prev => ({
-      ...prev,
-      [paramKey]: parseFloat(value) || 0,
-    }));
+    // stopMode（camelCase）等字符串参数保留原值；数值参数转为浮点数
+    setEditedExitParams(prev => {
+      const current = prev[paramKey];
+      if (typeof current === 'string') {
+        return { ...prev, [paramKey]: value };
+      }
+      return { ...prev, [paramKey]: parseFloat(value) || 0 };
+    });
+  }, []);
+
+  // 将参数 key 转为可读标签：camelCase/snake_case → 空格分隔
+  const formatParamLabel = useCallback((key: string) => {
+    const spaced = key.replace(/[_-]+/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2');
+    return spaced.charAt(0).toUpperCase() + spaced.slice(1);
   }, []);
 
   return (
@@ -878,17 +896,29 @@ const BacktestPage: React.FC = () => {
             <span className="text-xs text-muted">参数:</span>
             {Object.entries(editedExitParams).map(([key, value]) => (
               <div key={key} className="flex items-center gap-1">
-                <span className="text-xs text-secondary">{key.replace(/_/g, ' ')}</span>
-                <input
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  max="1"
-                  value={value}
-                  onChange={(e) => handleExitParamChange(key, e.target.value)}
-                  disabled={isRunning}
-                  className="input-terminal text-xs py-1 px-2 w-20"
-                />
+                <span className="text-xs text-secondary">{formatParamLabel(key)}</span>
+                {typeof value === 'string' ? (
+                  <select
+                    value={value}
+                    onChange={(e) => handleExitParamChange(key, e.target.value)}
+                    disabled={isRunning}
+                    className="input-terminal text-xs py-1 px-2 w-28"
+                  >
+                    <option value="intraday">盘中止损</option>
+                    <option value="close">尾盘止损</option>
+                  </select>
+                ) : (
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    max="1"
+                    value={value as number}
+                    onChange={(e) => handleExitParamChange(key, e.target.value)}
+                    disabled={isRunning}
+                    className="input-terminal text-xs py-1 px-2 w-20"
+                  />
+                )}
               </div>
             ))}
           </div>

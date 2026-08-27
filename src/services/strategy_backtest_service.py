@@ -289,11 +289,23 @@ class StrategyBacktestService:
             else:
                 exit_display_name = "默认止盈"
 
-            # 构建子目录名：选股策略名_止盈止损名_最大持仓数_起始日期_结束日期（与前端显示名一致）
+            # 止损模式：从退出策略参数中读取 stop_mode/stopMode，映射为中文段（盘中止损/尾盘止损）。
+            # 仅当配置了 stop_mode 参数时追加到目录名；未配置（如 simple/tiered 预设）则不追加，保持向后兼容。
+            stop_mode_label = ""
+            if isinstance(exit_strategy, dict):
+                exit_params = exit_strategy.get("params") or {}
+                stop_mode = exit_params.get("stop_mode") or exit_params.get("stopMode")
+                if stop_mode == "intraday":
+                    stop_mode_label = "_盘中止损"
+                elif stop_mode == "close":
+                    stop_mode_label = "_尾盘止损"
+
+            # 构建子目录名：选股策略名_止盈止损名_最大持仓数_[止损模式]_起始日期_结束日期（与前端显示名一致）
             try:
                 result_subdir = (
                     f"{strategy_name}_{exit_display_name}_"
-                    f"最大持仓{max_positions}_"
+                    f"最大持仓{max_positions}"
+                    f"{stop_mode_label}_"
                     f"{start_date_obj.isoformat()}_{end_date_obj.isoformat()}"
                 )
                 # 清理文件名不允许的字符，避免路径异常

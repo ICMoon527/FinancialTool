@@ -581,11 +581,15 @@ class TiandaoPressureExitStrategy(ExitStrategy):
       support  = REF(金钻, 1)  — 昨日金钻值，仅备用监控，不参与卖出
 
     卖出优先级（逐阶段检查，先触发先执行）：
-      C > A/B > 7%止损 > 时间止损
+      C > A/B > 止损 > 时间止损
 
     - A档：首次触碰压力位，以 pressure 价卖出 1/3
     - B档：从压力位回落，尾盘卖出剩余 1/2（即原仓 1/3）
     - C档：动态分级移动止盈，全程跟踪，对剩余仓位生效
+    - 止损：默认盘中止损（stop_mode=intraday），盘中最低价跌破止损价(买入价×(1-7%))即触发；
+      high >= 止损价 → 以止损价成交；high <= 止损价 → 以当日最高价成交；
+      盘中低点破位但收盘收回（假摔）也会触发卖出。
+      可选 stop_mode=close 改为尾盘收盘确认止损（收盘价跌破才卖）。
     """
 
     display_name = "通道压力线分批止盈"
@@ -596,10 +600,14 @@ class TiandaoPressureExitStrategy(ExitStrategy):
         stop_loss_pct: float = 0.07,
         time_stop_days: int = 30,
         time_stop_min_return: float = 0.0,
+        stop_mode: str = "intraday",
     ):
         self.stop_loss_pct = stop_loss_pct
         self.time_stop_days = time_stop_days
         self.time_stop_min_return = time_stop_min_return
+        # 止损模式：intraday=盘中止损（最低价触及止损价即卖）；close=尾盘收盘确认止损
+        assert stop_mode in ("intraday", "close"), f"stop_mode 仅支持 intraday/close，收到: {stop_mode}"
+        self.stop_mode = stop_mode
         self._states: Dict[str, _TiandaoPressureState] = {}
 
         # ── 诊断统计字段 ──
@@ -691,6 +699,7 @@ class TiandaoPressureExitStrategy(ExitStrategy):
             # ── 获取价格数据 ──
             close_price = price_provider(stock_code, "close")
             high_price = price_provider(stock_code, "high")
+            low_price = price_provider(stock_code, "low")
             pressure = price_provider(stock_code, "pressure")
             if close_price is None:
                 continue
@@ -794,9 +803,17 @@ class TiandaoPressureExitStrategy(ExitStrategy):
                 ))
                 continue  # B档已触发，跳过止损
 
-            # --- 止损检查（与基线完全一致） ---
+            # --- 止损检查（按 stop_mode 区分盘中/尾盘） ---
             stop_loss_price = state.entry_price * (1 - self.stop_loss_pct)
-            if close_price <= stop_loss_price:
+            # 盘中最低价触及止损价（intraday 模式下有效）
+            intraday_hit = low_price is not None and low_price <= stop_loss_price
+            # 尾盘收盘跌破止损价（close 模式下有效）
+            close_hit = close_price <= stop_loss_price
+            # 触发判定与止损模式对齐：
+            #   intraday 盘中止损 → 盘中破价或收盘破价任一即触发（含假摔）
+            #   close 尾盘确认   → 仅当收盘价跌破止损价才触发（盘中假摔不卖）
+            if (self.stop_mode == "intraday" and (intraday_hit or close_hit)) or \
+               (self.stop_mode == "close" and close_hit):
                 if price_provider(stock_code, "is_limit_down_sealed") == 1.0:
                     logger.info(
                         "通道压力线 [%s]: 止损触发，但跌停封死无法成交，继续持有",
@@ -804,17 +821,39 @@ class TiandaoPressureExitStrategy(ExitStrategy):
                     )
                     continue
                 self._stop_loss_count += 1
-                logger.info(
-                    "通道压力线 [%s]: 止损触发，收盘价 %.2f <= 止损价 %.2f(买入价 %.2f × %.0f%%)，全部卖出",
-                    stock_code, close_price, stop_loss_price, state.entry_price, self.stop_loss_pct * 100,
-                )
+                if self.stop_mode == "intraday":
+                    # 盘中止损：盘中最低价跌破即触发；成交价按盘中是否回穿止损价：
+                    #   high >= 止损价（盘中曾回到止损价上方）→ 以止损价成交
+                    #   high <= 止损价（开盘即破，全日在止损价下方）→ 以当日最高价成交
+                    if high_price is not None and high_price >= stop_loss_price:
+                        sell_price = stop_loss_price
+                    else:
+                        sell_price = high_price if high_price is not None else close_price
+                    price_type = "intraday"
+                    logger.info(
+                        "通道压力线 [%s]: 盘中止损触发，最低价 %.2f <= 止损价 %.2f(买入价 %.2f × %.0f%%)，"
+                        "以 %s %.2f 卖出全部（收盘 %.2f）",
+                        stock_code, low_price, stop_loss_price, state.entry_price,
+                        self.stop_loss_pct * 100,
+                        "止损价" if sell_price == stop_loss_price else "当日最高价",
+                        sell_price, close_price,
+                    )
+                else:
+                    # 尾盘收盘确认止损：收盘价跌破止损价才触发，以收盘价成交
+                    sell_price = close_price
+                    price_type = "close"
+                    logger.info(
+                        "通道压力线 [%s]: 尾盘止损触发，收盘价 %.2f <= 止损价 %.2f(买入价 %.2f × %.0f%%)，全部卖出",
+                        stock_code, close_price, stop_loss_price, state.entry_price,
+                        self.stop_loss_pct * 100,
+                    )
                 signals.append(ExitSignal(
                     stock_code=stock_code,
                     reason="止损出局",
                     exit_type="full",
                     exit_ratio=1.0,
-                    sell_price=close_price,
-                    price_type="close",
+                    sell_price=sell_price,
+                    price_type=price_type,
                 ))
                 continue
 
