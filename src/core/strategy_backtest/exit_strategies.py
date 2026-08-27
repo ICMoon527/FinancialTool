@@ -586,10 +586,10 @@ class TiandaoPressureExitStrategy(ExitStrategy):
     - A档：首次触碰压力位，以 pressure 价卖出 1/3
     - B档：从压力位回落，尾盘卖出剩余 1/2（即原仓 1/3）
     - C档：动态分级移动止盈，全程跟踪，对剩余仓位生效
-    - 止损：默认盘中止损（stop_mode=intraday），盘中最低价跌破止损价(买入价×(1-7%))即触发；
-      high >= 止损价 → 以止损价成交；high <= 止损价 → 以当日最高价成交；
-      盘中低点破位但收盘收回（假摔）也会触发卖出。
-      可选 stop_mode=close 改为尾盘收盘确认止损（收盘价跌破才卖）。
+    - 止损：默认尾盘收盘确认止损（stop_mode=close），仅当收盘价跌破止损价(买入价×(1-7%))才卖出；
+      盘中假摔（盘中低点破位但收盘收回）不卖出，可继续持有享受反弹，实测显著优于盘中止损。
+      可选 stop_mode=intraday 改为盘中止损（盘中最低价触及止损价即卖；开盘已破线按开盘价，
+      否则按止损价；假摔也会被卖出）。
     """
 
     display_name = "通道压力线分批止盈"
@@ -600,12 +600,12 @@ class TiandaoPressureExitStrategy(ExitStrategy):
         stop_loss_pct: float = 0.07,
         time_stop_days: int = 30,
         time_stop_min_return: float = 0.0,
-        stop_mode: str = "intraday",
+        stop_mode: str = "close",
     ):
         self.stop_loss_pct = stop_loss_pct
         self.time_stop_days = time_stop_days
         self.time_stop_min_return = time_stop_min_return
-        # 止损模式：intraday=盘中止损（最低价触及止损价即卖）；close=尾盘收盘确认止损
+        # 止损模式：close=尾盘收盘确认止损（默认，实测更优）；intraday=盘中止损
         assert stop_mode in ("intraday", "close"), f"stop_mode 仅支持 intraday/close，收到: {stop_mode}"
         self.stop_mode = stop_mode
         self._states: Dict[str, _TiandaoPressureState] = {}
