@@ -11,8 +11,11 @@
 
 from __future__ import annotations
 
+import csv
 import json
 import logging
+import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
@@ -58,6 +61,18 @@ class TrainingMetrics:
             "val_win_rates": self.val_win_rates,
         }
 
+    def load_dict(self, data: Dict[str, List[float]]) -> None:
+        """从字典恢复指标历史（断点续训用）"""
+        self.episode_rewards = list(data.get("episode_rewards", []))
+        self.episode_lengths = list(data.get("episode_lengths", []))
+        self.losses = list(data.get("losses", []))
+        self.td_errors = list(data.get("td_errors", []))
+        self.epsilons = list(data.get("epsilons", []))
+        self.entropies = list(data.get("entropies", []))
+        self.val_sharpe_ratios = list(data.get("val_sharpe_ratios", []))
+        self.val_returns = list(data.get("val_returns", []))
+        self.val_win_rates = list(data.get("val_win_rates", []))
+
 
 class RLTrainer:
     """RL 训练编排器"""
@@ -68,6 +83,8 @@ class RLTrainer:
         model: "AbstractRLModel",
         dataset: "IntradayDataset",
         callbacks: Optional[List["TrainingCallback"]] = None,
+        save_freq: int = 50,
+        log_dir: Optional[str] = None,
     ):
         self.config = config
         self.model = model
@@ -75,23 +92,88 @@ class RLTrainer:
         self.env = T0Environment(config)
         self.metrics = TrainingMetrics()
         self.callbacks = callbacks or []
+        self.save_freq = save_freq  # latest checkpoint 保存频率（episode）
 
         self._best_val_sharpe = -float("inf")
         self._patience_counter = 0
         self._model_dir = Path(config.model_dir)
         self._model_dir.mkdir(parents=True, exist_ok=True)
 
-    def train(self) -> TrainingMetrics:
+        # CSV 逐集日志（崩溃安全：每集立即落盘）
+        self._run_id = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6]
+        log_root = Path(log_dir) if log_dir else self._model_dir / "logs"
+        log_root.mkdir(parents=True, exist_ok=True)
+        self._csv_path = log_root / f"train_log_{self._run_id}.csv"
+        self._csv_initialized = False
+
+    # ── 断点续训 ──
+
+    def resume(self, checkpoint_dir: str) -> int:
+        """从 checkpoint 目录恢复训练状态
+
+        恢复内容：模型权重、优化器、epsilon、经验回放缓冲区、
+        指标历史、最佳验证 Sharpe、早停计数器、episode 进度、run_id（延续同一 CSV 日志）。
+
+        Args:
+            checkpoint_dir: checkpoint 目录（需含 model.pt / trainer_state.json / metrics.json）
+
+        Returns:
+            start_episode: 下一个待训练的 episode 序号
+        """
+        ckpt_dir = Path(checkpoint_dir)
+        model_path = ckpt_dir / "model.pt"
+        state_path = ckpt_dir / "trainer_state.json"
+        metrics_path = ckpt_dir / "metrics.json"
+
+        if not model_path.exists():
+            raise FileNotFoundError(f"找不到模型文件: {model_path}")
+
+        # 1. 恢复模型（权重/优化器/epsilon/replay buffer）
+        self.model.load(str(model_path))
+
+        # 2. 恢复指标历史
+        if metrics_path.exists():
+            with open(metrics_path, "r", encoding="utf-8") as f:
+                self.metrics.load_dict(json.load(f))
+
+        # 3. 恢复训练状态（episode 进度/最佳 sharpe/早停计数/run_id）
+        start_episode = len(self.metrics.episode_rewards)
+        if state_path.exists():
+            with open(state_path, "r", encoding="utf-8") as f:
+                state = json.load(f)
+            start_episode = state.get("next_episode", start_episode)
+            self._best_val_sharpe = state.get("best_val_sharpe", -float("inf"))
+            self._patience_counter = state.get("patience_counter", 0)
+            resumed_run_id = state.get("run_id")
+            if resumed_run_id:
+                self._run_id = resumed_run_id
+                self._csv_path = self._csv_path.parent / f"train_log_{self._run_id}.csv"
+                self._csv_initialized = True  # 续写已有 CSV
+
+        logger.info(
+            f"断点续训: 从 {ckpt_dir.name} 恢复, start_episode={start_episode}, "
+            f"best_sharpe={self._best_val_sharpe:.4f}, "
+            f"replay_buffer={len(getattr(self.model, 'replay_buffer', []))} 条"
+        )
+        return start_episode
+
+    def train(self, start_episode: int = 0) -> TrainingMetrics:
         """执行完整训练流程
+
+        Args:
+            start_episode: 起始 episode（断点续训时 > 0）
 
         Returns:
             metrics: 训练指标记录器
         """
-        logger.info(f"开始训练: {self.config.training_episodes} episodes, "
+        logger.info(f"开始训练: episode {start_episode} -> {self.config.training_episodes}, "
                      f"算法: {self.config.default_algorithm}, "
                      f"设备: {self.model.device}")
 
-        for episode in range(self.config.training_episodes):
+        t_start = time.time()
+        for episode in range(start_episode, self.config.training_episodes):
+            ep_start = time.time()
+
             # 1. 采样一个训练样本
             sample = self.dataset.sample_train()
 
@@ -110,6 +192,7 @@ class RLTrainer:
                     self.metrics.epsilons.append(self.model.epsilon)
 
             # 4. 定期验证
+            val_metrics = None
             if self.dataset.val_samples and (episode + 1) % self.config.validation_freq == 0:
                 val_metrics = self._validate()
                 self.metrics.val_sharpe_ratios.append(val_metrics["sharpe"])
@@ -126,21 +209,72 @@ class RLTrainer:
                 if val_metrics["sharpe"] > self._best_val_sharpe:
                     self._best_val_sharpe = val_metrics["sharpe"]
                     self._patience_counter = 0
-                    self._save_checkpoint("best")
+                    self._save_checkpoint("best", next_episode=episode + 1)
                 else:
                     self._patience_counter += 1
                     if self._patience_counter >= self.config.early_stopping_patience:
                         logger.info(f"Early stopping at episode {episode + 1}")
-                        break
 
-            # 5. 触发回调
+            # 5. 逐集 CSV 日志（立即落盘，崩溃安全）
+            self._log_episode_csv(episode, episode_reward, episode_length, val_metrics, ep_start)
+
+            # 6. 触发回调
             for cb in self.callbacks:
                 cb.on_episode_end(episode, episode_reward, self.metrics)
 
-        # 最终保存
-        self._save_checkpoint("final")
-        logger.info("训练完成")
+            # 7. 定期保存 latest checkpoint（断点续训用，固定目录覆盖写入）
+            if self.save_freq > 0 and (episode + 1) % self.save_freq == 0:
+                self._save_checkpoint("latest", next_episode=episode + 1)
+                elapsed = time.time() - t_start
+                logger.info(
+                    f"进度: {episode + 1}/{self.config.training_episodes}, "
+                    f"已耗时 {elapsed / 60:.1f} 分钟"
+                )
+
+            # Early stopping 跳出（放在日志/保存之后）
+            if (
+                val_metrics is not None
+                and self._patience_counter >= self.config.early_stopping_patience
+            ):
+                break
+
+        # 最终保存（时间戳目录）+ 更新 latest
+        self._save_checkpoint("final", next_episode=self.config.training_episodes)
+        self._save_checkpoint("latest", next_episode=self.config.training_episodes)
+        logger.info(f"训练完成, 总耗时 {(time.time() - t_start) / 60:.1f} 分钟")
         return self.metrics
+
+    def _log_episode_csv(
+        self,
+        episode: int,
+        episode_reward: float,
+        episode_length: int,
+        val_metrics: Optional[Dict[str, float]],
+        ep_start: float,
+    ) -> None:
+        """追加一行 episode 级日志到 CSV（首次写入表头）"""
+        write_header = not self._csv_initialized and not self._csv_path.exists()
+        with open(self._csv_path, "a", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            if write_header:
+                writer.writerow([
+                    "run_id", "episode", "reward", "length", "loss", "td_error",
+                    "epsilon", "val_sharpe", "val_return", "val_win_rate", "seconds",
+                ])
+            self._csv_initialized = True
+            writer.writerow([
+                self._run_id,
+                episode + 1,
+                f"{episode_reward:.4f}",
+                episode_length,
+                f"{self.metrics.losses[-1]:.6f}" if self.metrics.losses else "",
+                f"{self.metrics.td_errors[-1]:.6f}" if self.metrics.td_errors else "",
+                f"{self.metrics.epsilons[-1]:.6f}" if self.metrics.epsilons else "",
+                f"{val_metrics['sharpe']:.4f}" if val_metrics else "",
+                f"{val_metrics['total_return']:.4f}" if val_metrics else "",
+                f"{val_metrics['win_rate']:.4f}" if val_metrics else "",
+                f"{time.time() - ep_start:.2f}",
+            ])
 
     def _load_sample_data(self, sample):
         """加载样本的当日K线和前一日K线（惰性加载，兼容 MockDataset）"""
@@ -255,18 +389,23 @@ class RLTrainer:
             "win_rate": win_rate,
         }
 
-    def _save_checkpoint(self, tag: str) -> str:
+    def _save_checkpoint(self, tag: str, next_episode: Optional[int] = None) -> str:
         """保存模型 checkpoint
 
         Args:
-            tag: 标签（如 "best", "final", "ep100"）
+            tag: 标签（"best"/"final" 为时间戳目录；"latest" 为固定目录覆盖写入，
+                 用于断点续训）
+            next_episode: 下一个待训练的 episode 序号（断点续训用）
 
         Returns:
             model_path: 模型存储路径
         """
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        model_name = f"{self.config.default_algorithm}_{tag}_{timestamp}"
-        model_path = self._model_dir / model_name
+        if tag == "latest":
+            # 固定目录，覆盖写入，始终保留最近可恢复状态
+            model_path = self._model_dir / f"{self.config.default_algorithm}_latest"
+        else:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            model_path = self._model_dir / f"{self.config.default_algorithm}_{tag}_{timestamp}"
         model_path.mkdir(parents=True, exist_ok=True)
 
         # 保存模型
@@ -282,6 +421,18 @@ class RLTrainer:
         # 保存指标
         with open(model_path / "metrics.json", "w", encoding="utf-8") as f:
             json.dump(self.metrics.to_dict(), f, indent=2)
+
+        # 保存训练状态（断点续训用）
+        if next_episode is not None:
+            trainer_state = {
+                "next_episode": next_episode,
+                "best_val_sharpe": self._best_val_sharpe,
+                "patience_counter": self._patience_counter,
+                "run_id": self._run_id,
+                "saved_at": datetime.now().isoformat(),
+            }
+            with open(model_path / "trainer_state.json", "w", encoding="utf-8") as f:
+                json.dump(trainer_state, f, indent=2)
 
         logger.info(f"Checkpoint 已保存: {model_path}")
         return str(model_path)

@@ -51,6 +51,36 @@ python -m rl.scripts.train_dqn --no-gpu                # 强制 CPU
 `--episodes 20 --max-samples 200` 小规模训练跑通（约 50 秒，GPU），
 avg_reward 从 -15.79（E10）升至 -2.32（E20），模型正常保存。
 
+### 断点续训与日志
+
+```bash
+# 断点续训（自动从 rl/models/dqn_latest 恢复：权重/优化器/epsilon/replay buffer/指标历史）
+python -m rl.scripts.train_dqn --resume --episodes 500
+
+# 指定 checkpoint 目录续训
+python -m rl.scripts.train_dqn --resume --resume-path rl/models/dqn_best_xxx --episodes 500
+
+# 自定义 latest checkpoint 保存频率（默认每 50 集覆盖保存一次）
+python -m rl.scripts.train_dqn --save-freq 20
+
+# 自定义日志目录（默认 rl/models/logs/）
+python -m rl.scripts.train_dqn --log-dir rl/logs
+```
+
+**Checkpoint 说明**：
+- `dqn_latest/`：固定目录，每 `save_freq` 集覆盖写入，用于断点续训
+- `dqn_best_*/`：验证 Sharpe 创新高时保存（时间戳目录）
+- `dqn_final_*/`：训练结束时保存（时间戳目录）
+- `trainer_state.json`：续训状态（episode 进度、最佳 Sharpe、早停计数、run_id）
+
+**日志说明**（默认位于 `rl/models/logs/`）：
+- `train_YYYYMMDD_HHMMSS.log`：运行日志（控制台 + 文件双写）
+- `train_log_<run_id>.csv`：逐集指标（reward/loss/td_error/epsilon/验证指标/耗时），
+  每集立即落盘（崩溃安全），断点续训时同一 run_id 续写同一 CSV
+
+**续训验证记录（2026-08-28）**：10 集训练 → `--resume` 续训至 15 集，
+replay buffer（2380 条）与指标历史完整恢复，CSV 日志连续。
+
 ### 超大数据库性能说明（重要）
 
 本项目数据库约 14.7GB（27 万+ 股票日样本，约 9000 万行分时K线），

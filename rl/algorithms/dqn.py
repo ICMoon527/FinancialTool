@@ -151,7 +151,7 @@ class DQNModel(AbstractRLModel):
         }
 
     def save(self, path: str) -> None:
-        """保存模型到指定路径"""
+        """保存模型到指定路径（含经验回放缓冲区，支持断点续训）"""
         torch.save(
             {
                 "q_network": self.q_network.state_dict(),
@@ -159,18 +159,24 @@ class DQNModel(AbstractRLModel):
                 "optimizer": self.optimizer.state_dict(),
                 "epsilon": self.epsilon,
                 "train_step": self._train_step_count,
+                # 经验回放缓冲区（断点续训用，向后兼容：旧 checkpoint 无此键）
+                "replay_buffer": list(self.replay_buffer.buffer) if self.replay_buffer.buffer else None,
             },
             path,
         )
 
     def load(self, path: str) -> None:
-        """从指定路径加载模型"""
-        checkpoint = torch.load(path, map_location=self.device)
+        """从指定路径加载模型（自动恢复经验回放缓冲区，若存在）"""
+        checkpoint = torch.load(path, map_location=self.device, weights_only=False)
         self.q_network.load_state_dict(checkpoint["q_network"])
         self.target_network.load_state_dict(checkpoint["target_network"])
         self.optimizer.load_state_dict(checkpoint["optimizer"])
         self.epsilon = checkpoint.get("epsilon", self.config.epsilon_start)
         self._train_step_count = checkpoint.get("train_step", 0)
+        # 恢复经验回放缓冲区（旧 checkpoint 无此键则跳过）
+        buffer_data = checkpoint.get("replay_buffer")
+        if buffer_data:
+            self.replay_buffer.buffer.extend(buffer_data)
 
     def get_networks(self) -> Dict[str, nn.Module]:
         """返回所有网络模块"""
