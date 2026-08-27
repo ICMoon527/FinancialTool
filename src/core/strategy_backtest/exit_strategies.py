@@ -700,6 +700,7 @@ class TiandaoPressureExitStrategy(ExitStrategy):
             close_price = price_provider(stock_code, "close")
             high_price = price_provider(stock_code, "high")
             low_price = price_provider(stock_code, "low")
+            open_price = price_provider(stock_code, "open")
             pressure = price_provider(stock_code, "pressure")
             if close_price is None:
                 continue
@@ -804,16 +805,12 @@ class TiandaoPressureExitStrategy(ExitStrategy):
                 continue  # B档已触发，跳过止损
 
             # --- 止损检查（按 stop_mode 区分盘中/尾盘） ---
+            # intraday_hit：盘中最低价触及止损价（收盘破价必蕴含最低破价，故盘中="最低破价"即可）
+            # close_hit：收盘价跌破止损价（盘中假摔不卖）
             stop_loss_price = state.entry_price * (1 - self.stop_loss_pct)
-            # 盘中最低价触及止损价（intraday 模式下有效）
             intraday_hit = low_price is not None and low_price <= stop_loss_price
-            # 尾盘收盘跌破止损价（close 模式下有效）
-            close_hit = close_price <= stop_loss_price
-            # 触发判定与止损模式对齐：
-            #   intraday 盘中止损 → 盘中破价或收盘破价任一即触发（含假摔）
-            #   close 尾盘确认   → 仅当收盘价跌破止损价才触发（盘中假摔不卖）
-            if (self.stop_mode == "intraday" and (intraday_hit or close_hit)) or \
-               (self.stop_mode == "close" and close_hit):
+            if (self.stop_mode == "intraday" and intraday_hit) or \
+               (self.stop_mode == "close" and close_price <= stop_loss_price):
                 if price_provider(stock_code, "is_limit_down_sealed") == 1.0:
                     logger.info(
                         "通道压力线 [%s]: 止损触发，但跌停封死无法成交，继续持有",
@@ -822,21 +819,24 @@ class TiandaoPressureExitStrategy(ExitStrategy):
                     continue
                 self._stop_loss_count += 1
                 if self.stop_mode == "intraday":
-                    # 盘中止损：盘中最低价跌破即触发；成交价按盘中是否回穿止损价：
-                    #   high >= 止损价（盘中曾回到止损价上方）→ 以止损价成交
-                    #   high <= 止损价（开盘即破，全日在止损价下方）→ 以当日最高价成交
-                    if high_price is not None and high_price >= stop_loss_price:
-                        sell_price = stop_loss_price
+                    # 盘中止损：盘中最低价跌破即触发。成交价按开盘价是否已破线判定：
+                    #   open <= 止损价（开盘即破，跳空低开直接破位）→ 以开盘价成交，
+                    #            此时无法预知盘中 high 是否回升，成交只能按开盘价
+                    #   open  > 止损价（开盘在止损价上方，盘中才跌破）→ 从上方触及止损，
+                    #            以止损价成交（收盘是否收回不影响）
+                    if open_price is not None and open_price <= stop_loss_price:
+                        sell_price = open_price
+                        fallback_desc = "开盘价"
                     else:
-                        sell_price = high_price if high_price is not None else close_price
+                        sell_price = stop_loss_price
+                        fallback_desc = "止损价"
                     price_type = "intraday"
                     logger.info(
                         "通道压力线 [%s]: 盘中止损触发，最低价 %.2f <= 止损价 %.2f(买入价 %.2f × %.0f%%)，"
-                        "以 %s %.2f 卖出全部（收盘 %.2f）",
+                        "以 %s %.2f 卖出全部（开盘 %.2f 收盘 %.2f）",
                         stock_code, low_price, stop_loss_price, state.entry_price,
                         self.stop_loss_pct * 100,
-                        "止损价" if sell_price == stop_loss_price else "当日最高价",
-                        sell_price, close_price,
+                        fallback_desc, sell_price, open_price, close_price,
                     )
                 else:
                     # 尾盘收盘确认止损：收盘价跌破止损价才触发，以收盘价成交
