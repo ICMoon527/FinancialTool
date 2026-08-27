@@ -2,7 +2,7 @@
 """使用真实数据库数据训练 DQN 模型
 
 用法：
-    cd e:\工作\Code\FinancialTool
+    cd e:/工作/Code/FinancialTool
     python -m rl.scripts.train_dqn
     python -m rl.scripts.train_dqn --episodes 500 --batch-size 128
     python -m rl.scripts.train_dqn --no-gpu
@@ -32,6 +32,9 @@ def main():
     parser.add_argument("--episodes", type=int, default=None, help="训练轮数（覆盖 .env）")
     parser.add_argument("--batch-size", type=int, default=None, help="批次大小")
     parser.add_argument("--lr", type=float, default=None, help="学习率")
+    parser.add_argument("--stock", type=str, default=None, help="仅使用指定股票（逗号分隔，如 000001,600519）")
+    parser.add_argument("--max-samples", type=int, default=5000, help="样本总数上限（0=不限制），防止验证/训练规模失控")
+    parser.add_argument("--rebuild", action="store_true", help="强制重建元数据缓存")
     parser.add_argument("--no-gpu", action="store_true", help="强制使用 CPU")
     args = parser.parse_args()
 
@@ -61,9 +64,15 @@ def main():
     logger.info(f"设备: {device}")
     logger.info(f"配置: episodes={config.training_episodes}, batch={config.batch_size}, lr={config.learning_rate}")
 
-    # 加载数据
+    # 加载数据（惰性：仅建立元数据索引）
     db = get_db()
-    dataset = IntradayDataset(config, db)
+    stock_filter = args.stock.split(",") if args.stock else None
+    dataset = IntradayDataset(
+        config, db,
+        max_samples=args.max_samples if args.max_samples > 0 else None,
+        stock_filter=stock_filter,
+        rebuild=args.rebuild,
+    )
     dataset.load()
 
     if len(dataset.train_samples) == 0:

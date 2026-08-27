@@ -90,6 +90,35 @@ class RLEvaluator:
             "summary_metrics": summary,
         }
 
+    def _load_sample_data(self, sample):
+        """加载样本的当日K线和前一日K线（惰性加载，兼容 MockDataset）"""
+        if hasattr(self.dataset, "get_klines"):
+            klines = self.dataset.get_klines(sample)
+            prev_klines = self.dataset.get_prev_klines(sample)
+        else:
+            if isinstance(sample, dict):
+                klines = sample["klines"]
+                prev_klines = sample.get("prev_day_klines")
+            else:
+                klines = sample.klines
+                prev_klines = sample.prev_day_klines
+        return klines, prev_klines
+
+    @staticmethod
+    def _sample_to_dict(sample, klines=None) -> dict:
+        """将 sample（dataclass 或 dict）统一转为 dict"""
+        if isinstance(sample, dict):
+            return {
+                "klines": sample["klines"],
+                "stock_code": sample["stock_code"],
+                "date": sample["date"],
+            }
+        return {
+            "klines": klines if klines is not None else sample.klines,
+            "stock_code": sample.stock_code,
+            "date": sample.date,
+        }
+
     def evaluate_daily(self, stock_code: str, target_date: date) -> Dict:
         """获取指定股票/日期的单日逐笔决策明细
 
@@ -107,14 +136,14 @@ class RLEvaluator:
         if sample is None:
             raise ValueError(f"Sample not found: {stock_code} {target_date}")
 
+        klines, prev_klines = self._load_sample_data(sample)
         state = self.env.reset(
-            self._sample_to_dict(sample),
-            self._get_prev_klines(sample),
+            self._sample_to_dict(sample, klines),
+            prev_klines,
         )
         done = False
         decisions = []
         reward_heatmap = []
-        klines = sample.klines if hasattr(sample, 'klines') else sample.get('klines', [])
 
         while not done:
             action = self.model.predict(state, deterministic=True)
@@ -143,9 +172,10 @@ class RLEvaluator:
         Returns:
             (日收益率, 日摘要, 基准收益率)
         """
+        klines, prev_klines = self._load_sample_data(sample)
         state = self.env.reset(
-            self._sample_to_dict(sample),
-            self._get_prev_klines(sample),
+            self._sample_to_dict(sample, klines),
+            prev_klines,
         )
         done = False
         total_reward = 0.0
@@ -163,7 +193,6 @@ class RLEvaluator:
         day_return = total_reward / 100.0
 
         # 基准收益率（买入持有）
-        klines = sample.klines if hasattr(sample, 'klines') else sample.get('klines', [])
         if len(klines) >= 2:
             open_price = klines[0].get("Close", 0)
             close_price = klines[-1].get("Close", 0)
@@ -217,25 +246,3 @@ class RLEvaluator:
             "max_drawdown": max_drawdown,
             "total_trades": total_trades,
         }
-
-    @staticmethod
-    def _sample_to_dict(sample) -> dict:
-        """将 sample（dataclass 或 dict）统一转为 dict"""
-        if isinstance(sample, dict):
-            return {
-                "klines": sample["klines"],
-                "stock_code": sample["stock_code"],
-                "date": sample["date"],
-            }
-        return {
-            "klines": sample.klines,
-            "stock_code": sample.stock_code,
-            "date": sample.date,
-        }
-
-    @staticmethod
-    def _get_prev_klines(sample):
-        """获取前一日 K 线"""
-        if isinstance(sample, dict):
-            return sample.get("prev_day_klines")
-        return sample.prev_day_klines

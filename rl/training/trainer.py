@@ -142,6 +142,22 @@ class RLTrainer:
         logger.info("训练完成")
         return self.metrics
 
+    def _load_sample_data(self, sample):
+        """加载样本的当日K线和前一日K线（惰性加载，兼容 MockDataset）"""
+        if hasattr(self.dataset, "get_klines"):
+            # IntradayDataset：按需查询数据库
+            klines = self.dataset.get_klines(sample)
+            prev_klines = self.dataset.get_prev_klines(sample)
+        else:
+            # MockDataset 等自带数据的数据集
+            if isinstance(sample, dict):
+                klines = sample["klines"]
+                prev_klines = sample.get("prev_day_klines")
+            else:
+                klines = sample.klines
+                prev_klines = sample.prev_day_klines
+        return klines, prev_klines
+
     def _run_episode(
         self, sample: "DaySample", training: bool
     ) -> Tuple[float, int, Optional[Dict]]:
@@ -154,9 +170,10 @@ class RLTrainer:
         Returns:
             (总奖励, 步数, 训练指标)
         """
+        klines, prev_klines = self._load_sample_data(sample)
         state = self.env.reset(
-            self._sample_to_dict(sample),
-            self._get_prev_klines(sample),
+            self._sample_to_dict(sample, klines),
+            prev_klines,
         )
         done = False
         total_reward = 0.0
@@ -182,15 +199,27 @@ class RLTrainer:
 
         return total_reward, episode_length, train_metrics
 
-    def _validate(self) -> Dict[str, float]:
-        """在验证集上评估模型，返回 Sharpe、总收益、胜率等"""
+    def _validate(self, max_val_days: int = 50) -> Dict[str, float]:
+        """在验证集上评估模型，返回 Sharpe、总收益、胜率等
+
+        Args:
+            max_val_days: 验证集抽样上限（验证集可能非常大，全量验证过慢）
+        """
         daily_returns = []
         daily_summaries = []
 
-        for sample in self.dataset.val_samples:
+        # 验证集抽样（数据量大时避免全量验证拖慢训练）
+        val_samples = self.dataset.val_samples
+        if len(val_samples) > max_val_days:
+            import random as _random
+            val_samples = _random.sample(val_samples, max_val_days)
+            logger.info(f"验证集抽样: {max_val_days}/{len(self.dataset.val_samples)}")
+
+        for sample in val_samples:
+            klines, prev_klines = self._load_sample_data(sample)
             state = self.env.reset(
-                self._sample_to_dict(sample),
-                self._get_prev_klines(sample),
+                self._sample_to_dict(sample, klines),
+                prev_klines,
             )
             done = False
             day_reward = 0.0
@@ -258,8 +287,13 @@ class RLTrainer:
         return str(model_path)
 
     @staticmethod
-    def _sample_to_dict(sample) -> dict:
-        """将 sample（dataclass 或 dict）统一转为 dict，兼容 MockDataset"""
+    def _sample_to_dict(sample, klines=None) -> dict:
+        """将 sample（dataclass 或 dict）统一转为 dict，兼容 MockDataset
+
+        Args:
+            sample: DaySample 或 dict
+            klines: 已加载的当日K线（惰性加载时由调用方传入）
+        """
         if isinstance(sample, dict):
             return {
                 "klines": sample["klines"],
@@ -267,14 +301,7 @@ class RLTrainer:
                 "date": sample["date"],
             }
         return {
-            "klines": sample.klines,
+            "klines": klines if klines is not None else sample.klines,
             "stock_code": sample.stock_code,
             "date": sample.date,
         }
-
-    @staticmethod
-    def _get_prev_klines(sample):
-        """获取前一日 K 线"""
-        if isinstance(sample, dict):
-            return sample.get("prev_day_klines")
-        return sample.prev_day_klines

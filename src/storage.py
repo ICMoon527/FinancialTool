@@ -3661,6 +3661,9 @@ class DatabaseManager:
     def get_all_stocks_with_intraday(self) -> List[str]:
         """获取所有有分时数据的股票代码列表。
 
+        注意：该查询需全表覆盖索引扫描，在超大库（10GB+）+ 机械硬盘上可能耗时数分钟。
+        RL 训练请优先使用 get_candidate_stock_codes() + 元数据缓存。
+
         Returns:
             List[str]: 股票代码列表
         """
@@ -3672,6 +3675,19 @@ class DatabaseManager:
                 .all()
             )
             return [c[0] for c in codes]
+
+    def get_candidate_stock_codes(self) -> List[str]:
+        """从小表（stock_daily）获取候选股票代码列表（快速）。
+
+        stock_daily 每股每日仅一行，体量远小于分时表，DISTINCT 秒级完成。
+        候选中可能包含无分时数据的股票，由调用方逐股用 get_all_intraday_dates() 过滤。
+
+        Returns:
+            List[str]: 候选股票代码列表
+        """
+        with self.get_session() as session:
+            codes = session.query(StockDaily.code).distinct().all()
+            return sorted({c[0] for c in codes if c[0]})
 
 
 # 便捷函数

@@ -10,6 +10,60 @@ python -m rl.tests.test_dqn_smoke
 python -m rl.scripts.train_dqn
 ```
 
+> 建议使用项目虚拟环境：`stock_venv/Scripts/python.exe -m rl.tests.test_dqn_smoke`
+
+---
+
+## 冒烟测试 ✅ 已通过（2026-08-27）
+
+使用 `stock_venv` 环境（torch 2.7.1+cu118, RTX 4090）验证结果：
+
+| 测试项 | 结果 | 关键输出 |
+|--------|------|----------|
+| 1. 配置加载 | ✅ | `RLConfig` 正常，`state_dim=50`, `action_dim=3` |
+| 2. 环境测试 | ✅ | `reset()` 返回 50 维，BUY/SELL 动作有效 |
+| 3. 网络测试 | ✅ | DQN / Dueling DQN 前向传播 shape `[4, 3]` |
+| 4. DQN 模型 | ✅ | `train_step` loss=1.41，save/load 正常 |
+| 5. 完整训练 | ✅ | 50 episodes，设备 cuda，总耗时约 3.5 分钟 |
+
+训练过程中 avg_reward 从 -16.36（E10）升至 31.01（E40），学习趋势正常。
+模拟数据为随机游走，负 Sharpe 属正常现象（验证的是管道而非策略质量）。
+
+---
+
+## 真实数据训练命令
+
+```bash
+# 默认配置训练（参数读取 .env）
+python -m rl.scripts.train_dqn
+
+# 命令行覆盖参数
+python -m rl.scripts.train_dqn --episodes 500          # 训练轮数
+python -m rl.scripts.train_dqn --batch-size 128        # 批次大小
+python -m rl.scripts.train_dqn --lr 0.0005             # 学习率
+python -m rl.scripts.train_dqn --stock 000001,600519   # 仅用指定股票
+python -m rl.scripts.train_dqn --max-samples 10000     # 样本总数上限（默认5000，0=不限制）
+python -m rl.scripts.train_dqn --rebuild               # 强制重建元数据缓存
+python -m rl.scripts.train_dqn --no-gpu                # 强制 CPU
+```
+
+**真实数据验证记录（2026-08-28）**：27.3 万股票交易日样本元数据构建完成，
+`--episodes 20 --max-samples 200` 小规模训练跑通（约 50 秒，GPU），
+avg_reward 从 -15.79（E10）升至 -2.32（E20），模型正常保存。
+
+### 超大数据库性能说明（重要）
+
+本项目数据库约 14.7GB（27 万+ 股票日样本，约 9000 万行分时K线），
+且位于 **USB 外接机械硬盘**上。已做针对性优化：
+
+1. **惰性加载**：内存只存 (股票, 日期) 元数据，K线训练时按需查询（单日索引查询）
+2. **元数据缓存**：首次启动构建索引约 15-20 分钟（机械盘全索引扫描），
+   结果保存至 `rl/data/_meta_cache.pkl`，后续启动毫秒级加载
+3. **样本上限**：`--max-samples`（默认 5000）随机下采样，防止验证集拖慢训练
+4. **验证集抽样**：每轮验证最多随机抽 50 天
+
+建议：若训练速度不理想，可考虑将 `data/stock_analysis.db` 迁移到 NVMe SSD。
+
 ---
 
 ## 使用方式
