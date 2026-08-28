@@ -25,6 +25,11 @@ import os
 import warnings
 import sys
 
+# 必须在任何 numpy 导入之前设置：
+# 禁用 Intel Fortran 运行时（libifcoremd.dll）注册控制台 Ctrl+C 处理器，
+# 否则它会在加载数据后抢先拦截 Ctrl+C 并挂起进程（forrtl error 200）
+os.environ.setdefault("FOR_DISABLE_CONSOLE_CTRL_HANDLER", "1")
+
 # ====== 最激进的警告抑制 - 在任何导入前设置 ======
 warnings.filterwarnings("ignore")
 warnings.simplefilter("ignore")
@@ -798,6 +803,15 @@ def main() -> int:
                 time.sleep(1)
         except KeyboardInterrupt:
             logger.info("\n用户中断，程序退出")
+            # 看门狗：5秒内未完成解释器退出则强制终止，
+            # 避免 Fortran 运行时（numpy）在关闭阶段挂起进程
+            import threading
+
+            def _force_exit() -> None:
+                time.sleep(5)
+                os._exit(1)
+
+            threading.Thread(target=_force_exit, daemon=True).start()
         return 0
 
     try:

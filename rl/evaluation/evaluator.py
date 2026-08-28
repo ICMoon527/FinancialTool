@@ -33,8 +33,13 @@ class RLEvaluator:
         self.dataset = dataset
         self.env = T0Environment(config)
 
-    def evaluate(self) -> Dict:
-        """在全部验证集上评估模型
+    def evaluate(self, progress_cb=None, samples=None) -> Dict:
+        """在验证集上评估模型
+
+        Args:
+            progress_cb: 进度回调 (done, total, sample, day_summary, bench_return)，
+                逐日回放时实时报告；day_summary 含 realized_pnl（当日做T已实现盈亏%）
+            samples: 指定评估样本列表（抽样评估用）；为 None 时使用全部验证集
 
         Returns:
             {
@@ -50,11 +55,7 @@ class RLEvaluator:
                 },
             }
         """
-        daily_returns = []
-        daily_summaries = []
-        benchmark_returns = []
-
-        val_samples = self.dataset.val_samples
+        val_samples = samples if samples is not None else self.dataset.val_samples
         if not val_samples:
             logger.warning("验证集为空，无法评估")
             return {
@@ -70,11 +71,17 @@ class RLEvaluator:
                 },
             }
 
-        for sample in val_samples:
+        daily_returns = []
+        daily_summaries = []
+        benchmark_returns = []
+
+        for i, sample in enumerate(val_samples):
             day_return, day_summary, bench_return = self._evaluate_one_day(sample)
             daily_returns.append(day_return)
             daily_summaries.append(day_summary)
             benchmark_returns.append(bench_return)
+            if progress_cb is not None:
+                progress_cb(i + 1, len(val_samples), sample, day_summary, bench_return)
 
         # 计算累积收益
         cumulative = np.cumprod(1 + np.array(daily_returns)) - 1
@@ -209,6 +216,8 @@ class RLEvaluator:
             "daily_return": day_return,
             "trade_count": trade_count,
             "avg_reward": total_reward / max(len(klines), 1),
+            # 当日做T已实现盈亏（%，含配对交易与收盘强制平仓），比 reward 近似值更真实
+            "realized_pnl": float(self.env._realized_pnl),
             "trades": self.env._trades,
         }
 

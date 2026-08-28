@@ -1,0 +1,147 @@
+import React from 'react';
+import { Card } from '../common/Card';
+import { Button } from '../common/Button';
+import { useRLStore } from '../../stores/rlStore';
+import { rlApi } from '../../api/rl';
+
+/**
+ * 模型列表面板：展示已训练模型，支持评估 / 断点续训选中 / 删除
+ */
+
+export const ModelListPanel: React.FC = () => {
+  const models = useRLStore((s) => s.models);
+  const modelsLoading = useRLStore((s) => s.modelsLoading);
+  const selectedModelId = useRLStore((s) => s.selectedModelId);
+  const busy = useRLStore((s) => ['running', 'pending', 'stopping'].includes(s.taskStatus ?? ''));
+  const evaluating = useRLStore((s) => s.evaluating);
+  const evalDone = useRLStore((s) => s.evalDone);
+  const evalTotal = useRLStore((s) => s.evalTotal);
+  const evalProgress = useRLStore((s) => s.evalProgress);
+  const evalMessage = useRLStore((s) => s.evalMessage);
+  const evaluateModel = useRLStore((s) => s.evaluateModel);
+  const selectModel = useRLStore((s) => s.selectModel);
+  const fetchModels = useRLStore((s) => s.fetchModels);
+  const setError = useRLStore((s) => s.setError);
+  const [deleting, setDeleting] = React.useState<string | null>(null);
+  // 全量评估开关：默认抽样 100 个交易日（约 3 分钟），勾选后全量（数万交易日，耗时极长）
+  const [fullEval, setFullEval] = React.useState(false);
+
+  React.useEffect(() => {
+    void fetchModels();
+  }, [fetchModels]);
+
+  const handleDelete = async (modelId: string) => {
+    if (!window.confirm(`确认删除模型 ${modelId}？`)) return;
+    setDeleting(modelId);
+    try {
+      await rlApi.deleteModel(modelId);
+      if (selectedModelId === modelId) selectModel(null);
+      await fetchModels();
+    } catch (err) {
+      setError(`删除失败: ${(err as Error).message}`);
+    } finally {
+      setDeleting(null);
+    }
+  };
+
+  return (
+    <Card title="模型列表" variant="bordered" padding="md">
+      {/* 评估模式开关 */}
+      {models.length > 0 && (
+        <label
+          className="flex items-center gap-1.5 text-[11px] text-gray-400 mb-2 cursor-pointer select-none"
+          title="默认随机抽样 100 个交易日快速评估（约 3 分钟）；勾选后评估全部验证集（数万交易日，耗时极长）"
+        >
+          <input
+            type="checkbox"
+            checked={fullEval}
+            onChange={(e) => setFullEval(e.target.checked)}
+            disabled={evaluating}
+            className="accent-cyan-500"
+          />
+          全量评估（默认抽样 100 天）
+        </label>
+      )}
+      {modelsLoading && models.length === 0 ? (
+        <p className="text-xs text-gray-500 py-4 text-center">加载中...</p>
+      ) : models.length === 0 ? (
+        <p className="text-xs text-gray-500 py-4 text-center">
+          暂无模型
+          <span className="block mt-1 text-gray-600">完成一次训练后模型将出现在这里</span>
+        </p>
+      ) : (
+        <ul className="space-y-2 max-h-64 overflow-y-auto pr-1">
+          {models.map((m) => (
+            <li
+              key={m.modelId}
+              className={`rounded-lg border p-2.5 text-xs transition-colors ${
+                selectedModelId === m.modelId
+                  ? 'border-cyan-500/60 bg-cyan-500/10'
+                  : 'border-slate-700 bg-slate-800/40 hover:border-slate-500'
+              }`}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <button
+                  type="button"
+                  className="font-mono text-gray-200 truncate hover:text-cyan-300 text-left"
+                  title={m.modelId}
+                  onClick={() => selectModel(selectedModelId === m.modelId ? null : m.modelId)}
+                >
+                  {m.modelId}
+                </button>
+                <span className="shrink-0 px-1.5 py-0.5 rounded bg-slate-700 text-[10px] uppercase text-gray-300">
+                  {m.algorithm}
+                </span>
+              </div>
+              <p className="text-gray-500 mt-0.5">{m.createdAt.slice(0, 19).replace('T', ' ')}</p>
+
+              {/* 操作按钮 */}
+              <div className="flex gap-1.5 mt-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={busy || m.algorithm === 'ppo'}
+                  isLoading={evaluating && selectedModelId === m.modelId}
+                  onClick={() => void evaluateModel(m.modelId, fullEval ? 0 : 100)}
+                  className="!px-2 !py-1 text-[11px]"
+                >
+                  评估
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={busy}
+                  isLoading={deleting === m.modelId}
+                  onClick={() => void handleDelete(m.modelId)}
+                  className="!px-2 !py-1 text-[11px] !text-red-400 hover:!bg-red-500/10"
+                >
+                  删除
+                </Button>
+              </div>
+
+              {/* 评估中：按钮下方迷你进度条与当前样本 */}
+              {evaluating && selectedModelId === m.modelId && (
+                <div className="mt-1.5">
+                  <div className="h-1 rounded-full bg-slate-700/60 overflow-hidden">
+                    <div
+                      className="h-full rounded-full bg-gradient-to-r from-cyan-500 to-blue-500 transition-all duration-500"
+                      style={{ width: `${Math.min(Math.max(evalProgress, 0), 100)}%` }}
+                    />
+                  </div>
+                  <p
+                    className="font-mono text-[10px] text-gray-400 mt-1 truncate"
+                    title={evalMessage}
+                  >
+                    {evalDone}/{evalTotal} · {evalProgress.toFixed(1)}% · {evalMessage || '准备中...'}
+                  </p>
+                </div>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </Card>
+  );
+};
+
+export default ModelListPanel;

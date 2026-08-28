@@ -12,9 +12,10 @@ class TrainRequest(BaseModel):
     """训练请求"""
 
     algorithm: Optional[str] = Field(None, description="算法: dqn | ppo")
-    episodes: Optional[int] = Field(None, description="训练轮数")
+    episodes: Optional[int] = Field(None, description="训练轮数（总轮数，续训时需大于已完成轮数）")
     batch_size: Optional[int] = Field(None, description="批次大小")
     learning_rate: Optional[float] = Field(None, description="学习率")
+    resume_from: Optional[str] = Field(None, description="断点续训来源：模型 ID、checkpoint 目录名或 latest")
 
 
 class TrainResponse(BaseModel):
@@ -42,6 +43,10 @@ class TrainingProgressResponse(BaseModel):
     latest_reward: float
     metrics: Dict[str, List[float]]
     status: str
+    progress: float = Field(0.0, description="进度百分比 0-100")
+    total_episodes: int = Field(0, description="总训练轮数")
+    message: str = Field("", description="当前阶段说明")
+    paused: bool = Field(False, description="是否已暂停")
 
 
 class ModelInfo(BaseModel):
@@ -64,6 +69,18 @@ class EvaluateRequest(BaseModel):
 
     model_id: str
     stock_codes: Optional[List[str]] = None
+    max_days: Optional[int] = Field(
+        100,
+        description="抽样评估的最大交易日数；None 或 <=0 表示全量评估，默认 100",
+    )
+
+
+class EvaluateTaskResponse(BaseModel):
+    """评估任务创建响应"""
+
+    task_id: str
+    status: str
+    message: str
 
 
 class DailySummary(BaseModel):
@@ -94,6 +111,19 @@ class EvaluateResultResponse(BaseModel):
     benchmark_returns: List[float]
     daily_summaries: List[DailySummary]
     summary_metrics: SummaryMetrics
+
+
+class EvaluateProgressResponse(BaseModel):
+    """评估任务进度响应（供前端轮询）"""
+
+    task_id: str
+    status: str = Field(..., description="pending | running | paused | completed | failed | stopped")
+    progress: float = Field(0.0, description="进度百分比 0-100")
+    done: int = Field(0, description="已完成样本数")
+    total: int = Field(0, description="总样本数")
+    message: str = Field("", description="当前阶段说明（当前回放股票/日期、做T收益等）")
+    paused: bool = Field(False, description="是否已暂停")
+    result: Optional[EvaluateResultResponse] = Field(None, description="评估结果（仅终态返回）")
 
 
 class DailyDecision(BaseModel):

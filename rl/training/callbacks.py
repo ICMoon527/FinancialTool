@@ -67,3 +67,36 @@ class CheckpointCallback(TrainingCallback):
         if (episode + 1) % self.save_interval == 0 and self._trainer is not None:
             self._trainer._save_checkpoint(f"ep{episode + 1}")
             logger.info(f"已保存 checkpoint: episode {episode + 1}")
+
+
+class TrainingInterrupted(Exception):
+    """训练被外部中断（暂停后停止），携带进度信息供断点续训"""
+
+    def __init__(self, next_episode: int, reason: str = "stopped"):
+        self.next_episode = next_episode
+        self.reason = reason
+        super().__init__(f"训练中断于 episode {next_episode}: {reason}")
+
+
+class TrainingControlCallback(TrainingCallback):
+    """训练控制回调：响应暂停/停止事件（由服务层注入 threading.Event）
+
+    - stop_event 置位：抛出 TrainingInterrupted，训练线程可保存断点后退出
+    - pause_event 置位：阻塞等待（每 0.5s 轮询），期间响应停止
+    """
+
+    def __init__(self, pause_event, stop_event):
+        import threading
+        self._pause_event: threading.Event = pause_event
+        self._stop_event: threading.Event = stop_event
+
+    def on_episode_end(self, episode: int, episode_reward: float, metrics) -> None:
+        # 停止：立即中断（next_episode 指向下一集，续训从该集继续）
+        if self._stop_event.is_set():
+            raise TrainingInterrupted(episode + 1, "stopped")
+        # 暂停：阻塞等待恢复
+        while self._pause_event.is_set():
+            if self._stop_event.is_set():
+                raise TrainingInterrupted(episode + 1, "stopped")
+            import time
+            time.sleep(0.5)

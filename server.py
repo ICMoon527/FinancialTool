@@ -19,6 +19,12 @@ Daily Stock Analysis - FastAPI 后端服务入口
 """
 
 import logging
+import os
+
+# 必须在任何 numpy 导入之前设置：
+# 禁用 Intel Fortran 运行时（libifcoremd.dll）注册控制台 Ctrl+C 处理器，
+# 否则它会在加载数据后抢先拦截 Ctrl+C 并挂起进程（forrtl error 200）
+os.environ.setdefault("FOR_DISABLE_CONSOLE_CTRL_HANDLER", "1")
 
 from src.config import setup_env, get_config
 from src.logging_config import setup_logging

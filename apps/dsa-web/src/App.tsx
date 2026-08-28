@@ -9,6 +9,7 @@ import ChatPage from './pages/ChatPage';
 import StockSelectorPage from './pages/StockSelectorPage';
 import VisualizationPage from './pages/VisualizationPage';
 import IntradayPage from './pages/IntradayPage';
+import RLTrainingPage from './pages/RLTrainingPage';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import './App.css';
 
@@ -63,6 +64,10 @@ const IntradayIcon: React.FC<{ active?: boolean }> = ({active}) => (
     </svg>
 );
 
+const RLIcon: React.FC<{ active?: boolean }> = () => (
+    <span className="w-6 h-6 flex items-center justify-center text-lg leading-none" aria-hidden>🤖</span>
+);
+
 const LogoutIcon: React.FC = () => (
     <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
@@ -113,6 +118,12 @@ const NAV_ITEMS: DockItem[] = [
         label: '回测',
         to: '/backtest',
         icon: BacktestIcon,
+    },
+    {
+        key: 'rl-training',
+        label: 'RL训练',
+        to: '/rl-training',
+        icon: RLIcon,
     },
     {
         key: 'settings',
@@ -214,6 +225,7 @@ const AppContent: React.FC = () => {
                     <Route path="/visualization" element={<VisualizationPage/>}/>
                     <Route path="/intraday" element={<IntradayPage/>}/>
                     <Route path="/backtest" element={<BacktestPage/>}/>
+                    <Route path="/rl-training" element={<RLTrainingPage/>}/>
                     <Route path="/settings" element={<SettingsPage/>}/>
                     <Route path="/login" element={<LoginPage/>}/>
                     <Route path="*" element={<NotFoundPage/>}/>
