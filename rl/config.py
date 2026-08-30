@@ -53,6 +53,11 @@ class RLConfig:
     model_dir: str = "rl/models"
     save_best_only: bool = True
 
+    # ── 状态特征扩展 ──
+    # 是否把分时做T规则引擎（SignalEvaluator）的买点/卖点得分加入状态特征（+2维）
+    # 注意：开启后 state_dim=52，与已有 50 维模型权重不兼容；仅用于新训练的对照实验
+    use_signal_scores: bool = False
+
     @classmethod
     def from_env(cls) -> "RLConfig":
         """从 .env 和 config_registry 加载配置"""
@@ -89,6 +94,7 @@ class RLConfig:
             "RL_REWARD_CLIP": ("reward_clip", "float"),
             "RL_MODEL_DIR": ("model_dir", "str"),
             "RL_SAVE_BEST_ONLY": ("save_best_only", "bool"),
+            "RL_USE_SIGNAL_SCORES": ("use_signal_scores", "bool"),
         }
 
         for env_name, (attr_name, type_name) in env_map.items():
@@ -121,8 +127,8 @@ class RLConfig:
 
     @property
     def state_dim(self) -> int:
-        """状态空间维度"""
-        return 50  # 见规格文档 2.2 节特征表
+        """状态空间维度：基础 50 维 + 可选规则买卖点得分 2 维"""
+        return 52 if self.use_signal_scores else 50  # 基础特征见规格文档 2.2 节
 
     @property
     def action_dim(self) -> int:

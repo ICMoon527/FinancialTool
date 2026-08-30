@@ -19,6 +19,7 @@ from watchdog.strategies.intraday_t0_strategy import (
     IndicatorSnapshot,
     IntradayDataBuffer,
     IntradayIndicatorEngine,
+    SignalEvaluator,
 )
 
 if TYPE_CHECKING:
@@ -57,6 +58,9 @@ class T0Environment:
         # 指标计算
         self._indicator_engine = indicator_engine or IntradayIndicatorEngine()
         self._data_buffer = IntradayDataBuffer(max_window=200)
+
+        # 规则买卖点评分器（use_signal_scores=True 时为状态特征提供人工先验）
+        self._signal_evaluator = SignalEvaluator()
 
         # 环境状态
         self._step: int = 0
@@ -393,6 +397,18 @@ class T0Environment:
 
         # ── 预热标志 (1维) ──
         features.append(float(self._is_warmup))
+
+        # ── 规则买卖点得分 (2维，use_signal_scores=True 时启用) ──
+        # 直接复用分时做T页面同款 SignalEvaluator 规则引擎的原始得分，
+        # 作为人工先验注入状态；引力场部分不参与（环境无参考线数据）。
+        # 买/卖满分约 40/35（规则权重和），除以 10 归一化到约 0~4 区间，
+        # 使 weak(~4)/medium(~5-7)/strong(≥6/11) 档位落在 0.4~1.1+ 的可区分范围
+        if self.config.use_signal_scores:
+            buy_score = sell_score = 0.0
+            if ind is not None:
+                buy_score = float(self._signal_evaluator.evaluate_buy(ind)[0])
+                sell_score = float(self._signal_evaluator.evaluate_sell(ind)[0])
+            features.extend([buy_score / 10.0, sell_score / 10.0])
 
         return np.array(features, dtype=np.float32)
 

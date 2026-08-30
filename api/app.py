@@ -325,7 +325,11 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
                 return FileResponse(file_path)
             
             # 否则返回 index.html 给 SPA
-            return FileResponse(static_dir / "index.html")
+            # 禁用缓存：确保前端重新构建后，浏览器总是加载最新 bundle（避免旧代码引发的各种诡异问题）
+            return FileResponse(
+                static_dir / "index.html",
+                headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+            )
     
     return app
 

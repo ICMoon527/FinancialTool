@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+import shutil
 import threading
 import uuid
 from datetime import datetime
@@ -204,11 +205,32 @@ class RLService:
         return list(self._models.values())
 
     def delete_model(self, model_id: str) -> bool:
-        """删除模型"""
-        if model_id in self._models:
-            del self._models[model_id]
-            return True
-        return False
+        """删除模型（内存注册 + 磁盘 checkpoint 目录）"""
+        model_info = self._models.get(model_id)
+        if not model_info:
+            return False
+
+        # 若该模型有运行中/待运行的评估任务，先标记终止，避免后台线程继续使用已删除的模型
+        for task in self._tasks.values():
+            if (
+                task.get("kind") == "evaluate"
+                and task.get("model_id") == model_id
+                and task.get("status") in ("running", "pending")
+            ):
+                task["stop_event"].set()
+                task["pause_event"].clear()
+
+        # 删除磁盘 checkpoint 目录
+        ckpt_dir = model_info.get("checkpoint_dir")
+        if ckpt_dir and Path(ckpt_dir).is_dir():
+            shutil.rmtree(ckpt_dir, ignore_errors=True)
+            logger.info(f"[模型管理] 已删除磁盘 checkpoint 目录: {ckpt_dir}")
+
+        # 释放已加载的模型权重引用（惰性加载的模型在删除后应可被 GC 回收）
+        model_info["model"] = None
+        del self._models[model_id]
+        logger.info(f"[模型管理] 模型已删除: {model_id}")
+        return True
 
     def _get_loaded_model(self, model_id: str):
         """获取已加载权重的模型（磁盘模型首次使用时惰性加载）"""
@@ -259,6 +281,7 @@ class RLService:
         task = {
             "task_id": task_id,
             "kind": "evaluate",
+            "model_id": model_id,
             "status": "pending",
             "progress": 0.0,
             "done": 0,      # 已完成样本数

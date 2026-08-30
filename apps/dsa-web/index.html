@@ -8,6 +8,33 @@
   </head>
   <body>
     <div id="root"></div>
+    <script>
+      // 全局错误显示层：捕获 React #185（Maximum update depth exceeded）等
+      // ErrorBoundary 无法拦截的致命错误，把原始堆栈直接画在页面上，
+      // 用于在无法打开 F12 的内嵌预览环境中定位问题（配合 sourcemap 反解）
+      (function () {
+        var shown = 0;
+        function showOverlay(title, text) {
+          var old = document.getElementById('__global_err_overlay__');
+          if (old) old.remove();
+          var box = document.createElement('div');
+          box.id = '__global_err_overlay__';
+          box.style.cssText =
+            'position:fixed;inset:auto 0 0 0;max-height:60vh;overflow:auto;z-index:99999;' +
+            'background:#1e1e2e;color:#f38ba8;font:12px/1.5 monospace;padding:12px;' +
+            'border-top:2px solid #f38ba8;white-space:pre-wrap;word-break:break-all;';
+          box.textContent = '【' + title + '】\n' + text;
+          document.body.appendChild(box);
+          if (++shown > 1) return; // 只展示第一次，避免刷屏
+        }
+        window.addEventListener('error', function (e) {
+          var msg = (e.error && e.error.stack) || e.message || String(e.error || e);
+          if (/Minified React error|Maximum update depth/i.test(msg)) {
+            showOverlay('全局错误捕获（截图发此内容）', msg);
+          }
+        });
+      })();
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

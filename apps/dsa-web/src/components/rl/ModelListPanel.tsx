@@ -23,6 +23,10 @@ export const ModelListPanel: React.FC = () => {
   const fetchModels = useRLStore((s) => s.fetchModels);
   const setError = useRLStore((s) => s.setError);
   const [deleting, setDeleting] = React.useState<string | null>(null);
+  // 待确认删除的模型 id：非空时弹出应用内确认框。
+  // 用自绘弹窗替代 window.confirm，避免内嵌预览环境对原生对话框的处理缺陷
+  // （原生 confirm 会被跳过直接返回、并触发预览运行时崩溃）
+  const [pendingDelete, setPendingDelete] = React.useState<string | null>(null);
   // 全量评估开关：默认抽样 100 个交易日（约 3 分钟），勾选后全量（数万交易日，耗时极长）
   const [fullEval, setFullEval] = React.useState(false);
 
@@ -30,13 +34,19 @@ export const ModelListPanel: React.FC = () => {
     void fetchModels();
   }, [fetchModels]);
 
-  const handleDelete = async (modelId: string) => {
-    if (!window.confirm(`确认删除模型 ${modelId}？`)) return;
+  const handleDelete = (modelId: string) => {
+    setPendingDelete(modelId);
+  };
+
+  const confirmDelete = async () => {
+    const modelId = pendingDelete;
+    if (!modelId) return;
     setDeleting(modelId);
     try {
       await rlApi.deleteModel(modelId);
       if (selectedModelId === modelId) selectModel(null);
       await fetchModels();
+      setPendingDelete(null);
     } catch (err) {
       setError(`删除失败: ${(err as Error).message}`);
     } finally {
@@ -45,7 +55,8 @@ export const ModelListPanel: React.FC = () => {
   };
 
   return (
-    <Card title="模型列表" variant="bordered" padding="md">
+    <>
+      <Card title="模型列表" variant="bordered" padding="md">
       {/* 评估模式开关 */}
       {models.length > 0 && (
         <label
@@ -140,7 +151,49 @@ export const ModelListPanel: React.FC = () => {
           ))}
         </ul>
       )}
-    </Card>
+      </Card>
+
+      {/* 删除确认弹窗（应用内自绘，替代 window.confirm） */}
+      {pendingDelete && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+          onClick={() => {
+            if (deleting === null) setPendingDelete(null);
+          }}
+        >
+          <div
+            className="bg-slate-800 border border-slate-600 rounded-xl p-5 w-80 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-white font-semibold mb-2">确认删除模型</h3>
+            <p className="text-sm text-gray-400 mb-4 break-all">
+              确定要删除 <span className="text-red-400 font-mono">{pendingDelete}</span> 吗？
+              <span className="block mt-1 text-gray-500">
+                该操作会删除对应模型文件夹，且不可恢复。
+              </span>
+            </p>
+            <div className="flex justify-end gap-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={deleting !== null}
+                onClick={() => setPendingDelete(null)}
+              >
+                取消
+              </Button>
+              <Button
+                variant="danger"
+                size="sm"
+                isLoading={deleting !== null}
+                onClick={() => void confirmDelete()}
+              >
+                确认删除
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 };
 

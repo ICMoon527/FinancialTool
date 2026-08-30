@@ -226,6 +226,8 @@ const AppContent: React.FC = () => {
                     <Route path="/intraday" element={<IntradayPage/>}/>
                     <Route path="/backtest" element={<BacktestPage/>}/>
                     <Route path="/rl-training" element={<RLTrainingPage/>}/>
+                    {/* 路径别名：全新路径可绕开内嵌预览对旧路径的缓存（排查用） */}
+                    <Route path="/rl-training2" element={<RLTrainingPage/>}/>
                     <Route path="/settings" element={<SettingsPage/>}/>
                     <Route path="/login" element={<LoginPage/>}/>
                     <Route path="*" element={<NotFoundPage/>}/>
