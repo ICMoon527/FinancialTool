@@ -31,7 +31,7 @@ class RLConfig:
     # ── DQN 特有 ──
     epsilon_start: float = 1.0
     epsilon_end: float = 0.01
-    epsilon_decay: float = 0.995
+    epsilon_decay: float = 0.99   # 按 episode 衰减系数（每轮衰减一次，约460轮到终值）
     replay_buffer_size: int = 10000
     target_update_freq: int = 100
     dqn_double: bool = True

@@ -222,6 +222,10 @@ class RLTrainer:
             for cb in self.callbacks:
                 cb.on_episode_end(episode, episode_reward, self.metrics)
 
+            # 6.5 每个 episode 结束后衰减一次探索率（ε 按 episode 衰减，而非按K线步）
+            if isinstance(self.model, DQNModel):
+                self.model.decay_epsilon()
+
             # 7. 定期保存 latest checkpoint（断点续训用，固定目录覆盖写入）
             if self.save_freq > 0 and (episode + 1) % self.save_freq == 0:
                 self._save_checkpoint("latest", next_episode=episode + 1)

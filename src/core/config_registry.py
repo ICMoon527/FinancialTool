@@ -4667,7 +4667,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "RL_EPSILON_DECAY": {
         "title": "Epsilon 衰减率",
-        "description": "DQN ε-greedy 每步衰减系数。",
+        "description": "DQN ε-greedy 探索率衰减系数（按 episode 衰减，每轮衰减一次）。",
         "category": "rl",
         "group": "DQN 参数",
         "data_type": "number",
@@ -4675,7 +4675,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "is_sensitive": False,
         "is_required": False,
         "is_editable": True,
-        "default_value": "0.995",
+        "default_value": "0.99",
         "options": [],
         "validation": {"min": 0, "max": 1},
         "display_order": 150,

@@ -215,7 +215,7 @@ while not done:
 | 交易成本 | `RL_SLIPPAGE_RATE` | `0.001` | 滑点费率 |
 | DQN | `RL_EPSILON_START` | `1.0` | 探索率初始值 |
 | DQN | `RL_EPSILON_END` | `0.01` | 探索率终值 |
-| DQN | `RL_EPSILON_DECAY` | `0.995` | 探索率衰减 |
+| DQN | `RL_EPSILON_DECAY` | `0.99` | 探索率衰减（按 episode 衰减，每轮一次） |
 | DQN | `RL_REPLAY_BUFFER_SIZE` | `10000` | 经验回放容量 |
 | DQN | `RL_TARGET_UPDATE_FREQ` | `100` | 目标网络更新频率 |
 | DQN | `RL_DQN_DOUBLE` | `true` | Double DQN |

@@ -137,9 +137,6 @@ class DQNModel(AbstractRLModel):
         torch.nn.utils.clip_grad_norm_(self.q_network.parameters(), max_norm=1.0)
         self.optimizer.step()
 
-        # Epsilon 衰减
-        self.epsilon = max(self.config.epsilon_end, self.epsilon * self.config.epsilon_decay)
-
         # 目标网络更新
         self._train_step_count += 1
         if self._train_step_count % self.config.target_update_freq == 0:
@@ -149,6 +146,14 @@ class DQNModel(AbstractRLModel):
             "loss": float(loss.item()),
             "td_error": float((target_q - q_value).abs().mean().item()),
         }
+
+    def decay_epsilon(self) -> None:
+        """每个 episode 结束后衰减一次探索率（ε 按 episode 衰减，而非按K线步）
+
+        使探索率在单个 episode 内保持不变，随训练轮次逐步下降，
+        避免按步衰减导致探索过早结束。
+        """
+        self.epsilon = max(self.config.epsilon_end, self.epsilon * self.config.epsilon_decay)
 
     def save(self, path: str) -> None:
         """保存模型到指定路径（含经验回放缓冲区，支持断点续训）"""

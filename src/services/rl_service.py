@@ -209,8 +209,23 @@ class RLService:
         return True
 
     def get_models(self) -> List[Dict]:
-        """获取已训练的模型列表"""
-        return list(self._models.values())
+        """获取已训练的模型列表
+
+        每次调用都按 checkpoint 目录下 model.pt 的修改时间刷新 created_at，
+        保证 best/latest 在训练中被更新后，前端展示的时间与实际更新时间一致。
+        """
+        models = []
+        for m in self._models.values():
+            item = dict(m)
+            ckpt = item.get("checkpoint_dir")
+            if ckpt:
+                model_file = Path(ckpt) / "model.pt"
+                if model_file.exists():
+                    item["created_at"] = datetime.fromtimestamp(
+                        model_file.stat().st_mtime
+                    ).isoformat()
+            models.append(item)
+        return models
 
     def delete_model(self, model_id: str) -> bool:
         """删除模型（内存注册 + 磁盘 checkpoint 目录）"""
@@ -780,10 +795,12 @@ class RLService:
         return None
 
     def _register_model(self, task: Dict, config: "RLConfig", model, trainer) -> None:
-        """注册模型到内存列表（供评估/续训），记录 checkpoint 目录"""
-        model_id = (
-            f"{config.model_tag}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        )
+        """注册模型到内存列表（供评估/续训）
+
+        合并到固定目录 {model_tag}_latest，不再生成时间戳 ID 的模型条目
+        （模型目录只保留 best/latest，避免列表中出现"带时间戳的新模型"）
+        """
+        model_id = f"{config.model_tag}_latest"
         self._models[model_id] = {
             "model_id": model_id,
             "algorithm": config.default_algorithm,
@@ -792,7 +809,7 @@ class RLService:
             "config": config,
             "metrics": trainer.metrics.to_dict(),
             "created_at": datetime.now().isoformat(),
-            "checkpoint_dir": str(Path(config.model_dir) / f"{config.model_tag}_latest"),
+            "checkpoint_dir": str(Path(config.model_dir) / model_id),
         }
         task["model_id"] = model_id
 
