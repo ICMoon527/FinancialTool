@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import shutil
 import threading
@@ -59,6 +60,8 @@ class RLService:
                 continue
             parts = d.name.split("_")
             algorithm = parts[0] if parts and parts[0] in ("dqn", "ppo") else "dqn"
+            # 目录名含 _prior 段表示训练时开启了先验买卖点（state_dim=52）
+            use_signal_scores = len(parts) >= 2 and parts[1] == "prior"
 
             # 从目录名解析创建时间，解析失败则用目录修改时间
             created_at = datetime.fromtimestamp(d.stat().st_mtime).isoformat()
@@ -84,8 +87,13 @@ class RLService:
             self._models[d.name] = {
                 "model_id": d.name,
                 "algorithm": algorithm,
+                "use_signal_scores": use_signal_scores,
                 "model": None,  # 惰性加载：评估时才从磁盘读取权重
-                "config": self.config,
+                # 每个模型携带其专属配置：use_signal_scores 必须与训练时一致，
+                # 否则加载权重/构建评估环境时 state_dim 不匹配
+                "config": dataclasses.replace(
+                    self.config, use_signal_scores=use_signal_scores
+                ),
                 "metrics": metrics,
                 "created_at": created_at,
                 "checkpoint_dir": str(d),
@@ -254,10 +262,12 @@ class RLService:
         model = self._get_loaded_model(model_id)
         if model is None:
             return None
-
-        dataset = self._build_dataset()
+        model_info = self._models.get(model_id, {})
+        # 使用模型自身配置，保证 use_signal_scores 与训练时一致（state_dim 匹配）
+        model_cfg = model_info.get("config") or self.config
+        dataset = self._build_dataset(model_cfg)
         dataset.load()
-        evaluator = RLEvaluator(self.config, model, dataset)
+        evaluator = RLEvaluator(model_cfg, model, dataset)
         return evaluator.evaluate()
 
     def start_evaluate(
@@ -303,13 +313,194 @@ class RLService:
         thread.start()
         return task_id
 
+    def start_evaluate_compare(
+        self, model_ids: List[str], max_days: Optional[int] = 100
+    ) -> str:
+        """启动多模型对比评估任务：所有模型在同一批抽样数据（同基准）上评估
+
+        Args:
+            model_ids: 待对比的模型 ID 列表（>=1）
+            max_days: 抽样评估的最大交易日数；None 或 <=0 表示全量评估
+
+        Raises:
+            KeyError: 任一模型不存在
+        """
+        for mid in model_ids:
+            if mid not in self._models:
+                raise KeyError(f"模型不存在: {mid}")
+
+        task_id = str(uuid.uuid4())
+        task = {
+            "task_id": task_id,
+            "kind": "evaluate_compare",
+            "model_ids": model_ids,
+            "status": "pending",
+            "progress": 0.0,
+            "done": 0,      # 已完成样本数（= 样本数 × 已评估模型数 的累计）
+            "total": 0,     # 总样本数（= 样本数 × 模型数）
+            "message": "准备中...",
+            "created_at": datetime.now().isoformat(),
+            "result": None,
+            "thread": None,
+            "pause_event": threading.Event(),   # 置位 = 暂停（在逐日回调处阻塞）
+            "stop_event": threading.Event(),    # 置位 = 终止（逐日回调处抛异常中断）
+        }
+        with self._lock:
+            self._tasks[task_id] = task
+
+        thread = threading.Thread(
+            target=self._run_evaluate_compare,
+            args=(task_id, model_ids, max_days),
+            daemon=True,
+        )
+        task["thread"] = thread
+        thread.start()
+        return task_id
+
+    def _run_evaluate_compare(
+        self, task_id: str, model_ids: List[str], max_days: Optional[int] = 100
+    ) -> None:
+        """后台线程：加载数据集并抽样一次，逐个模型在同一批样本上评估"""
+        import random
+        import time
+
+        task = self._tasks[task_id]
+        try:
+            task["status"] = "running"
+            task["message"] = "加载数据集..."
+            t_start = time.time()
+
+            dataset = self._build_dataset()
+            dataset.load()
+            val_samples = list(getattr(dataset, "val_samples", []) or [])
+            # 抽样一次（固定种子），所有模型共用同一批数据（同基准）
+            if max_days and max_days > 0 and len(val_samples) > max_days:
+                val_samples = random.Random(42).sample(val_samples, max_days)
+                logger.info(
+                    f"[对比评估] 抽样 {max_days} 个交易日（seed=42），"
+                    f"{len(model_ids)} 个模型共用同一基准"
+                )
+            total = len(val_samples) * len(model_ids)
+            task["total"] = total
+            done = 0
+            models_result = []
+            benchmark_returns = None
+            samples_meta = [
+                {
+                    "stock_code": (
+                        s.stock_code if hasattr(s, "stock_code") else s.get("stock_code", "")
+                    ),
+                    "date": (
+                        s.date.isoformat() if hasattr(s, "date") else str(s.get("date", ""))
+                    ),
+                }
+                for s in val_samples
+            ]
+
+            for idx, model_id in enumerate(model_ids):
+                task["message"] = f"加载模型权重 ({idx + 1}/{len(model_ids)})..."
+                # 记录当前模型在全部模型中的序号（0-based），供前端按模型拆分进度
+                task["current_model_idx"] = idx
+                task["model_done"] = 0
+                task["model_total"] = len(val_samples)
+                model = self._get_loaded_model(model_id)
+                if model is None:
+                    raise ValueError(f"模型不存在: {model_id}")
+                model_info = self._models.get(model_id, {})
+                # 各模型使用自身配置（use_signal_scores 与训练时一致），保证 state_dim 匹配
+                model_cfg = model_info.get("config") or self.config
+                evaluator = RLEvaluator(model_cfg, model, dataset)
+
+                cum_t_pnl = 0.0   # 当前模型累计做T已实现盈亏（%）
+
+                def progress_cb(
+                    done_in_model, total_in_model, sample, day_summary, bench_return,
+                    mid=model_id, midx=idx,
+                ) -> None:
+                    nonlocal done, cum_t_pnl
+                    # ── 控制检查点：逐日边界处响应暂停/终止 ──
+                    if task["stop_event"].is_set():
+                        raise EvaluationInterrupted()
+                    if task["pause_event"].is_set():
+                        task["message"] = f"已暂停（完成 {done}/{total}），等待恢复..."
+                        task["pause_event"].wait()
+                        if task["stop_event"].is_set():
+                            raise EvaluationInterrupted()
+
+                    if hasattr(sample, "stock_code"):
+                        stock = sample.stock_code
+                        day = sample.date
+                    else:
+                        stock = sample.get("stock_code", "")
+                        day = sample.get("date", "")
+
+                    day_pnl = float(day_summary.get("realized_pnl", 0.0))
+                    cum_t_pnl += day_pnl
+                    done += 1
+                    task["done"] = done
+                    task["progress"] = round(done / total * 100, 1) if total else 0.0
+                    # 按模型拆分进度：当前模型的序号与已完成/总交易日数
+                    task["current_model_idx"] = midx
+                    task["model_done"] = done_in_model
+                    task["model_total"] = total_in_model
+                    task["message"] = (
+                        f"[模型 {midx + 1}/{len(model_ids)}] {mid} 回放 {stock} {day} | "
+                        f"当日做T {day_pnl:+.2f}% | 累计做T {cum_t_pnl:+.2f}% | "
+                        f"本模型 {done_in_model}/{total_in_model} | 总进度 {done}/{total}"
+                    )
+                    # 终端进度日志节流：每 100 个及最后输出一次，避免刷屏
+                    if done % 100 == 0 or done == total or (midx == 0 and done_in_model == 1):
+                        elapsed = time.time() - t_start
+                        logger.info(
+                            f"[对比评估] {task['message']} | "
+                            f"耗时 {elapsed / 3600:.2f}h 平均 {elapsed / max(done, 1):.1f}s/样本"
+                        )
+
+                result = evaluator.evaluate(progress_cb=progress_cb, samples=val_samples)
+                if benchmark_returns is None:
+                    benchmark_returns = result.get("benchmark_returns", [])
+                models_result.append(
+                    {
+                        "model_id": model_id,
+                        "cumulative_returns": result.get("cumulative_returns", []),
+                        "summary_metrics": result.get("summary_metrics", {}),
+                    }
+                )
+                summary = result.get("summary_metrics", {})
+                logger.info(
+                    f"[对比评估] 模型 {model_id} 完成 | "
+                    f"总收益 {summary.get('total_return', 0) * 100:.2f}% "
+                    f"夏普 {summary.get('sharpe_ratio', 0):.2f} "
+                    f"胜率 {summary.get('win_rate', 0) * 100:.1f}% "
+                    f"| 耗时 {(time.time() - t_start) / 3600:.2f}h"
+                )
+
+            task["result"] = {
+                "samples": samples_meta,
+                "benchmark_returns": benchmark_returns or [],
+                "models": models_result,
+            }
+            task["status"] = "completed"
+            task["message"] = "对比评估完成"
+            task["progress"] = 100.0
+
+        except EvaluationInterrupted:
+            logger.info(f"[对比评估] 任务被用户终止")
+            task["status"] = "stopped"
+            task["message"] = f"对比评估已终止（完成 {task['done']}/{task['total']}）"
+
+        except Exception as e:
+            logger.exception(f"对比评估失败: {e}")
+            task["status"] = "failed"
+            task["message"] = str(e)
+
     def get_evaluate_progress(self, task_id: str) -> Optional[Dict]:
         """获取评估任务进度（供前端轮询）
 
         任务完成时附带完整评估结果 result，失败时 message 为错误信息
         """
         task = self._tasks.get(task_id)
-        if not task or task.get("kind") != "evaluate":
+        if not task or task.get("kind") not in ("evaluate", "evaluate_compare"):
             return None
         progress: Dict = {
             "task_id": task_id,
@@ -320,6 +511,10 @@ class RLService:
             "message": task["message"],
             "paused": task["pause_event"].is_set(),
             "result": None,
+            # 对比评估：按模型拆分的进度（单模型评估为 None）
+            "current_model_idx": task.get("current_model_idx"),
+            "model_done": task.get("model_done"),
+            "model_total": task.get("model_total"),
         }
         # 仅在终态附带结果，避免轮询期间重复传输大 payload
         if task["status"] in ("completed", "failed", "stopped"):
@@ -329,7 +524,7 @@ class RLService:
     def pause_evaluate(self, task_id: str) -> bool:
         """暂停评估任务（当前交易日回放完成后生效）"""
         task = self._tasks.get(task_id)
-        if not task or task.get("kind") != "evaluate" or task["status"] != "running":
+        if not task or task.get("kind") not in ("evaluate", "evaluate_compare") or task["status"] != "running":
             return False
         task["pause_event"].set()
         return True
@@ -337,7 +532,7 @@ class RLService:
     def resume_evaluate(self, task_id: str) -> bool:
         """恢复已暂停的评估任务"""
         task = self._tasks.get(task_id)
-        if not task or task.get("kind") != "evaluate":
+        if not task or task.get("kind") not in ("evaluate", "evaluate_compare"):
             return False
         if not task["pause_event"].is_set():
             return False
@@ -347,7 +542,7 @@ class RLService:
     def stop_evaluate(self, task_id: str) -> bool:
         """终止评估任务（在下一个交易日回放前中断）"""
         task = self._tasks.get(task_id)
-        if not task or task.get("kind") != "evaluate":
+        if not task or task.get("kind") not in ("evaluate", "evaluate_compare"):
             return False
         if task["status"] not in ("running", "pending"):
             return False
@@ -371,12 +566,15 @@ class RLService:
             model = self._get_loaded_model(model_id)
             if model is None:
                 raise ValueError(f"模型不存在: {model_id}")
+            model_info = self._models.get(model_id, {})
+            # 使用模型自身配置（use_signal_scores 与训练时一致），保证 state_dim 匹配
+            model_cfg = model_info.get("config") or self.config
             logger.info(
                 f"[评估] 模型权重加载完成，耗时 {time.time() - t_start:.1f}s"
             )
 
             task["message"] = "加载数据集..."
-            dataset = self._build_dataset()
+            dataset = self._build_dataset(model_cfg)
             dataset.load()
             val_samples = list(getattr(dataset, "val_samples", []) or [])
             logger.info(
@@ -392,7 +590,7 @@ class RLService:
                     f"（seed=42 保证可复现）"
                 )
 
-            evaluator = RLEvaluator(self.config, model, dataset)
+            evaluator = RLEvaluator(model_cfg, model, dataset)
 
             cum_t_pnl = 0.0       # 累计做T已实现盈亏（%，简单加总）
             cum_bench = 0.0       # 累计基准收益（%，简单加总）
@@ -573,9 +771,8 @@ class RLService:
         candidate = models_root / resume_from
         if candidate.is_dir() and (candidate / "model.pt").exists():
             return candidate
-        # 3) 特殊值 "latest" → dqn_latest / ppo_latest
-        algo = self.config.default_algorithm
-        candidate = models_root / f"{algo}_latest"
+        # 3) 特殊值 "latest" → dqn_latest / ppo_latest（带先验时为 dqn_prior_latest）
+        candidate = models_root / f"{self.config.model_tag}_latest"
         if candidate.is_dir() and (candidate / "model.pt").exists():
             return candidate
         return None
@@ -583,16 +780,17 @@ class RLService:
     def _register_model(self, task: Dict, config: "RLConfig", model, trainer) -> None:
         """注册模型到内存列表（供评估/续训），记录 checkpoint 目录"""
         model_id = (
-            f"{config.default_algorithm}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            f"{config.model_tag}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         )
         self._models[model_id] = {
             "model_id": model_id,
             "algorithm": config.default_algorithm,
+            "use_signal_scores": config.use_signal_scores,
             "model": model,
             "config": config,
             "metrics": trainer.metrics.to_dict(),
             "created_at": datetime.now().isoformat(),
-            "checkpoint_dir": str(Path(config.model_dir) / f"{config.default_algorithm}_latest"),
+            "checkpoint_dir": str(Path(config.model_dir) / f"{config.model_tag}_latest"),
         }
         task["model_id"] = model_id
 

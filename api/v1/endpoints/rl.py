@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from api.deps import get_database_manager
 from api.v1.schemas.rl import (
     DailyReplayResponse,
+    EvaluateCompareRequest,
     EvaluateProgressResponse,
     EvaluateRequest,
     EvaluateResultResponse,
@@ -74,6 +75,8 @@ async def start_training(
         params["batch_size"] = request.batch_size
     if request.learning_rate is not None:
         params["learning_rate"] = request.learning_rate
+    if request.use_signal_scores is not None:
+        params["use_signal_scores"] = request.use_signal_scores
 
     task_id = service.start_training(params)
     return TrainResponse(task_id=task_id, status="pending", message="训练任务已创建")
@@ -144,6 +147,21 @@ async def evaluate_model(
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e))
     return EvaluateTaskResponse(task_id=task_id, status="pending", message="评估任务已创建")
+
+
+@router.post("/evaluate-compare", response_model=EvaluateTaskResponse)
+async def evaluate_compare(
+    request: EvaluateCompareRequest, service: RLService = Depends(get_rl_service)
+):
+    """启动多模型对比评估任务：所有模型在同一批抽样数据（同基准）上评估
+
+    进度与暂停/终止接口复用 /evaluate/{task_id}/progress 及 pause/resume/stop
+    """
+    try:
+        task_id = service.start_evaluate_compare(request.model_ids, request.max_days)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return EvaluateTaskResponse(task_id=task_id, status="pending", message="对比评估任务已创建")
 
 
 @router.get("/evaluate/{task_id}/progress", response_model=EvaluateProgressResponse)

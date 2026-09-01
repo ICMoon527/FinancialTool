@@ -393,19 +393,20 @@ class RLTrainer:
         """保存模型 checkpoint
 
         Args:
-            tag: 标签（"best"/"final" 为时间戳目录；"latest" 为固定目录覆盖写入，
-                 用于断点续训）
+            tag: 标签（"final" 为时间戳目录；"latest"/"best" 为固定目录覆盖写入，
+                 "latest" 用于断点续训，"best" 始终只保留最新最佳模型）
             next_episode: 下一个待训练的 episode 序号（断点续训用）
 
         Returns:
             model_path: 模型存储路径
         """
-        if tag == "latest":
-            # 固定目录，覆盖写入，始终保留最近可恢复状态
-            model_path = self._model_dir / f"{self.config.default_algorithm}_latest"
+        if tag in ("latest", "best"):
+            # 固定目录，覆盖写入：latest 始终保留最近可恢复状态，
+            # best 始终只保留最近一次验证 Sharpe 创新高的模型
+            model_path = self._model_dir / f"{self.config.model_tag}_{tag}"
         else:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            model_path = self._model_dir / f"{self.config.default_algorithm}_{tag}_{timestamp}"
+            model_path = self._model_dir / f"{self.config.model_tag}_{tag}_{timestamp}"
         model_path.mkdir(parents=True, exist_ok=True)
 
         # 保存模型

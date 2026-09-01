@@ -5,6 +5,7 @@ import type {
   RLTaskStatus,
   ModelInfo,
   EvaluateResultResponse,
+  EvaluateCompareResultResponse,
 } from '../types/rl';
 
 /**
@@ -48,6 +49,21 @@ interface RLState {
   evalMessage: string;
   evalPaused: boolean;
 
+  // 多模型对比评估（同一批数据/同基准）
+  compareEvaluating: boolean;
+  compareResult: EvaluateCompareResultResponse | null;
+  compareTaskId: string | null;
+  compareDone: number;
+  compareTotal: number;
+  compareProgress: number;
+  compareMessage: string;
+  comparePaused: boolean;
+  // 对比评估：参与对比的模型 ID 列表（用于按模型拆分进度显示）
+  compareModelIds: string[];
+  compareCurrentModelIdx: number | null;
+  compareModelDone: number;
+  compareModelTotal: number;
+
   // 错误/提示
   error: RLError | null;
   notice: string | null;
@@ -57,6 +73,8 @@ interface RLState {
   _failCount: number;
   _evalPollTimer: ReturnType<typeof setInterval> | null;
   _evalFailCount: number;
+  _comparePollTimer: ReturnType<typeof setInterval> | null;
+  _compareFailCount: number;
 
   // actions
   startTraining: (params: {
@@ -65,6 +83,7 @@ interface RLState {
     batchSize?: number;
     learningRate?: number;
     resumeFrom?: string;
+    useSignalScores?: boolean;
   }) => Promise<void>;
   pauseTraining: () => Promise<void>;
   resumeTraining: () => Promise<void>;
@@ -79,6 +98,12 @@ interface RLState {
   stopEvaluate: () => Promise<void>;
   startEvalPolling: (taskId: string) => void;
   stopEvalPolling: () => void;
+  compareEvaluate: (modelIds: string[], maxDays?: number) => Promise<void>;
+  pauseCompare: () => Promise<void>;
+  resumeCompare: () => Promise<void>;
+  stopCompare: () => Promise<void>;
+  startComparePolling: (taskId: string) => void;
+  stopComparePolling: () => void;
   selectModel: (modelId: string | null) => void;
   setError: (message: string | null) => void;
   setNotice: (message: string | null) => void;
@@ -104,12 +129,26 @@ export const useRLStore = create<RLState>((set, get) => ({
   evalProgress: 0,
   evalMessage: '',
   evalPaused: false,
+  compareEvaluating: false,
+  compareResult: null,
+  compareTaskId: null,
+  compareDone: 0,
+  compareTotal: 0,
+  compareProgress: 0,
+  compareMessage: '',
+  comparePaused: false,
+  compareModelIds: [],
+  compareCurrentModelIdx: null,
+  compareModelDone: 0,
+  compareModelTotal: 0,
   error: null,
   notice: null,
   _pollTimer: null,
   _failCount: 0,
   _evalPollTimer: null,
   _evalFailCount: 0,
+  _comparePollTimer: null,
+  _compareFailCount: 0,
 
   startTraining: async (params) => {
     try {
@@ -167,6 +206,7 @@ export const useRLStore = create<RLState>((set, get) => ({
   reset: () => {
     get().stopPolling();
     get().stopEvalPolling();
+    get().stopComparePolling();
     set({
       taskId: null,
       taskStatus: null,
@@ -183,6 +223,18 @@ export const useRLStore = create<RLState>((set, get) => ({
       evalProgress: 0,
       evalMessage: '',
       evaluating: false,
+      compareEvaluating: false,
+      compareResult: null,
+      compareTaskId: null,
+      compareDone: 0,
+      compareTotal: 0,
+      compareProgress: 0,
+      compareMessage: '',
+      comparePaused: false,
+      compareModelIds: [],
+      compareCurrentModelIdx: null,
+      compareModelDone: 0,
+      compareModelTotal: 0,
       error: null,
       notice: null,
     });
@@ -338,7 +390,8 @@ export const useRLStore = create<RLState>((set, get) => ({
           st.stopEvalPolling();
           if (progress.status === 'completed' && progress.result) {
             set({
-              evaluateResult: progress.result,
+              // 单模型评估端点返回 EvaluateResultResponse
+              evaluateResult: progress.result as EvaluateResultResponse,
               evaluating: false,
               evalProgress: 100,
               evalMessage: '评估完成',
@@ -389,6 +442,152 @@ export const useRLStore = create<RLState>((set, get) => ({
     if (timer) {
       clearInterval(timer);
       set({ _evalPollTimer: null });
+    }
+  },
+
+  compareEvaluate: async (modelIds, maxDays) => {
+    if (!modelIds.length) return;
+    set({
+      compareEvaluating: true,
+      compareResult: null,
+      compareTaskId: null,
+      compareDone: 0,
+      compareTotal: 0,
+      compareProgress: 0,
+      compareMessage: '提交对比评估任务...',
+      comparePaused: false,
+      compareModelIds: modelIds,
+      compareCurrentModelIdx: null,
+      compareModelDone: 0,
+      compareModelTotal: 0,
+    });
+    try {
+      const resp = await rlApi.startEvaluateCompare({ modelIds, maxDays });
+      set({ compareTaskId: resp.taskId });
+      get().startComparePolling(resp.taskId);
+    } catch (err) {
+      set({
+        compareEvaluating: false,
+        compareMessage: '',
+        error: { message: `启动对比评估失败: ${(err as Error).message}`, at: Date.now() },
+      });
+    }
+  },
+
+  pauseCompare: async () => {
+    const taskId = get().compareTaskId;
+    if (!taskId) return;
+    try {
+      await rlApi.pauseEvaluate(taskId);
+      set({ comparePaused: true });
+    } catch (err) {
+      set({ error: { message: `暂停对比评估失败: ${(err as Error).message}`, at: Date.now() } });
+    }
+  },
+
+  resumeCompare: async () => {
+    const taskId = get().compareTaskId;
+    if (!taskId) return;
+    try {
+      await rlApi.resumeEvaluate(taskId);
+      set({ comparePaused: false });
+    } catch (err) {
+      set({ error: { message: `恢复对比评估失败: ${(err as Error).message}`, at: Date.now() } });
+    }
+  },
+
+  stopCompare: async () => {
+    const taskId = get().compareTaskId;
+    if (!taskId) return;
+    try {
+      await rlApi.stopEvaluate(taskId);
+      set({ compareMessage: '终止指令已发送，等待当前交易日回放结束...' });
+    } catch (err) {
+      set({ error: { message: `终止对比评估失败: ${(err as Error).message}`, at: Date.now() } });
+    }
+  },
+
+  startComparePolling: (taskId) => {
+    get().stopComparePolling();
+    const timer = setInterval(async () => {
+      try {
+        const progress = await rlApi.getEvaluateProgress(taskId);
+        set({
+          compareTaskId: taskId,
+          compareDone: progress.done,
+          compareTotal: progress.total,
+          compareProgress: progress.progress,
+          compareMessage: progress.message,
+          comparePaused: progress.paused,
+          // 按模型拆分的进度
+          compareCurrentModelIdx: progress.currentModelIdx ?? null,
+          compareModelDone: progress.modelDone ?? 0,
+          compareModelTotal: progress.modelTotal ?? 0,
+          _compareFailCount: 0,
+        });
+
+        // 终态：停止轮询并处理结果
+        if (
+          progress.status === 'completed' ||
+          progress.status === 'failed' ||
+          progress.status === 'stopped'
+        ) {
+          const st = get();
+          st.stopComparePolling();
+          if (progress.status === 'completed' && progress.result) {
+            set({
+              // 对比评估端点返回 EvaluateCompareResultResponse
+              compareResult: progress.result as EvaluateCompareResultResponse,
+              compareEvaluating: false,
+              compareProgress: 100,
+              compareMessage: '对比评估完成',
+              comparePaused: false,
+              notice: '对比评估完成',
+            });
+          } else if (progress.status === 'stopped') {
+            set({
+              compareEvaluating: false,
+              comparePaused: false,
+              compareMessage: `对比评估已终止（完成 ${progress.done}/${progress.total}）`,
+              notice: '对比评估已终止',
+            });
+          } else {
+            set({
+              compareEvaluating: false,
+              compareMessage: '',
+              comparePaused: false,
+              error: {
+                message: `对比评估失败: ${progress.message || '未知错误'}`,
+                at: Date.now(),
+              },
+            });
+          }
+        }
+      } catch {
+        // 轮询失败重试计数，连续 3 次失败停止轮询
+        const fail = get()._compareFailCount + 1;
+        set({ _compareFailCount: fail });
+        if (fail >= 3) {
+          get().stopComparePolling();
+          set({
+            compareEvaluating: false,
+            compareMessage: '',
+            error: {
+              message: '对比评估进度轮询连续失败，已停止（任务可能已结束）',
+              at: Date.now(),
+            },
+          });
+        }
+      }
+    }, 1500);
+    set({ _comparePollTimer: timer });
+  },
+
+  stopComparePolling: () => {
+    const timer = get()._comparePollTimer;
+    if (timer) {
+      clearInterval(timer);
+      set({ _comparePollTimer: null });
     }
   },
 

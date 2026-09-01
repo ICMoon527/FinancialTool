@@ -5,19 +5,21 @@ import TrainingControlBar from '../components/rl/TrainingControlBar';
 import TrainingCharts from '../components/rl/TrainingCharts';
 import ModelListPanel from '../components/rl/ModelListPanel';
 import EvaluationPanel from '../components/rl/EvaluationPanel';
+import CompareResultPanel from '../components/rl/CompareResultPanel';
 import DailyReplayPanel from '../components/rl/DailyReplayPanel';
 
 /**
  * RL 训练页面
- * 布局：左侧（参数配置 + 模型列表）| 右侧（控制栏 + 监控图表 / 评估 / 回放 Tab）
+ * 布局：左侧（参数配置 + 模型列表）| 右侧（控制栏 + 监控图表 / 评估 / 模型对比 / 回放 Tab）
  * 响应式：<1024px 单列堆叠
  */
 
-type ResultTab = 'monitor' | 'evaluation' | 'replay';
+type ResultTab = 'monitor' | 'evaluation' | 'compare' | 'replay';
 
 const TABS: Array<{ key: ResultTab; label: string }> = [
   { key: 'monitor', label: '训练监控' },
   { key: 'evaluation', label: '评估结果' },
+  { key: 'compare', label: '模型对比' },
   { key: 'replay', label: '单日回放' },
 ];
 
@@ -27,6 +29,7 @@ const RLTrainingPage: React.FC = () => {
   const notice = useRLStore((s) => s.notice);
   const metrics = useRLStore((s) => s.metrics);
   const evaluating = useRLStore((s) => s.evaluating);
+  const compareEvaluating = useRLStore((s) => s.compareEvaluating);
   const setError = useRLStore((s) => s.setError);
   const setNotice = useRLStore((s) => s.setNotice);
 
@@ -38,6 +41,13 @@ const RLTrainingPage: React.FC = () => {
       setActiveTab('evaluation');
     }
   }, [evaluating]);
+
+  // 对比评估启动时自动切换到「模型对比」Tab，让用户看到进度条
+  React.useEffect(() => {
+    if (compareEvaluating) {
+      setActiveTab('compare');
+    }
+  }, [compareEvaluating]);
 
   // 错误/通知 5 秒自动消失
   React.useEffect(() => {
@@ -118,6 +128,7 @@ const RLTrainingPage: React.FC = () => {
           {/* Tab 内容 */}
           {activeTab === 'monitor' && <TrainingCharts metrics={metrics} running={running} />}
           {activeTab === 'evaluation' && <EvaluationPanel />}
+          {activeTab === 'compare' && <CompareResultPanel />}
           {activeTab === 'replay' && <DailyReplayPanel />}
         </div>
       </div>

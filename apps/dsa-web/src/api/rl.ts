@@ -7,6 +7,7 @@ import type {
   TrainingProgressResponse,
   ModelListResponse,
   EvaluateRequest,
+  EvaluateCompareRequest,
   EvaluateTaskResponse,
   EvaluateProgressResponse,
   DailyReplayResponse,
@@ -25,6 +26,7 @@ export const rlApi = {
     if (request.batchSize != null) payload.batch_size = request.batchSize;
     if (request.learningRate != null) payload.learning_rate = request.learningRate;
     if (request.resumeFrom) payload.resume_from = request.resumeFrom;
+    if (request.useSignalScores != null) payload.use_signal_scores = request.useSignalScores;
     const response = await apiClient.post('/api/v1/rl/train', payload);
     return toCamelCase(response.data);
   },
@@ -71,6 +73,14 @@ export const rlApi = {
     if (request.stockCodes) payload.stock_codes = request.stockCodes;
     if (request.maxDays != null) payload.max_days = request.maxDays;
     const response = await apiClient.post('/api/v1/rl/evaluate', payload);
+    return toCamelCase(response.data);
+  },
+
+  /** 启动多模型对比评估任务（所有模型在同一批抽样数据/同基准上评估） */
+  startEvaluateCompare: async (request: EvaluateCompareRequest): Promise<EvaluateTaskResponse> => {
+    const payload: Record<string, unknown> = { model_ids: request.modelIds };
+    if (request.maxDays != null) payload.max_days = request.maxDays;
+    const response = await apiClient.post('/api/v1/rl/evaluate-compare', payload);
     return toCamelCase(response.data);
   },
 

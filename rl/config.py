@@ -58,6 +58,14 @@ class RLConfig:
     # 注意：开启后 state_dim=52，与已有 50 维模型权重不兼容；仅用于新训练的对照实验
     use_signal_scores: bool = False
 
+    @property
+    def model_tag(self) -> str:
+        """模型目录/ID 使用的算法前缀；开启先验买卖点时加 _prior 标识，
+        用于在文件夹名上区分 52 维（带先验）与 50 维（不带）模型"""
+        if self.use_signal_scores:
+            return f"{self.default_algorithm}_prior"
+        return self.default_algorithm
+
     @classmethod
     def from_env(cls) -> "RLConfig":
         """从 .env 和 config_registry 加载配置"""

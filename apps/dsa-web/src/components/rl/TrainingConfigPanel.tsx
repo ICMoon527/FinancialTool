@@ -24,6 +24,7 @@ export const TrainingConfigPanel: React.FC<Props> = ({ disabled }) => {
   const [batchSize, setBatchSize] = React.useState(128);
   const [learningRate, setLearningRate] = React.useState(0.001);
   const [resumeEnabled, setResumeEnabled] = React.useState(false);
+  const [useSignalScores, setUseSignalScores] = React.useState(false);
   const [starting, setStarting] = React.useState(false);
 
   const handleStart = async () => {
@@ -35,6 +36,7 @@ export const TrainingConfigPanel: React.FC<Props> = ({ disabled }) => {
         batchSize,
         learningRate,
         resumeFrom: resumeEnabled ? 'latest' : undefined,
+        useSignalScores,
       });
     } finally {
       setStarting(false);
@@ -123,6 +125,23 @@ export const TrainingConfigPanel: React.FC<Props> = ({ disabled }) => {
           <span className="text-xs text-gray-300">
             从断点续训
             <span className="block text-gray-500 text-[11px]">恢复 dqn_latest 中的权重/优化器/经验池</span>
+          </span>
+        </label>
+
+        {/* 启用先验买卖点 */}
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            className="rounded border-slate-600 bg-slate-800 text-cyan-500 focus:ring-cyan-500/50"
+            checked={useSignalScores}
+            disabled={disabled}
+            onChange={(e) => setUseSignalScores(e.target.checked)}
+          />
+          <span className="text-xs text-gray-300">
+            启用规则先验买卖点
+            <span className="block text-gray-500 text-[11px]">
+              将规则买卖点评分接入状态特征（state_dim 50→52），需重新训练，不可续训旧维度模型
+            </span>
           </span>
         </label>
 

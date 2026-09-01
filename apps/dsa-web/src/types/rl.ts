@@ -10,6 +10,7 @@ export interface TrainRequest {
   batchSize?: number;
   learningRate?: number;
   resumeFrom?: string;
+  useSignalScores?: boolean;
 }
 
 export interface TrainResponse {
@@ -93,8 +94,14 @@ export interface EvaluateProgressResponse {
   message: string;
   /** 是否已暂停 */
   paused: boolean;
+  /** 对比评估：当前正在评估的模型序号（0-based）；单模型评估为 null */
+  currentModelIdx?: number | null;
+  /** 对比评估：当前模型已完成的交易日数 */
+  modelDone?: number | null;
+  /** 对比评估：每个模型的交易日总数（= 抽样天数） */
+  modelTotal?: number | null;
   /** 评估结果（仅终态返回） */
-  result: EvaluateResultResponse | null;
+  result: EvaluateResultResponse | EvaluateCompareResultResponse | null;
 }
 
 export interface DailySummary {
@@ -119,6 +126,30 @@ export interface EvaluateResultResponse {
   benchmarkReturns: number[];
   dailySummaries: DailySummary[];
   summaryMetrics: SummaryMetrics;
+}
+
+// ============ 多模型对比评估 ============
+
+export interface EvaluateCompareRequest {
+  modelIds: string[];
+  /** 抽样评估的最大交易日数；0 表示全量评估，不传默认抽样 100 */
+  maxDays?: number;
+}
+
+/** 对比评估中单个模型的结果（所有模型共用同一批样本/基准） */
+export interface CompareModelResult {
+  modelId: string;
+  cumulativeReturns: number[];
+  summaryMetrics: SummaryMetrics;
+}
+
+/** 多模型对比评估结果 */
+export interface EvaluateCompareResultResponse {
+  /** 实际评估的样本列表 */
+  samples: { stockCode: string; date: string }[];
+  /** 同一批样本的买入持有基准（所有模型共用） */
+  benchmarkReturns: number[];
+  models: CompareModelResult[];
 }
 
 // ============ 单日回放 ============

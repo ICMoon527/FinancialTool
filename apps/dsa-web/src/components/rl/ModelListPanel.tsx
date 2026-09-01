@@ -22,6 +22,16 @@ export const ModelListPanel: React.FC = () => {
   const selectModel = useRLStore((s) => s.selectModel);
   const fetchModels = useRLStore((s) => s.fetchModels);
   const setError = useRLStore((s) => s.setError);
+  // 多模型对比评估（同一批数据/同基准）
+  const compareEvaluate = useRLStore((s) => s.compareEvaluate);
+  const compareEvaluating = useRLStore((s) => s.compareEvaluating);
+  const compareDone = useRLStore((s) => s.compareDone);
+  const compareTotal = useRLStore((s) => s.compareTotal);
+  const compareProgress = useRLStore((s) => s.compareProgress);
+  const compareMessage = useRLStore((s) => s.compareMessage);
+  const compareCurrentModelIdx = useRLStore((s) => s.compareCurrentModelIdx);
+  const compareModelDone = useRLStore((s) => s.compareModelDone);
+  const compareModelTotal = useRLStore((s) => s.compareModelTotal);
   const [deleting, setDeleting] = React.useState<string | null>(null);
   // 待确认删除的模型 id：非空时弹出应用内确认框。
   // 用自绘弹窗替代 window.confirm，避免内嵌预览环境对原生对话框的处理缺陷
@@ -29,6 +39,8 @@ export const ModelListPanel: React.FC = () => {
   const [pendingDelete, setPendingDelete] = React.useState<string | null>(null);
   // 全量评估开关：默认抽样 100 个交易日（约 3 分钟），勾选后全量（数万交易日，耗时极长）
   const [fullEval, setFullEval] = React.useState(false);
+  // 勾选用于多模型对比评估的模型 ID 集合
+  const [selectedForCompare, setSelectedForCompare] = React.useState<string[]>([]);
 
   React.useEffect(() => {
     void fetchModels();
@@ -92,14 +104,31 @@ export const ModelListPanel: React.FC = () => {
               }`}
             >
               <div className="flex items-center justify-between gap-2">
-                <button
-                  type="button"
-                  className="font-mono text-gray-200 truncate hover:text-cyan-300 text-left"
-                  title={m.modelId}
-                  onClick={() => selectModel(selectedModelId === m.modelId ? null : m.modelId)}
-                >
-                  {m.modelId}
-                </button>
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <input
+                    type="checkbox"
+                    checked={selectedForCompare.includes(m.modelId)}
+                    onChange={(e) => {
+                      e.stopPropagation();
+                      setSelectedForCompare((prev) =>
+                        e.target.checked
+                          ? [...prev, m.modelId]
+                          : prev.filter((id) => id !== m.modelId)
+                      );
+                    }}
+                    disabled={evaluating || compareEvaluating || busy}
+                    title="勾选用于多模型对比评估（同一批数据/同基准）"
+                    className="rounded w-3.5 h-3.5 shrink-0 accent-cyan-500"
+                  />
+                  <button
+                    type="button"
+                    className="font-mono text-gray-200 truncate hover:text-cyan-300 text-left"
+                    title={m.modelId}
+                    onClick={() => selectModel(selectedModelId === m.modelId ? null : m.modelId)}
+                  >
+                    {m.modelId}
+                  </button>
+                </div>
                 <span className="shrink-0 px-1.5 py-0.5 rounded bg-slate-700 text-[10px] uppercase text-gray-300">
                   {m.algorithm}
                 </span>
@@ -150,6 +179,49 @@ export const ModelListPanel: React.FC = () => {
             </li>
           ))}
         </ul>
+      )}
+
+      {/* 多模型对比评估工具栏（同一批数据/同基准） */}
+      {models.length > 0 && (
+        <div className="mt-3 pt-3 border-t border-white/10">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] text-gray-400">
+              已选 <span className="text-cyan-400 font-mono">{selectedForCompare.length}</span> 个模型
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={
+                selectedForCompare.length === 0 || busy || evaluating || compareEvaluating
+              }
+              isLoading={compareEvaluating}
+              onClick={() => void compareEvaluate(selectedForCompare, fullEval ? 0 : 100)}
+              className="!px-2.5 !py-1 text-[11px]"
+            >
+              对比评估（同基准）
+            </Button>
+          </div>
+          {compareEvaluating && (
+            <div className="mt-2">
+              <div className="h-1 rounded-full bg-slate-700/60 overflow-hidden">
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-purple-500 to-pink-500 transition-all duration-500"
+                  style={{ width: `${Math.min(Math.max(compareProgress, 0), 100)}%` }}
+                />
+              </div>
+              <p
+                className="font-mono text-[10px] text-gray-400 mt-1 truncate"
+                title={compareMessage}
+              >
+                {compareDone}/{compareTotal} · {compareProgress.toFixed(1)}% ·{' '}
+                {compareCurrentModelIdx != null
+                  ? `模型${compareCurrentModelIdx + 1} ${compareModelDone}/${compareModelTotal} · `
+                  : ''}
+                {compareMessage || '准备中...'}
+              </p>
+            </div>
+          )}
+        </div>
       )}
       </Card>
 
