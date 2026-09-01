@@ -180,14 +180,21 @@ export const CompareResultPanel: React.FC = () => {
   );
   const xData = Array.from({ length: n }, (_, i) => i + 1);
 
+  // 颜色按原始模型顺序分配并固定，表格（按收益排序后）与曲线图查同一份映射，
+  // 保证同一模型在两处的颜色一致，避免用户误解
+  const colorByModelId = new Map<string, string>();
+  models.forEach((m, idx) => {
+    colorByModelId.set(m.modelId, MODEL_COLORS[idx % MODEL_COLORS.length]);
+  });
+
   // 模型曲线 series（每个模型一条线，标注模型 ID）
-  const modelSeries = models.map((m, idx) => ({
+  const modelSeries = models.map((m) => ({
     name: m.modelId,
     type: 'line' as const,
     data: m.cumulativeReturns,
     symbol: 'none',
     lineStyle: { width: 2 },
-    color: MODEL_COLORS[idx % MODEL_COLORS.length],
+    color: colorByModelId.get(m.modelId),
   }));
 
   const benchmarkSeries = {
@@ -239,7 +246,7 @@ export const CompareResultPanel: React.FC = () => {
               </tr>
             </thead>
             <tbody>
-              {sorted.map((m: CompareModelResult, idx) => {
+              {sorted.map((m: CompareModelResult) => {
                 const s = m.summaryMetrics;
                 return (
                   <tr key={m.modelId} className="border-b border-white/5 hover:bg-slate-800/40">
@@ -247,7 +254,7 @@ export const CompareResultPanel: React.FC = () => {
                       <div className="flex items-center gap-1.5 min-w-0">
                         <span
                           className="inline-block w-2 h-2 rounded-full shrink-0"
-                          style={{ background: MODEL_COLORS[idx % MODEL_COLORS.length] }}
+                          style={{ background: colorByModelId.get(m.modelId) }}
                         />
                         <span className="font-mono text-gray-200 truncate" title={m.modelId}>
                           {m.modelId}

@@ -18,12 +18,14 @@ interface Props {
 export const TrainingConfigPanel: React.FC<Props> = ({ disabled }) => {
   const startTraining = useRLStore((s) => s.startTraining);
   const totalEpisodes = useRLStore((s) => s.totalEpisodes);
+  const models = useRLStore((s) => s.models);
 
   const [algorithm, setAlgorithm] = React.useState<'dqn' | 'ppo'>('dqn');
   const [episodes, setEpisodes] = React.useState(500);
   const [batchSize, setBatchSize] = React.useState(128);
   const [learningRate, setLearningRate] = React.useState(0.001);
   const [resumeEnabled, setResumeEnabled] = React.useState(false);
+  const [resumeFromModel, setResumeFromModel] = React.useState('latest');
   const [useSignalScores, setUseSignalScores] = React.useState(false);
   const [starting, setStarting] = React.useState(false);
 
@@ -35,13 +37,23 @@ export const TrainingConfigPanel: React.FC<Props> = ({ disabled }) => {
         episodes,
         batchSize,
         learningRate,
-        resumeFrom: resumeEnabled ? 'latest' : undefined,
+        resumeFrom: resumeEnabled ? resumeFromModel : undefined,
         useSignalScores,
       });
     } finally {
       setStarting(false);
     }
   };
+
+  // 依据所选续训模型的先验标记自动同步 use_signal_scores，避免状态维度不匹配
+  const handleResumeModelChange = (id: string) => {
+    setResumeFromModel(id);
+    if (id !== 'latest') {
+      setUseSignalScores(id.includes('_prior'));
+    }
+  };
+
+  const resumePrior = resumeFromModel !== 'latest' && resumeFromModel.includes('_prior');
 
   const inputCls =
     'w-full rounded-lg bg-slate-800/60 border border-slate-600 px-3 py-2 text-sm text-gray-200 ' +
@@ -69,7 +81,13 @@ export const TrainingConfigPanel: React.FC<Props> = ({ disabled }) => {
         {/* 迭代次数 */}
         <div>
           <label className="block text-xs text-gray-400 mb-1">
-            训练轮数 (Episodes){totalEpisodes > 0 && <span className="ml-1 text-cyan-400">当前目标: {totalEpisodes}</span>}
+            训练轮数 (Episodes)
+            {resumeEnabled && (
+              <span className="ml-1 text-amber-400">续训时在现有进度上再训练 {episodes} 轮</span>
+            )}
+            {totalEpisodes > 0 && !resumeEnabled && (
+              <span className="ml-1 text-cyan-400">当前目标: {totalEpisodes}</span>
+            )}
           </label>
           <input
             type="number"
@@ -120,13 +138,42 @@ export const TrainingConfigPanel: React.FC<Props> = ({ disabled }) => {
             className="rounded border-slate-600 bg-slate-800 text-cyan-500 focus:ring-cyan-500/50"
             checked={resumeEnabled}
             disabled={disabled}
-            onChange={(e) => setResumeEnabled(e.target.checked)}
+            onChange={(e) => {
+              setResumeEnabled(e.target.checked);
+              if (!e.target.checked) setResumeFromModel('latest');
+            }}
           />
           <span className="text-xs text-gray-300">
             从断点续训
-            <span className="block text-gray-500 text-[11px]">恢复 dqn_latest 中的权重/优化器/经验池</span>
+            <span className="block text-gray-500 text-[11px]">
+              从所选模型的断点恢复权重/优化器/经验池
+            </span>
           </span>
         </label>
+
+        {resumeEnabled && (
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">续训模型</label>
+            <select
+              className={inputCls}
+              value={resumeFromModel}
+              disabled={disabled}
+              onChange={(e) => handleResumeModelChange(e.target.value)}
+            >
+              <option value="latest">latest（最近断点，自动匹配当前先验设置）</option>
+              {models.map((m) => (
+                <option key={m.modelId} value={m.modelId}>
+                  {m.modelId}
+                </option>
+              ))}
+            </select>
+            {resumePrior && (
+              <p className="text-[11px] text-cyan-400 mt-1">
+                已自动启用规则先验买卖点以匹配该模型维度（state_dim 52）
+              </p>
+            )}
+          </div>
+        )}
 
         {/* 启用先验买卖点 */}
         <label className="flex items-center gap-2 cursor-pointer">

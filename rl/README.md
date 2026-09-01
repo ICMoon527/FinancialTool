@@ -68,9 +68,8 @@ python -m rl.scripts.train_dqn --log-dir rl/logs
 ```
 
 **Checkpoint 说明**：
-- `dqn_latest/`：固定目录，每 `save_freq` 集覆盖写入，用于断点续训
-- `dqn_best_*/`：验证 Sharpe 创新高时保存（时间戳目录）
-- `dqn_final_*/`：训练结束时保存（时间戳目录）
+- `dqn_latest/`：固定目录，每 `save_freq` 集覆盖写入，用于断点续训；训练结束时也更新为该次最终状态
+- `dqn_best/`：固定目录，验证 Sharpe 创新高时覆盖写入，始终保留历史最优
 - `trainer_state.json`：续训状态（episode 进度、最佳 Sharpe、早停计数、run_id）
 
 **日志说明**（默认位于 `rl/models/logs/`）：

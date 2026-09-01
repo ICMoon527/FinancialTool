@@ -53,7 +53,7 @@ def setup_logging(log_dir: Path) -> None:
 
 def main():
     parser = argparse.ArgumentParser(description="使用真实数据训练 DQN 模型")
-    parser.add_argument("--episodes", type=int, default=None, help="训练轮数（覆盖 .env，续训时为总轮数）")
+    parser.add_argument("--episodes", type=int, default=None, help="训练轮数（覆盖 .env，续训时为续训轮数）")
     parser.add_argument("--batch-size", type=int, default=None, help="批次大小")
     parser.add_argument("--lr", type=float, default=None, help="学习率")
     parser.add_argument("--stock", type=str, default=None, help="仅使用指定股票（逗号分隔，如 000001,600519）")
@@ -137,13 +137,12 @@ def main():
             logger.error("请先完成一次训练，或用 --resume-path 指定 checkpoint 目录")
             return 1
         start_episode = trainer.resume(resume_path)
-        if start_episode >= config.training_episodes:
-            logger.warning(
-                f"checkpoint 已训练至 episode {start_episode}，"
-                f"不低于目标轮数 {config.training_episodes}。"
-                f"如需继续训练请提高 --episodes"
-            )
-            return 0
+        # 用户输入的 --episodes 语义为「续训轮数」：目标轮数 = 当前进度 + 输入轮数
+        config.training_episodes = start_episode + config.training_episodes
+        logger.info(
+            f"从 episode {start_episode} 续训, 续训 {config.training_episodes - start_episode} 轮, "
+            f"目标 episode {config.training_episodes}"
+        )
 
     # 训练
     metrics = trainer.train(start_episode=start_episode)

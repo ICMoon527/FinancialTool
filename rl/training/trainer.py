@@ -238,8 +238,9 @@ class RLTrainer:
             ):
                 break
 
-        # 最终保存（时间戳目录）+ 更新 latest
-        self._save_checkpoint("final", next_episode=self.config.training_episodes)
+        # 训练结束：仅更新 latest（固定目录覆盖写入）。
+        # 不保存 final 时间戳快照，避免频繁训练/续训产生越来越多的时间戳文件夹；
+        # 每个模型只保留 best（最优）与 latest（最近，断点续训用）两个固定目录
         self._save_checkpoint("latest", next_episode=self.config.training_episodes)
         logger.info(f"训练完成, 总耗时 {(time.time() - t_start) / 60:.1f} 分钟")
         return self.metrics
@@ -390,23 +391,18 @@ class RLTrainer:
         }
 
     def _save_checkpoint(self, tag: str, next_episode: Optional[int] = None) -> str:
-        """保存模型 checkpoint
+        """保存模型 checkpoint（固定目录覆盖写入，不产生时间戳版本）
 
         Args:
-            tag: 标签（"final" 为时间戳目录；"latest"/"best" 为固定目录覆盖写入，
-                 "latest" 用于断点续训，"best" 始终只保留最新最佳模型）
+            tag: 标签（"best" 记录最优，"latest" 记录最近状态用于断点续训）
             next_episode: 下一个待训练的 episode 序号（断点续训用）
 
         Returns:
             model_path: 模型存储路径
         """
-        if tag in ("latest", "best"):
-            # 固定目录，覆盖写入：latest 始终保留最近可恢复状态，
-            # best 始终只保留最近一次验证 Sharpe 创新高的模型
-            model_path = self._model_dir / f"{self.config.model_tag}_{tag}"
-        else:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            model_path = self._model_dir / f"{self.config.model_tag}_{tag}_{timestamp}"
+        # 固定目录，覆盖写入：latest 始终保留最近可恢复状态，
+        # best 始终只保留最近一次验证 Sharpe 创新高的模型
+        model_path = self._model_dir / f"{self.config.model_tag}_{tag}"
         model_path.mkdir(parents=True, exist_ok=True)
 
         # 保存模型

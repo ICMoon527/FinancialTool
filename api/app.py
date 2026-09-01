@@ -71,7 +71,13 @@ import logging
 
 class _SuppressPollingFilter(logging.Filter):
     """过滤 uvicorn access 日志中的轮询请求。"""
-    _POLLING_PATHS = ("screen-async/status", "backtest/strategy/task/")
+    _POLLING_PATHS = (
+        "screen-async/status",
+        "backtest/strategy/task/",
+        # RL 训练/评估/对比评估进度轮询（1.5~2s 一次，需静默避免刷屏）
+        "/api/v1/rl/evaluate/",
+        "/api/v1/rl/train/",
+    )
 
     def filter(self, record: logging.LogRecord) -> bool:
         msg = record.getMessage()

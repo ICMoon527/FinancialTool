@@ -48,7 +48,7 @@ class RLService:
     def _scan_disk_models(self) -> None:
         """扫描 model_dir 下的 checkpoint 目录，注册为可评估模型（不加载权重）
 
-        目录命名约定: {algorithm}_{tag}_{YYYYmmdd_HHMMSS} 或 {algorithm}_latest
+        目录命名约定: {algorithm}_{tag}，tag 为 latest（最近状态）/ best（历史最优）
         每个目录需包含 model.pt；metrics.json / trainer_state.json 可选
         """
         models_root = Path(self.config.model_dir)
@@ -723,11 +723,13 @@ class RLService:
                     raise ValueError(f"找不到可恢复的 checkpoint: {resume_from}")
                 task["message"] = f"从 {ckpt_dir} 恢复..."
                 start_episode = trainer.resume(str(ckpt_dir))
-                if start_episode >= config.training_episodes:
-                    raise ValueError(
-                        f"checkpoint 已训练至 episode {start_episode}，"
-                        f"请提高总轮数（当前 {config.training_episodes}）"
-                    )
+                # 用户输入的 episodes 语义为「续训轮数」：目标轮数 = 当前进度 + 输入轮数
+                config.training_episodes = start_episode + config.training_episodes
+                task["message"] = (
+                    f"从 {ckpt_dir.name} 恢复, 续训 "
+                    f"{config.training_episodes - start_episode} 轮, "
+                    f"目标 episode {config.training_episodes}"
+                )
 
             task["message"] = "训练中..."
             trainer.train(start_episode=start_episode)
