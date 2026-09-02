@@ -84,14 +84,18 @@ class RLService:
                 except Exception:
                     pass
 
+            # 保留已加载的权重引用：重扫时若已有同名校对注册（训练中已载入内存），
+            # 不要用惰性占位覆盖，避免评估前被迫重新从磁盘读取
+            existing = self._models.get(d.name, {})
             self._models[d.name] = {
                 "model_id": d.name,
                 "algorithm": algorithm,
                 "use_signal_scores": use_signal_scores,
-                "model": None,  # 惰性加载：评估时才从磁盘读取权重
                 # 每个模型携带其专属配置：use_signal_scores 必须与训练时一致，
                 # 否则加载权重/构建评估环境时 state_dim 不匹配
-                "config": dataclasses.replace(
+                "model": existing.get("model"),
+                "config": existing.get("config")
+                or dataclasses.replace(
                     self.config, use_signal_scores=use_signal_scores
                 ),
                 "metrics": metrics,
@@ -211,9 +215,11 @@ class RLService:
     def get_models(self) -> List[Dict]:
         """获取已训练的模型列表
 
-        每次调用都按 checkpoint 目录下 model.pt 的修改时间刷新 created_at，
-        保证 best/latest 在训练中被更新后，前端展示的时间与实际更新时间一致。
+        每次调用先重新扫描磁盘 checkpoint 目录，保证训练过程中新生成/更新的
+        best/latest 模型（即使是服务启动后才创建的目录）也能出现在列表中；
+        随后按 model.pt 的实际修改时间刷新 created_at，确保展示时间准确。
         """
+        self._scan_disk_models()
         models = []
         for m in self._models.values():
             item = dict(m)

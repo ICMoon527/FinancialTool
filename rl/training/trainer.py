@@ -213,7 +213,11 @@ class RLTrainer:
                 else:
                     self._patience_counter += 1
                     if self._patience_counter >= self.config.early_stopping_patience:
-                        logger.info(f"Early stopping at episode {episode + 1}")
+                        logger.info(
+                            f"早停触发: episode {episode + 1}, 验证 Sharpe 连续 "
+                            f"{self.config.early_stopping_patience} 次未提升, "
+                            f"提前结束（目标 {self.config.training_episodes} 轮）"
+                        )
 
             # 5. 逐集 CSV 日志（立即落盘，崩溃安全）
             self._log_episode_csv(episode, episode_reward, episode_length, val_metrics, ep_start)
@@ -245,8 +249,16 @@ class RLTrainer:
         # 训练结束：仅更新 latest（固定目录覆盖写入）。
         # 不保存 final 时间戳快照，避免频繁训练/续训产生越来越多的时间戳文件夹；
         # 每个模型只保留 best（最优）与 latest（最近，断点续训用）两个固定目录
-        self._save_checkpoint("latest", next_episode=self.config.training_episodes)
-        logger.info(f"训练完成, 总耗时 {(time.time() - t_start) / 60:.1f} 分钟")
+        # next_episode 必须取「实际到达的 episode」：早停时远小于配置总轮数，
+        # 若误写成配置总轮数会导致续训从错误轮次开始
+        last_episode = start_episode
+        if start_episode < self.config.training_episodes:
+            last_episode = episode + 1
+        self._save_checkpoint("latest", next_episode=last_episode)
+        logger.info(
+            f"训练结束, 实际到达 episode {last_episode}（目标 {self.config.training_episodes}）, "
+            f"总耗时 {(time.time() - t_start) / 60:.1f} 分钟"
+        )
         return self.metrics
 
     def _log_episode_csv(
