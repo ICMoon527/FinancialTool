@@ -4577,7 +4577,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "RL_DENSE_REWARD_SCALE": {
         "title": "密集奖励缩放因子",
-        "description": "R_dense 的缩放因子，控制持仓收益的奖励强度。",
+        "description": "R_dense 的缩放因子，控制持仓收益的奖励强度（R_dense = 持仓变动 × 价格变动% × scale）。",
         "category": "rl",
         "group": "奖励函数",
         "data_type": "number",

@@ -21,7 +21,7 @@ class RLConfig:
     gamma: float = 0.99
     train_data_days: int = 60
     validation_split: float = 0.2
-    dense_reward_scale: float = 20.0
+    dense_reward_scale: float = 20.0  # 密集奖励缩放（R_dense = 持仓变动 × 价格变动% × scale）
     warmup_steps: int = 20
 
     # ── 交易成本配置 ──

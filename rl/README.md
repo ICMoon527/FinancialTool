@@ -209,7 +209,7 @@ while not done:
 | 训练 | `RL_EARLY_STOPPING_PATIENCE` | `10` | 早停耐心值 |
 | 数据 | `RL_TRAIN_DATA_DAYS` | `60` | 训练数据天数 |
 | 数据 | `RL_VALIDATION_SPLIT` | `0.2` | 验证集比例 |
-| 奖励 | `RL_DENSE_REWARD_SCALE` | `20` | 密集奖励缩放 |
+| 奖励 | `RL_DENSE_REWARD_SCALE` | `20` | 密集奖励缩放（R_dense = 持仓变动 × 价格变动% × scale） |
 | 奖励 | `RL_REWARD_CLIP` | `5.0` | 奖励裁剪范围 |
 | 交易成本 | `RL_COMMISSION_RATE` | `0.001` | 佣金费率 |
 | 交易成本 | `RL_SLIPPAGE_RATE` | `0.001` | 滑点费率 |
