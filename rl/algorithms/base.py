@@ -29,7 +29,7 @@ class AbstractRLModel(ABC):
             deterministic: 是否使用确定性策略（关闭探索）
 
         Returns:
-            action: 动作索引 0=HOLD, 1=BUY, 2=SELL
+            action: 动作索引 0=HOLD, 1=BUY1, 2=BUY2, 3=BUY3, 4=SELL1, 5=SELL2, 6=SELL3
         """
         ...
 

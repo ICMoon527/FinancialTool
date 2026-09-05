@@ -21,7 +21,8 @@ class RLConfig:
     gamma: float = 0.99
     train_data_days: int = 60
     validation_split: float = 0.2
-    dense_reward_scale: float = 20.0  # 密集奖励缩放（R_dense = 持仓变动 × 价格变动% × scale）
+    dense_reward_scale: float = 20.0  # 密集奖励缩放（R_dense = 持仓变动 × 价格变动% × scale，已弃用保留兼容）
+    trade_act_bonus: float = 0.05     # 有效 BUY 的行为激励（鼓励做T操作，reward 主体为已实现做T收益增量）
     warmup_steps: int = 20
 
     # ── 交易成本配置 ──
@@ -46,7 +47,7 @@ class RLConfig:
 
     # ── 训练控制 ──
     validation_freq: int = 50            # 每 N 个 episode 验证一次
-    early_stopping_patience: int = 10    # 连续 N 次验证未提升则停止
+    early_stopping_patience: int = 15    # 连续 N 次验证未提升则停止（验证指标为真实做T收益，耐心加大减少噪声误触发）
     reward_clip: float = 5.0             # reward 裁剪范围 [-5, 5]
 
     # ── 模型存储 ──
@@ -82,6 +83,7 @@ class RLConfig:
             "RL_TRAIN_DATA_DAYS": ("train_data_days", "int"),
             "RL_VALIDATION_SPLIT": ("validation_split", "float"),
             "RL_DENSE_REWARD_SCALE": ("dense_reward_scale", "float"),
+            "RL_TRADE_ACT_BONUS": ("trade_act_bonus", "float"),
             "RL_WARMUP_STEPS": ("warmup_steps", "int"),
             "RL_COMMISSION_RATE": ("commission_rate", "float"),
             "RL_SLIPPAGE_RATE": ("slippage_rate", "float"),
@@ -141,4 +143,4 @@ class RLConfig:
     @property
     def action_dim(self) -> int:
         """动作空间维度"""
-        return 3  # HOLD / BUY / SELL
+        return 7  # HOLD / BUY1 / BUY2 / BUY3 / SELL1 / SELL2 / SELL3

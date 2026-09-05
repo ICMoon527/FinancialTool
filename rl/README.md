@@ -206,10 +206,11 @@ while not done:
 | 训练 | `RL_GAMMA` | `0.99` | 折扣因子 |
 | 训练 | `RL_WARMUP_STEPS` | `20` | 预热步数 |
 | 训练 | `RL_VALIDATION_FREQ` | `50` | 验证频率 |
-| 训练 | `RL_EARLY_STOPPING_PATIENCE` | `10` | 早停耐心值 |
+| 训练 | `RL_EARLY_STOPPING_PATIENCE` | `15` | 早停耐心值（验证指标为真实做T收益，耐心加大减少噪声误触发） |
 | 数据 | `RL_TRAIN_DATA_DAYS` | `60` | 训练数据天数 |
 | 数据 | `RL_VALIDATION_SPLIT` | `0.2` | 验证集比例 |
-| 奖励 | `RL_DENSE_REWARD_SCALE` | `20` | 密集奖励缩放（R_dense = 持仓变动 × 价格变动% × scale） |
+| 奖励 | `RL_DENSE_REWARD_SCALE` | `20` | 密集奖励缩放（已弃用，保留兼容；奖励已改为仅基于当日已实现做T收益） |
+| 奖励 | `RL_TRADE_ACT_BONUS` | `0.05` | 做T行为激励：有效 BUY 的小额奖励，鼓励做T操作、打破 HOLD 惰性 |
 | 奖励 | `RL_REWARD_CLIP` | `5.0` | 奖励裁剪范围 |
 | 交易成本 | `RL_COMMISSION_RATE` | `0.001` | 佣金费率 |
 | 交易成本 | `RL_SLIPPAGE_RATE` | `0.001` | 滑点费率 |
@@ -267,9 +268,10 @@ rl/
 
 ## 环境说明
 
-- **动作空间**：0=HOLD, 1=BUY, 2=SELL
-- **底仓管理**：初始 3 份底仓，SELL 卖出底仓，BUY 买回
-- **T+1 规则**：当日买入不可当日卖出
+- **动作空间**：0=HOLD, 1~3=BUY1/2/3, 4~6=SELL1/2/3（一次可买卖多份；当日累计买入 ≤ 3 份，卖出 ≤ 底仓）
+- **底仓管理**：初始 3 份底仓，尾盘强制恢复为 3 份（SELL 卖出的底仓按收盘价买回补齐）
+- **T+1 规则**：当天买入的份额当天不可卖出，SELL1/2/3 只卖底仓（先卖后买）；当日买入锁定到尾盘强制平仓结算，仅保留 3 份底仓（维持现金流，防止一直买入/卖出）
 - **预热期**：前 `warmup_steps` 步强制 HOLD，reward=0
+- **奖励机制**：与单根K线无关，只与当日做T已实现收益（realized_pnl）挂钩。reward = 已实现做T收益增量 + 有效 BUY/SELL 行为激励(`RL_TRADE_ACT_BONUS`) - 无效动作惩罚 - 收盘未强平当日买入惩罚 + 当日盈利奖励。避免"底仓市场波动"淹没做T信号
 - **状态维度**：50 维（价格、量能、MACD、RSI、KDJ、MFI、仓位、时间、预热标志）
 - **GPU 支持**：自动检测 CUDA，有 GPU 则自动使用

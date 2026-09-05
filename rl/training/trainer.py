@@ -384,8 +384,9 @@ class RLTrainer:
                     trade_count += 1
                 state = next_state
 
-            # 将 episode reward 近似为日收益率
-            daily_returns.append(day_reward / 100.0)  # 归一化
+            # 日收益率 = 当日做T已实现收益（% → 小数），与评估器 realized_pnl 一致。
+            # 不再用 total_reward 近似（其被底仓市场波动主导，会导致验证指标与真实做T能力错位、误触发早停）
+            daily_returns.append(self.env._realized_pnl / 100.0)
             daily_summaries.append({
                 "trade_count": trade_count,
                 "reward": day_reward,

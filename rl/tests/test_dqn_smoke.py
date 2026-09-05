@@ -40,6 +40,7 @@ os.environ.setdefault("RL_GAMMA", "0.99")
 os.environ.setdefault("RL_VALIDATION_SPLIT", "0.2")
 os.environ.setdefault("RL_WARMUP_STEPS", "20")
 os.environ.setdefault("RL_DENSE_REWARD_SCALE", "20")
+os.environ.setdefault("RL_TRADE_ACT_BONUS", "0.05")
 os.environ.setdefault("RL_REPLAY_BUFFER_SIZE", "5000")
 os.environ.setdefault("RL_TARGET_UPDATE_FREQ", "50")
 os.environ.setdefault("RL_VALIDATION_FREQ", "25")
@@ -190,7 +191,7 @@ def test_config_loading():
 
     config = RLConfig.from_env()
     assert config.state_dim == 50, f"state_dim={config.state_dim}, expected 50"
-    assert config.action_dim == 3, f"action_dim={config.action_dim}, expected 3"
+    assert config.action_dim == 7, f"action_dim={config.action_dim}, expected 7"
     assert config.transaction_cost == 0.004, f"transaction_cost={config.transaction_cost}, expected 0.004"
     logger.info("  [OK] RLConfig 加载成功")
     return config
@@ -233,12 +234,12 @@ def test_environment(config):
             break
 
     if not done:
-        next_state, reward, done, info = env.step(1)  # BUY
-        logger.info(f"  [OK] env.step(BUY) reward={reward:.4f}, action_valid={info['action_valid']}")
+        next_state, reward, done, info = env.step(1)  # BUY1
+        logger.info(f"  [OK] env.step(BUY1) reward={reward:.4f}, action_valid={info['action_valid']}")
 
-    # 测试 step（SELL）
+    # 测试 step（SELL，动作=4）
     if not done:
-        next_state, reward, done, info = env.step(2)  # SELL
+        next_state, reward, done, info = env.step(4)  # SELL
         logger.info(f"  [OK] env.step(SELL) reward={reward:.4f}, action_valid={info['action_valid']}")
 
     return True

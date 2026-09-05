@@ -2,10 +2,18 @@
 """分时做T RL 环境
 
 核心约束：
-- 底仓管理：初始 3 份底仓，SELL 只能卖出底仓
-- T+1 规则：当日买入的份额不可当日卖出
+- 底仓管理：初始 3 份底仓，尾盘强制恢复为 3 份（卖出的底仓按收盘价买回补齐）
+- 动作空间：0=HOLD, 1~3=BUY1/2/3, 4~6=SELL1/2/3（一次可买卖多份；当日累计买入 ≤ 3 份，卖出 ≤ 底仓）
+- T+1 规则：当天买入的份额不可当天卖出，SELL1/2/3 只卖底仓（先卖后买），尾盘按收盘价买回补齐 3 份
+- 未配对的当日买入尾盘强制平仓结算，仅保留 3 份底仓（维持现金流，防止一直买入/卖出）
 - 预热期：前 warmup_steps 步强制 HOLD + reward=0
 - 每个交易日为一个独立 episode
+
+奖励机制（与单根K线无关，只与当日做T已实现盈亏挂钩）：
+- reward 主体 = realized_pnl 增量（收盘强平当日买入 / 尾盘买回底仓产生的已实现做T收益%）
+- 有效 BUY/SELL 给小额行为激励（trade_act_bonus），鼓励做T操作、打破"HOLD=0"惰性
+- 无效动作给 -1 惩罚；收盘仍有未强平当日买入给 -0.1/笔 惩罚（鼓励日内平仓）
+- 当日做T盈利（realized_pnl>0）episode 结束额外 +1
 """
 
 from __future__ import annotations
@@ -33,13 +41,24 @@ class T0Environment:
 
     # ── 动作常量 ──
     HOLD: int = 0
-    BUY: int = 1
-    SELL: int = 2
-    ACTION_NAMES: Dict[int, str] = {0: "HOLD", 1: "BUY", 2: "SELL"}
+    BUY1: int = 1   # 买入 1 份
+    BUY2: int = 2   # 买入 2 份
+    BUY3: int = 3   # 买入 3 份
+    SELL1: int = 4  # 卖出 1 份
+    SELL2: int = 5  # 卖出 2 份
+    SELL3: int = 6  # 卖出 3 份
+    ACTION_NAMES: Dict[int, str] = {
+        0: "HOLD", 1: "BUY1", 2: "BUY2", 3: "BUY3",
+        4: "SELL1", 5: "SELL2", 6: "SELL3",
+    }
+
+    # 买卖动作 → 份数（一次可买卖多份；买入总量 ≤ MAX_TODAY_BUY，卖出总量 ≤ 可卖持仓）
+    BUY_AMOUNTS: Dict[int, int] = {BUY1: 1, BUY2: 2, BUY3: 3}
+    SELL_AMOUNTS: Dict[int, int] = {SELL1: 1, SELL2: 2, SELL3: 3}
 
     # ── 最大持仓份数 ──
-    MAX_BASE_POSITION: int = 3  # 最大底仓
-    MAX_TODAY_BUY: int = 3      # 当日最多买入
+    MAX_BASE_POSITION: int = 3  # 底仓（尾盘强制恢复到此份数）
+    MAX_TODAY_BUY: int = 3      # 当日最多累计买入份数
     MAX_STEPS: int = 240         # 9:30-15:00，240根1分钟K线
 
     def __init__(
@@ -91,6 +110,7 @@ class T0Environment:
         # 交易记录
         self._trades: List[Dict] = []          # 完整交易记录
         self._pending_buys: List[Dict] = []    # 未配对的买入记录（FIFO）
+        self._sold_short: List[float] = []     # 先卖后买：已卖出底仓的卖出价（尾盘买回补齐3份底仓）
 
         # 当前 episode 样本信息
         self._current_stock_code: str = ""
@@ -144,6 +164,7 @@ class T0Environment:
         self._klines = []
         self._trades = []
         self._pending_buys = []
+        self._sold_short = []
 
         # 加载样本
         self._klines = sample.get("klines", [])
@@ -175,11 +196,11 @@ class T0Environment:
         """执行一步环境交互
 
         Args:
-            action: 0=HOLD, 1=BUY, 2=SELL
+            action: 0=HOLD, 1=BUY1, 2=BUY2, 3=BUY3, 4=SELL1, 5=SELL2, 6=SELL3
 
         Returns:
             next_state: np.ndarray  下一状态向量
-            reward: float           即时奖励
+            reward: float           即时奖励（基于当日已实现做T收益增量，与单根K线无关）
             done: bool              episode 是否结束
             info: dict              额外信息
         """
@@ -213,15 +234,20 @@ class T0Environment:
         # ── 正常交易期 ──
         self._is_warmup = False
 
+        # 0. 记录动作前的已实现做T收益（reward 只基于该增量，与单根K线无关）
+        prev_realized = self._realized_pnl
+
         # 1. 动作合法性校验
         is_valid, applied_action = self._parse_action(action)
         info["action_valid"] = is_valid
         info["action_applied"] = applied_action
 
-        # 2. 执行动作（无效动作不执行交易，但给惩罚）
-        trade_reward = 0.0
+        # 2. 执行动作（有效 BUY/SELL 给小额行为激励，鼓励做T操作；收益通过 realized_pnl 增量结算）
+        act_bonus = 0.0
+        if is_valid and (applied_action in self.BUY_AMOUNTS or applied_action in self.SELL_AMOUNTS):
+            act_bonus = self.config.trade_act_bonus
         if is_valid and applied_action != self.HOLD:
-            trade_reward = self._execute_action(applied_action)
+            self._execute_action(applied_action)
 
         # 3. 推进到下一根K线
         self._step += 1
@@ -230,16 +256,7 @@ class T0Environment:
             self._update_indicators()
             self._update_price_stats()
 
-        # 4. 计算密集奖励
-        dense_reward = self._compute_dense_reward()
-
-        # 5. 计算惩罚
-        if not is_valid:
-            penalty = -1.0  # 无效动作惩罚
-        else:
-            penalty = 0.0
-
-        # 6. 检查是否结束
+        # 4. 检查是否结束（收盘强平会把未配对买入收益计入 realized_pnl）
         force_close_reward = 0.0
         episode_bonus = 0.0
         if self._step >= len(self._klines) or self._step >= self.MAX_STEPS:
@@ -247,8 +264,14 @@ class T0Environment:
             force_close_reward = self._force_close()
             episode_bonus = self._compute_episode_bonus()
 
+        # 5. 已实现做T收益增量（%）：当日做T盈利的核心信号，与单根K线无关
+        realized_delta = self._realized_pnl - prev_realized
+
+        # 6. 无效动作惩罚
+        penalty = -1.0 if not is_valid else 0.0
+
         # 7. 汇总 reward
-        reward = dense_reward + trade_reward + penalty + force_close_reward + episode_bonus
+        reward = realized_delta + act_bonus + penalty + force_close_reward + episode_bonus
         reward = float(np.clip(reward, -self.config.reward_clip, self.config.reward_clip))
 
         self._total_reward += reward
@@ -424,88 +447,71 @@ class T0Environment:
         """
         if action == self.HOLD:
             return True, self.HOLD
-        elif action == self.BUY:
-            # 当日买入 < 3 份
-            if len(self._today_bought) < self.MAX_TODAY_BUY:
-                return True, self.BUY
+        elif action in self.BUY_AMOUNTS:
+            # 当日累计买入 ≤ MAX_TODAY_BUY（一次可买多份，超出剩余额度则无效）
+            n = self.BUY_AMOUNTS[action]
+            if len(self._today_bought) + n <= self.MAX_TODAY_BUY:
+                return True, action
             return False, self.HOLD
-        elif action == self.SELL:
-            # 底仓 > 0
-            if self._base_position > 0:
-                return True, self.SELL
+        elif action in self.SELL_AMOUNTS:
+            # T+1：当天买入不可卖出，SELL 只卖底仓（先卖后买）。一次可卖 N 份（N=1/2/3），需 ≤ 底仓
+            n = self.SELL_AMOUNTS[action]
+            if n <= self._base_position:
+                return True, action
             return False, self.HOLD
         return False, self.HOLD
 
     def _execute_action(self, action: int) -> float:
-        """执行交易动作，返回本轮交易盈亏（如有配对卖出）"""
+        """执行交易动作，返回本轮已实现盈亏（T+1 下 SELL 卖底仓的盈亏延后到尾盘买回时结算）"""
         if not self._current_kline:
             return 0.0
 
         price = self._current_kline["Close"]
         timestamp = self._klines[self._step]["timestamp"] if self._step < len(self._klines) else ""
 
-        if action == self.BUY:
-            # 买入1份：增加今日买入记录
-            self._today_bought.append(price)
-            self._pending_buys.append({
-                "time": timestamp,
-                "price": price,
-                "action": "BUY",
-            })
+        if action in self.BUY_AMOUNTS:
+            # 一次买入 N 份（N=1/2/3），当日累计买入 ≤ MAX_TODAY_BUY
+            n = self.BUY_AMOUNTS[action]
+            for _ in range(n):
+                self._today_bought.append(price)
+                self._pending_buys.append({
+                    "time": timestamp,
+                    "price": price,
+                    "action": "BUY",
+                })
+                self._trades.append({
+                    "time": timestamp,
+                    "action": "BUY",
+                    "price": price,
+                    "pnl": 0.0,
+                })
 
             # 更新平均成本
             total_cost = sum(self._today_bought) + self._base_position * self._avg_cost
             total_position = self.total_position
             self._avg_cost = total_cost / total_position if total_position > 0 else price
+            return 0.0
+
+        elif action in self.SELL_AMOUNTS:
+            # T+1：当天买入不可卖出。一次卖出 N 份底仓（先卖后买），尾盘按收盘价买回补齐 3 份底仓
+            n = self.SELL_AMOUNTS[action]
+            self._base_position -= n
+            for _ in range(n):
+                self._sold_short.append(price)  # 记录卖出价，尾盘买回结算
 
             self._trades.append({
                 "time": timestamp,
-                "action": "BUY",
+                "action": f"SELL{n}",
                 "price": price,
                 "pnl": 0.0,
             })
             return 0.0
-
-        elif action == self.SELL:
-            # 卖出1份底仓
-            self._base_position -= 1
-
-            trade_reward = 0.0
-            if self._pending_buys:
-                # 有未配对的买入，FIFO 配对计算盈亏
-                buy_record = self._pending_buys.pop(0)
-                buy_price = buy_record["price"]
-                gross_return = (price - buy_price) / buy_price * 100
-                trade_reward = gross_return - self.config.transaction_cost
-                self._realized_pnl += trade_reward
-
-            self._trades.append({
-                "time": timestamp,
-                "action": "SELL",
-                "price": price,
-                "pnl": trade_reward,
-            })
-            return trade_reward
 
         return 0.0
 
     # ═══════════════════════════════════════════════
     #  奖励函数
     # ═══════════════════════════════════════════════
-
-    def _compute_dense_reward(self) -> float:
-        """R_dense = 持仓变动 × 价格变动% × scale"""
-        if self._step < 2 or self.total_position == 0:
-            return 0.0
-        if self._step - 1 >= len(self._klines):
-            return 0.0
-
-        prev_close = self._klines[self._step - 2]["Close"]
-        curr_close = self._klines[self._step - 1]["Close"]
-        if prev_close <= 0:
-            return 0.0
-        price_change = (curr_close - prev_close) / prev_close
-        return price_change * self.total_position * self.config.dense_reward_scale
 
     def _compute_episode_bonus(self) -> float:
         """episode 结束时的奖励项"""
@@ -515,29 +521,49 @@ class T0Environment:
         return bonus
 
     def _force_close(self) -> float:
-        """收盘强制平仓，使用收盘价
+        """收盘强制平仓，使用收盘价，仅保留 3 份底仓
+
+        1. 当日买入（pending_buys）全部强平结算（先买后卖/收盘平）；
+        2. 先卖后买（sold_short）按收盘价买回补齐底仓到 3 份（卖出价高于买回价则赚）。
 
         Returns:
-            平仓奖励（小负值，避免模型故意拖到收盘）
+            平仓奖励（小负值，鼓励日内完成配对做T，而非拖到收盘）
         """
-        if self._pending_buys and self._current_kline:
-            close_price = self._current_kline["Close"]
+        if not self._current_kline:
+            return 0.0
+
+        close_price = self._current_kline["Close"]
+        close_reward = 0.0
+
+        # 1. 强平所有当日买入（当日买入尾盘必须平掉，仅保留 3 份底仓）
+        if self._pending_buys:
             total_pnl = 0.0
             for buy_record in self._pending_buys:
                 buy_price = buy_record["price"]
-                gross_return = (close_price - buy_price) / buy_price * 100
-                total_pnl += gross_return - self.config.transaction_cost
+                if buy_price > 0 and close_price > 0:
+                    gross_return = (close_price - buy_price) / buy_price * 100
+                    total_pnl += gross_return - self.config.transaction_cost
             self._realized_pnl += total_pnl
+            n_pending = len(self._pending_buys)
             self._pending_buys = []
+            self._today_bought = []  # 当日买入已全部强平，同步清空（保持 total_position = 底仓）
+            # 小惩罚：鼓励日内配对卖出（SELL）实现做T，而非拖到收盘
+            close_reward += -0.1 * n_pending
 
-            # 强制平仓中性/小负奖励
-            return -0.1 * len(self._pending_buys) if self._pending_buys else 0.0
+        # 2. 先卖后买：按收盘价买回卖出的底仓，恢复底仓到 3 份
+        if self._sold_short:
+            total_pnl = 0.0
+            for sell_price in self._sold_short:
+                if sell_price > 0 and close_price > 0:
+                    # 先卖后买：卖出价高于买回价（收盘价）则赚
+                    gross_return = (sell_price - close_price) / close_price * 100
+                    total_pnl += gross_return - self.config.transaction_cost
+            self._realized_pnl += total_pnl
+            self._sold_short = []
+            # 恢复底仓到 MAX_BASE_POSITION（3 份）
+            self._base_position = self.MAX_BASE_POSITION
 
-        # 未平仓的底仓部分给予小负奖励
-        if self._base_position > 0:
-            return -0.05 * self._base_position
-
-        return 0.0
+        return close_reward
 
     # ═══════════════════════════════════════════════
     #  内部辅助方法
@@ -729,7 +755,7 @@ class T0Environment:
 
     @property
     def can_sell(self) -> bool:
-        """是否还能卖出（底仓 > 0）"""
+        """是否还能卖出（T+1：当天买入不可卖出，可卖 = 底仓 > 0）"""
         return self._base_position > 0
 
     @property
