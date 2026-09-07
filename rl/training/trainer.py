@@ -350,7 +350,7 @@ class RLTrainer:
 
         return total_reward, episode_length, train_metrics
 
-    def _validate(self, max_val_days: int = 50) -> Dict[str, float]:
+    def _validate(self, max_val_days: int = 100) -> Dict[str, float]:
         """在验证集上评估模型，返回 Sharpe、总收益、胜率等
 
         Args:
@@ -360,10 +360,13 @@ class RLTrainer:
         daily_summaries = []
 
         # 验证集抽样（数据量大时避免全量验证拖慢训练）
+        # 固定种子（独立 Random 实例，不污染全局随机状态）：保证每次验证抽同一批样本，
+        # 验证曲线（canvas 图中的 val_sharpe/val_return/val_win_rate）稳定可比；
+        # 仅影响训练过程中的验证曲线，不影响训练完成后的模型评估（评估为独立抽样，seed=42）
         val_samples = self.dataset.val_samples
         if len(val_samples) > max_val_days:
             import random as _random
-            val_samples = _random.sample(val_samples, max_val_days)
+            val_samples = _random.Random(42).sample(val_samples, max_val_days)
             logger.info(f"验证集抽样: {max_val_days}/{len(self.dataset.val_samples)}")
 
         for sample in val_samples:

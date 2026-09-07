@@ -13,10 +13,23 @@
 from __future__ import annotations
 
 import argparse
+import faulthandler
 import logging
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
+
+# ── Windows 原生崩溃防护（必须在任何 numpy/torch 导入之前设置）──
+# 1. KMP_DUPLICATE_LIB_OK：numpy(MKL) 与 torch 各自捆绑 libiomp5md.dll，
+#    重复加载触发 OMP 初始化冲突 → 随机 0xC0000005 段错误（adams/numpy 采样处崩）
+# 2. OMP/MKL 线程数限制：避免 MKL 与 CUDA 线程竞争加剧原生崩溃
+# 3. FOR_DISABLE_CONSOLE_CTRL_HANDLER：numpy 的 Intel Fortran 运行时
+#    注册 Ctrl+C 处理器干扰 Python 信号（webui 同款坑，一并防护）
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+os.environ.setdefault("OMP_NUM_THREADS", "4")
+os.environ.setdefault("MKL_NUM_THREADS", "4")
+os.environ.setdefault("FOR_DISABLE_CONSOLE_CTRL_HANDLER", "1")
 
 # 确保项目根目录在 sys.path 中
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -52,6 +65,8 @@ def setup_logging(log_dir: Path) -> None:
 
 
 def main():
+    # 故障定位：每 60 秒 dump 一次主线程堆栈到 stderr（卡死时能从 job 日志看到卡住位置）
+    faulthandler.dump_traceback_later(60, repeat=True)
     parser = argparse.ArgumentParser(description="使用真实数据训练 DQN 模型")
     parser.add_argument("--episodes", type=int, default=None, help="训练轮数（覆盖 .env，续训时为续训轮数）")
     parser.add_argument("--batch-size", type=int, default=None, help="批次大小")
@@ -64,6 +79,7 @@ def main():
     parser.add_argument("--resume-path", type=str, default=None, help="指定续训的 checkpoint 目录（默认自动找 dqn_latest）")
     parser.add_argument("--save-freq", type=int, default=50, help="latest checkpoint 保存频率（episode，0=不保存）")
     parser.add_argument("--log-dir", type=str, default=None, help="日志目录（默认 rl/models/logs）")
+    parser.add_argument("--no-signal-scores", action="store_true", help="关闭规则买卖点得分状态特征（纯 OHLCV 基线，state_dim=18）")
     args = parser.parse_args()
 
     # 强制 CPU
@@ -84,6 +100,8 @@ def main():
 
     # 加载配置
     config = RLConfig.from_env()
+    if args.no_signal_scores:
+        config.use_signal_scores = False
     if args.episodes:
         config.training_episodes = args.episodes
     if args.batch_size:
@@ -92,7 +110,10 @@ def main():
         config.learning_rate = args.lr
 
     import torch
-    device = "cuda" if torch.cuda.is_available() and not args.no_gpu else "cpu"
+    # 与 AbstractRLModel 保持一致：is_available 在本环境 CUDA_VISIBLE_DEVICES="" 时
+    # 仍返回 True，必须追加 device_count()>0 判定，否则 --no-gpu 实际仍跑在 GPU
+    cuda_ok = torch.cuda.is_available() and torch.cuda.device_count() > 0
+    device = "cuda" if (cuda_ok and not args.no_gpu) else "cpu"
     logger.info(f"设备: {device}")
     logger.info(f"配置: episodes={config.training_episodes}, batch={config.batch_size}, lr={config.learning_rate}")
 

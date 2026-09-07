@@ -156,10 +156,10 @@ def generate_mock_dataset(
 # ═══════════════════════════════════════════════
 
 class MockIntradayDataset:
-    """模拟数据集，代替从数据库读取"""
+    """模拟数据集，代替从数据库读取（简单时间切分：按日期排序后前段训练、后段验证）"""
 
     def __init__(self, samples: list[dict], validation_split: float = 0.2):
-        random.shuffle(samples)
+        samples = sorted(samples, key=lambda s: s["date"])
         split_idx = int(len(samples) * (1 - validation_split))
         self._train_samples = samples[:split_idx]
         self._val_samples = samples[split_idx:]
@@ -190,9 +190,10 @@ def test_config_loading():
     from rl.config import RLConfig
 
     config = RLConfig.from_env()
-    assert config.state_dim == 50, f"state_dim={config.state_dim}, expected 50"
+    assert config.state_dim == 18, f"state_dim={config.state_dim}, expected 18"
     assert config.action_dim == 7, f"action_dim={config.action_dim}, expected 7"
-    assert config.transaction_cost == 0.004, f"transaction_cost={config.transaction_cost}, expected 0.004"
+    assert config.transaction_cost == 0.2, f"transaction_cost={config.transaction_cost}, expected 0.2（百分比刻度，一买一卖0.2%=0.2）"
+    assert config.per_side_cost == 0.1, f"per_side_cost={config.per_side_cost}, expected 0.1（单边0.1%）"
     logger.info("  [OK] RLConfig 加载成功")
     return config
 
@@ -215,13 +216,13 @@ def test_environment(config):
 
     # 测试 reset
     state = env.reset(sample, prev_day_klines=prev_klines)
-    assert state.shape == (50,), f"state shape={state.shape}, expected (50,)"
+    assert state.shape == (config.state_dim,), f"state shape={state.shape}, expected ({config.state_dim},)"
     assert np.all(np.isfinite(state)), "state contains NaN or Inf"
     logger.info(f"  [OK] env.reset() 返回 state shape={state.shape}")
 
     # 测试 step（HOLD）
     next_state, reward, done, info = env.step(0)
-    assert next_state.shape == (50,)
+    assert next_state.shape == (config.state_dim,)
     assert isinstance(reward, float)
     assert isinstance(done, bool)
     logger.info(f"  [OK] env.step(HOLD) reward={reward:.4f}, done={done}")
@@ -275,8 +276,8 @@ def test_networks(config):
 
 
 def test_dqn_model(config):
-    """测试 DQNModel predict + train_step"""
-    from rl.algorithms.dqn import DQNModel, ReplayBuffer
+    """测试 DQNModel predict + train_step（含 PER）"""
+    from rl.algorithms.dqn import DQNModel, PrioritizedReplayBuffer
 
     model = DQNModel(config)
 

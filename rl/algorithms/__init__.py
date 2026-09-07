@@ -2,10 +2,10 @@
 """强化学习算法模块"""
 
 from rl.algorithms.base import AbstractRLModel
-from rl.algorithms.dqn import DQNModel, ReplayBuffer
+from rl.algorithms.dqn import DQNModel, PrioritizedReplayBuffer
 
 __all__ = [
     "AbstractRLModel",
     "DQNModel",
-    "ReplayBuffer",
+    "PrioritizedReplayBuffer",
 ]

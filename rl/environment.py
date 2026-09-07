@@ -9,11 +9,17 @@
 - 预热期：前 warmup_steps 步强制 HOLD + reward=0
 - 每个交易日为一个独立 episode
 
-奖励机制（与单根K线无关，只与当日做T已实现盈亏挂钩）：
-- reward 主体 = realized_pnl 增量（收盘强平当日买入 / 尾盘买回底仓产生的已实现做T收益%）
-- 有效 BUY/SELL 给小额行为激励（trade_act_bonus），鼓励做T操作、打破"HOLD=0"惰性
-- 无效动作给 -1 惩罚；收盘仍有未强平当日买入给 -0.1/笔 惩罚（鼓励日内平仓）
-- 当日做T盈利（realized_pnl>0）episode 结束额外 +1
+奖励机制（密集浮盈信号，r = ΔPnL - cost - λ·inventory² + terminal_constraint）：
+- ΔPnL：总持仓（底仓 + 当日买入）的逐分钟 mark-to-market 盈亏（% 刻度），
+  让模型在每根K线都能感知持仓浮盈变化，而非仅事件驱动
+- cost ：每笔成交的单边交易成本（佣金+滑点，每份 0.1%），含尾盘强平/买回成本
+- λ·inventory²：库存惩罚（λ=reward_lambda，库存=agent可控的日内双向敞口=当日买入+先卖后买，
+  不含恒定底仓；不做T时惩罚为0，避免恒定偏置淹没学习信号）
+- terminal_constraint：收盘仍有未平当日买入时惩罚 -κ·leftover²（κ=reward_terminal_coef），
+  鼓励日内 SELL 配对平仓而非拖到收盘强平
+
+性能簿记（不参与 reward）：_realized_pnl 仍按真实 T+1 账目精确结算当日做T已实现收益，
+供训练验证与评估输出真实绩效数字。
 """
 
 from __future__ import annotations
@@ -100,6 +106,9 @@ class T0Environment:
         self._day_low: float = float("inf")
         self._prev_close: float = 0.0
 
+        # 单步交易成本累计（reward 的 cost 项：每笔成交单边佣金+滑点）
+        self._step_cost: float = 0.0
+
         # 当前K线数据（由 step 更新）
         self._current_kline: Optional[Dict] = None
         self._current_indicator: Optional[IndicatorSnapshot] = None
@@ -150,6 +159,7 @@ class T0Environment:
         self._unrealized_pnl = 0.0
         self._realized_pnl = 0.0
         self._total_reward = 0.0
+        self._step_cost = 0.0
 
         # 重置价格统计
         self._day_high = 0.0
@@ -234,18 +244,16 @@ class T0Environment:
         # ── 正常交易期 ──
         self._is_warmup = False
 
-        # 0. 记录动作前的已实现做T收益（reward 只基于该增量，与单根K线无关）
-        prev_realized = self._realized_pnl
+        # 0. 记录动作前状态（奖励计算用：本步成交价 = 当前K线收盘价）
+        prev_close = self._current_kline["Close"] if self._current_kline else 0.0
+        self._step_cost = 0.0
 
         # 1. 动作合法性校验
         is_valid, applied_action = self._parse_action(action)
         info["action_valid"] = is_valid
         info["action_applied"] = applied_action
 
-        # 2. 执行动作（有效 BUY/SELL 给小额行为激励，鼓励做T操作；收益通过 realized_pnl 增量结算）
-        act_bonus = 0.0
-        if is_valid and (applied_action in self.BUY_AMOUNTS or applied_action in self.SELL_AMOUNTS):
-            act_bonus = self.config.trade_act_bonus
+        # 2. 执行动作（交易成本在 _execute_action 内累计到 _step_cost）
         if is_valid and applied_action != self.HOLD:
             self._execute_action(applied_action)
 
@@ -256,22 +264,29 @@ class T0Environment:
             self._update_indicators()
             self._update_price_stats()
 
-        # 4. 检查是否结束（收盘强平会把未配对买入收益计入 realized_pnl）
-        force_close_reward = 0.0
-        episode_bonus = 0.0
+        # 4. 终态约束（奖励 r 的 terminal_constraint 项）与收盘强平簿记
+        terminal_constraint = 0.0
         if self._step >= len(self._klines) or self._step >= self.MAX_STEPS:
             self._done = True
-            force_close_reward = self._force_close()
-            episode_bonus = self._compute_episode_bonus()
+            # 先捕获未平当日买入数（_force_close 会清空），再强平结算
+            leftover = len(self._today_bought)
+            terminal_constraint = -self.config.reward_terminal_coef * leftover**2
+            self._force_close()
 
-        # 5. 已实现做T收益增量（%）：当日做T盈利的核心信号，与单根K线无关
-        realized_delta = self._realized_pnl - prev_realized
+        # 5. 奖励计算：r = ΔPnL - cost - λ·inventory² + terminal_constraint
+        #    ΔPnL：总持仓逐分钟 mark-to-market 盈亏（%刻度，密集浮盈信号）
+        cur_close = self._current_kline["Close"] if self._current_kline else prev_close
+        if prev_close > 0:
+            price_return = (cur_close - prev_close) / prev_close * 100.0
+        else:
+            price_return = 0.0
+        mtm_delta = self.total_position * price_return
+        # 库存惩罚只针对 agent 可控的日内双向敞口（当日买入 + 先卖后买的卖出底仓），
+        # 恒定底仓 3 份不参与惩罚（否则每步恒定 -λ·9 偏置会淹没学习信号）
+        intraday_exposure = len(self._today_bought) + len(self._sold_short)
+        inv_penalty = self.config.reward_lambda * intraday_exposure**2
 
-        # 6. 无效动作惩罚
-        penalty = -1.0 if not is_valid else 0.0
-
-        # 7. 汇总 reward
-        reward = realized_delta + act_bonus + penalty + force_close_reward + episode_bonus
+        reward = mtm_delta - self._step_cost - inv_penalty + terminal_constraint
         reward = float(np.clip(reward, -self.config.reward_clip, self.config.reward_clip))
 
         self._total_reward += reward
@@ -288,104 +303,42 @@ class T0Environment:
     # ═══════════════════════════════════════════════
 
     def _get_state(self) -> np.ndarray:
-        """构建 ~50 维状态向量，所有特征归一化到合理范围"""
-        ind = self._current_indicator
+        """构建 18 维状态向量（use_signal_scores=True 时 20 维），所有特征归一化到合理范围
+
+        组成：OHLCV(5) + 多尺度return(4: 1/5/15/60根) + 波动率(1)
+              + 时间编码(3) + 仓位状态(5) [+ 规则买卖点得分(2)]
+        """
         k = self._current_kline
         features = []
 
-        # ── 价格特征 (8维) ──
+        # ── OHLCV (5维)：原始K线数据 ──
         if k:
             features.extend([
-                k["Close"] / 100.0,
                 k["Open"] / 100.0,
                 k["High"] / 100.0,
                 k["Low"] / 100.0,
-            ])
-            if ind:
-                features.extend([
-                    ind.deviation_pct / 100.0 if ind.deviation_pct else 0.0,
-                    float(ind.price_above_ma5),
-                    float(ind.price_above_ma20),
-                    float(ind.price_cross_ma5_up) - float(ind.price_cross_ma5_down),
-                ])
-            else:
-                features.extend([0.0] * 4)
-        else:
-            features.extend([0.0] * 8)
-
-        # ── 量能特征 (3维) ──
-        if k:
-            features.extend([
+                k["Close"] / 100.0,
                 np.log1p(k["Volume"]) / 20.0,
-                float(ind.volume_surge) if ind else 0.0,
-                float(ind.volume_shrink) if ind else 0.0,
             ])
         else:
-            features.extend([0.0] * 3)
+            features.extend([0.0] * 5)
 
-        # ── 主力吸筹/出货 (3维) ──
-        if ind:
-            features.extend([
-                ind.absorption_value / 100.0 if ind.absorption_value else 0.0,
-                float(ind.distribution_active),
-                (ind.main_in_value - ind.main_out_value) / 100.0,  # 主力进出差值
-            ])
+        # ── 多尺度 return (4维) 与 波动率 (1维) ──
+        # 基于缓冲区已见收盘价（含前日K线，跨日上下文）；未足窗口时补 0
+        data = self._data_buffer.data
+        closes = data["Close"].tolist() if len(data) else []
+        for n in (1, 5, 15, 60):
+            if len(closes) > n and closes[-n - 1] > 0:
+                features.append((closes[-1] / closes[-n - 1] - 1.0) * 100.0)
+            else:
+                features.append(0.0)
+        if len(closes) >= 2:
+            log_ret = np.diff(np.log(np.maximum(closes[-21:], 1e-8)))
+            features.append(float(np.std(log_ret)) * 100.0)
         else:
-            features.extend([0.0] * 3)
+            features.append(0.0)
 
-        # ── MACD (8维) ──
-        if ind:
-            features.extend([
-                ind.dif / 10.0 if ind.dif else 0.0,
-                ind.dea / 10.0 if ind.dea else 0.0,
-                ind.macd_bar / 10.0 if ind.macd_bar else 0.0,
-                getattr(ind, "macd_bar_sum", 0.0) / 50.0,
-                getattr(ind, "macd_bar_diff", 0.0),
-                float(ind.macd_golden_cross),
-                float(ind.macd_death_cross),
-                float(ind.macd_bullish_weakening) - float(ind.macd_bearish_recovering),
-            ])
-        else:
-            features.extend([0.0] * 8)
-
-        # ── RSI (3维) ──
-        if ind:
-            features.extend([
-                ind.rsi_value / 100.0,
-                float(ind.rsi_oversold),
-                float(ind.rsi_overbought),
-            ])
-        else:
-            features.extend([0.0] * 3)
-
-        # ── KDJ (7维) ──
-        if ind:
-            features.extend([
-                ind.kdj_k / 100.0,
-                ind.kdj_d / 100.0,
-                ind.kdj_j / 100.0,
-                float(ind.kdj_oversold),
-                float(ind.kdj_overbought),
-                float(ind.kdj_golden_cross),
-                float(ind.kdj_death_cross),
-            ])
-        else:
-            features.extend([0.0] * 7)
-
-        # ── MFI (6维) ──
-        if ind:
-            features.extend([
-                ind.mfi_value / 100.0,
-                float(ind.mfi_oversold),
-                float(ind.mfi_overbought),
-                float(ind.mfi_cross_50_up),
-                float(ind.mfi_cross_50_down),
-                float(ind.mfi_bottom_divergence) - float(ind.mfi_top_divergence),
-            ])
-        else:
-            features.extend([0.0] * 6)
-
-        # ── 时间特征 (3维) ──
+        # ── 时间编码 (3维) ──
         bar_index = self._step
         max_steps = max(len(self._klines), self.MAX_STEPS)
         features.extend([
@@ -394,40 +347,25 @@ class T0Environment:
             (max_steps - bar_index) / max_steps,  # bars_remaining
         ])
 
-        # ── 相对位置 (1维) ──
-        if self._day_high > self._day_low:
-            price = k["Close"] if k else 0
-            day_position = (price - self._day_low) / (self._day_high - self._day_low)
-        else:
-            day_position = 0.5
-        features.append(day_position)
-
         # ── 仓位状态 (5维) ──
+        unrealized_pct = 0.0
+        if k and self._avg_cost > 0:
+            unrealized_pct = (k["Close"] / self._avg_cost - 1.0) * 100.0
         features.extend([
-            self._base_position / 3.0,
-            len(self._today_bought) / 3.0,
-            self.total_position / 6.0,
+            self._base_position / self.MAX_BASE_POSITION,
+            len(self._today_bought) / self.MAX_TODAY_BUY,
+            self.total_position / (self.MAX_BASE_POSITION + self.MAX_TODAY_BUY),
             self._avg_cost / 100.0 if self._avg_cost > 0 else 0.0,
-            self._unrealized_pnl / 100.0,
+            unrealized_pct,
         ])
-
-        # ── 资金状态 (2维) ──
-        max_buy = self.MAX_TODAY_BUY - len(self._today_bought)
-        features.extend([
-            float(max_buy > 0),              # 可用资金（有买入额度=1）
-            len(self._today_bought) / 3.0,   # 已用资金比例
-        ])
-
-        # ── 预热标志 (1维) ──
-        features.append(float(self._is_warmup))
 
         # ── 规则买卖点得分 (2维，use_signal_scores=True 时启用) ──
         # 直接复用分时做T页面同款 SignalEvaluator 规则引擎的原始得分，
         # 作为人工先验注入状态；引力场部分不参与（环境无参考线数据）。
-        # 买/卖满分约 40/35（规则权重和），除以 10 归一化到约 0~4 区间，
-        # 使 weak(~4)/medium(~5-7)/strong(≥6/11) 档位落在 0.4~1.1+ 的可区分范围
+        # 买/卖满分约 40/35（规则权重和），除以 10 归一化到约 0~4 区间
         if self.config.use_signal_scores:
             buy_score = sell_score = 0.0
+            ind = self._current_indicator
             if ind is not None:
                 buy_score = float(self._signal_evaluator.evaluate_buy(ind)[0])
                 sell_score = float(self._signal_evaluator.evaluate_sell(ind)[0])
@@ -472,12 +410,15 @@ class T0Environment:
         if action in self.BUY_AMOUNTS:
             # 一次买入 N 份（N=1/2/3），当日累计买入 ≤ MAX_TODAY_BUY
             n = self.BUY_AMOUNTS[action]
+            # reward 的 cost 项：单边买入成本（佣金+滑点，每份）
+            self._step_cost += n * self.config.per_side_cost
             for _ in range(n):
                 self._today_bought.append(price)
                 self._pending_buys.append({
                     "time": timestamp,
                     "price": price,
                     "action": "BUY",
+                    "paired_at": None,  # 奖励配对：SELL 卖出底仓时配对当日买入，记录配对卖出价
                 })
                 self._trades.append({
                     "time": timestamp,
@@ -493,32 +434,43 @@ class T0Environment:
             return 0.0
 
         elif action in self.SELL_AMOUNTS:
-            # T+1：当天买入不可卖出。一次卖出 N 份底仓（先卖后买），尾盘按收盘价买回补齐 3 份底仓
+            # T+1：当天买入不可卖出，SELL 只卖底仓（先卖后买），尾盘按收盘价买回补齐 3 份底仓
             n = self.SELL_AMOUNTS[action]
-            self._base_position -= n
+            # reward 的 cost 项：单边卖出成本（佣金+滑点，每份）
+            self._step_cost += n * self.config.per_side_cost
+            total_reward = 0.0
             for _ in range(n):
-                self._sold_short.append(price)  # 记录卖出价，尾盘买回结算
+                # 奖励配对：若有未配对的当日买入，按（卖出价-买入成本）立即计入做T收益，
+                # 并把该买入标记为已配对（paired_at=卖出价），尾盘只结算残余（收盘价-配对卖出价）
+                unpaired = None
+                for buy_record in self._pending_buys:
+                    if buy_record.get("paired_at") is None:
+                        unpaired = buy_record
+                        break
+                if unpaired is not None:
+                    buy_price = unpaired["price"]
+                    unpaired["paired_at"] = price
+                    gross_return = (price - buy_price) / buy_price * 100
+                    trade_reward = gross_return - self.config.transaction_cost
+                    self._realized_pnl += trade_reward
+                    total_reward += trade_reward
+                # 无论是否配对，卖出都作用于底仓（T+1 仓位约束：当日买入保持锁定）
+                self._base_position -= 1
+                self._sold_short.append(price)  # 记录卖出价，尾盘买回补齐底仓
 
             self._trades.append({
                 "time": timestamp,
                 "action": f"SELL{n}",
                 "price": price,
-                "pnl": 0.0,
+                "pnl": total_reward,
             })
-            return 0.0
+            return total_reward
 
         return 0.0
 
     # ═══════════════════════════════════════════════
     #  奖励函数
     # ═══════════════════════════════════════════════
-
-    def _compute_episode_bonus(self) -> float:
-        """episode 结束时的奖励项"""
-        bonus = 0.0
-        if self._realized_pnl > 0:
-            bonus += 1.0  # 当日正收益额外奖励
-        return bonus
 
     def _force_close(self) -> float:
         """收盘强制平仓，使用收盘价，仅保留 3 份底仓
@@ -527,7 +479,7 @@ class T0Environment:
         2. 先卖后买（sold_short）按收盘价买回补齐底仓到 3 份（卖出价高于买回价则赚）。
 
         Returns:
-            平仓奖励（小负值，鼓励日内完成配对做T，而非拖到收盘）
+            平仓奖励（仅作簿记，新奖励机制下 reward 的终态约束由 terminal_constraint 承担）
         """
         if not self._current_kline:
             return 0.0
@@ -540,14 +492,24 @@ class T0Environment:
             total_pnl = 0.0
             for buy_record in self._pending_buys:
                 buy_price = buy_record["price"]
+                paired_at = buy_record.get("paired_at")
                 if buy_price > 0 and close_price > 0:
-                    gross_return = (close_price - buy_price) / buy_price * 100
-                    total_pnl += gross_return - self.config.transaction_cost
+                    if paired_at is not None:
+                        # 已配对：SELL 时已按（卖出价-买入价）计入做T收益并计过一次成本，
+                        # 此处只结算残余（收盘价-配对卖出价），统一以买入价为基准，保证全天总收益与真实 T+1 账目精确一致、不重复计成本
+                        gross_return = (close_price - paired_at) / buy_price * 100
+                    else:
+                        # 未配对：按收盘价结算（收盘价-买入价）
+                        ref_price = buy_price
+                        gross_return = (close_price - ref_price) / ref_price * 100 - self.config.transaction_cost
+                    total_pnl += gross_return
             self._realized_pnl += total_pnl
             n_pending = len(self._pending_buys)
+            # reward 的 cost 项：强平卖出成本（每份单边）
+            self._step_cost += n_pending * self.config.per_side_cost
             self._pending_buys = []
             self._today_bought = []  # 当日买入已全部强平，同步清空（保持 total_position = 底仓）
-            # 小惩罚：鼓励日内配对卖出（SELL）实现做T，而非拖到收盘
+            # 小惩罚：鼓励日内 SELL 配对实现做T，而非拖到收盘
             close_reward += -0.1 * n_pending
 
         # 2. 先卖后买：按收盘价买回卖出的底仓，恢复底仓到 3 份
@@ -559,6 +521,8 @@ class T0Environment:
                     gross_return = (sell_price - close_price) / close_price * 100
                     total_pnl += gross_return - self.config.transaction_cost
             self._realized_pnl += total_pnl
+            # reward 的 cost 项：买回底仓成本（每份单边）
+            self._step_cost += len(self._sold_short) * self.config.per_side_cost
             self._sold_short = []
             # 恢复底仓到 MAX_BASE_POSITION（3 份）
             self._base_position = self.MAX_BASE_POSITION
@@ -582,6 +546,12 @@ class T0Environment:
 
         # Feed K线到数据缓冲区
         self._data_buffer.append(self._current_kline)
+
+        # 原始基线（use_signal_scores=False）：状态仅用 OHLCV/return/vol，
+        # 无需计算技术指标，跳过以节省每步开销
+        if not self.config.use_signal_scores:
+            self._current_indicator = None
+            return
 
         # 计算指标
         data = self._data_buffer.data

@@ -18,7 +18,13 @@ class AbstractRLModel(ABC):
 
     def __init__(self, config: "RLConfig"):
         self.config = config
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # 设备检测必须同时检查 is_available 与 device_count：
+        # 本环境 CUDA_VISIBLE_DEVICES="" 时 torch.cuda.is_available() 仍返回 True 但
+        # device_count()=0（GPU 实际仍可被 .to('cuda') 使用），仅凭 is_available 会把
+        # 设备误判为 cuda，导致 GPU 进程保存的 checkpoint 在 CPU 进程加载时崩溃
+        # （RuntimeError: ... CUDA device 0 but torch.cuda.device_count() is 0）。
+        cuda_ok = torch.cuda.is_available() and torch.cuda.device_count() > 0
+        self.device = torch.device("cuda" if cuda_ok else "cpu")
 
     @abstractmethod
     def predict(self, state: np.ndarray, deterministic: bool = False) -> int:

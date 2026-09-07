@@ -20,13 +20,15 @@ export const TrainingConfigPanel: React.FC<Props> = ({ disabled }) => {
   const totalEpisodes = useRLStore((s) => s.totalEpisodes);
   const models = useRLStore((s) => s.models);
 
+  // 默认值与 .env 同步（RL_TRAINING_EPISODES=300 / RL_BATCH_SIZE=128 /
+  // RL_LEARNING_RATE=0.0003 / RL_USE_SIGNAL_SCORES=true），确保「开始训练」即 P0 基准
   const [algorithm, setAlgorithm] = React.useState<'dqn' | 'ppo'>('dqn');
-  const [episodes, setEpisodes] = React.useState(500);
+  const [episodes, setEpisodes] = React.useState(300);
   const [batchSize, setBatchSize] = React.useState(128);
-  const [learningRate, setLearningRate] = React.useState(0.001);
+  const [learningRate, setLearningRate] = React.useState(0.0003);
   const [resumeEnabled, setResumeEnabled] = React.useState(false);
   const [resumeFromModel, setResumeFromModel] = React.useState('latest');
-  const [useSignalScores, setUseSignalScores] = React.useState(false);
+  const [useSignalScores, setUseSignalScores] = React.useState(true);
   const [starting, setStarting] = React.useState(false);
 
   const handleStart = async () => {
