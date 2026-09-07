@@ -18,7 +18,7 @@ class TrainRequest(BaseModel):
     resume_from: Optional[str] = Field(None, description="断点续训来源：模型 ID、checkpoint 目录名或 latest")
     use_signal_scores: Optional[bool] = Field(
         None,
-        description="是否将规则买卖点评分接入状态特征（True→state_dim=52，False/None→state_dim=50）",
+        description="是否将规则买卖点评分接入状态特征（True→state_dim=20，False/None→state_dim=18）",
     )
 
 

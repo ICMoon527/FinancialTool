@@ -171,7 +171,7 @@ export const TrainingConfigPanel: React.FC<Props> = ({ disabled }) => {
             </select>
             {resumePrior && (
               <p className="text-[11px] text-cyan-400 mt-1">
-                已自动启用规则先验买卖点以匹配该模型维度（state_dim 52）
+                已自动启用规则先验买卖点以匹配该模型维度（state_dim 20）
               </p>
             )}
           </div>
@@ -189,7 +189,7 @@ export const TrainingConfigPanel: React.FC<Props> = ({ disabled }) => {
           <span className="text-xs text-gray-300">
             启用规则先验买卖点
             <span className="block text-gray-500 text-[11px]">
-              将规则买卖点评分接入状态特征（state_dim 50→52），需重新训练，不可续训旧维度模型
+              将规则买卖点评分接入状态特征（state_dim 18→20），需重新训练，不可续训旧维度模型
             </span>
           </span>
         </label>

@@ -60,7 +60,7 @@ class RLService:
                 continue
             parts = d.name.split("_")
             algorithm = parts[0] if parts and parts[0] in ("dqn", "ppo") else "dqn"
-            # 目录名含 _prior 段表示训练时开启了先验买卖点（state_dim=52）
+            # 目录名含 _prior 段表示训练时开启了先验买卖点（state_dim=20）
             use_signal_scores = len(parts) >= 2 and parts[1] == "prior"
 
             # 从目录名解析创建时间，解析失败则用目录修改时间
