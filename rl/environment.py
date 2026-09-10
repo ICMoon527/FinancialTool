@@ -264,6 +264,10 @@ class T0Environment:
             self._update_indicators()
             self._update_price_stats()
 
+        # 3.5 做空日内硬止损：先卖后买做空若遇反弹超阈值，立即买回封死亏损，
+        # 切断「先弱后强」下收盘强平造成单笔 -8% 灾难的尾部风险
+        self._check_short_stop()
+
         # 4. 终态约束（奖励 r 的 terminal_constraint 项）与收盘强平簿记
         terminal_constraint = 0.0
         if self._step >= len(self._klines) or self._step >= self.MAX_STEPS:
@@ -274,13 +278,17 @@ class T0Environment:
             self._force_close()
 
         # 5. 奖励计算：r = ΔPnL - cost - λ·inventory² + terminal_constraint
-        #    ΔPnL：总持仓逐分钟 mark-to-market 盈亏（%刻度，密集浮盈信号）
+        #    ΔPnL：仅对 agent 可控的日内净敞口（当日买入 − 先卖后买卖出）mark-to-market。
+        #    恒定底仓 3 份不参与（否则 HOLD 也随市场波动 ±6.5std，把做T收益 ±0.1 的信号
+        #    完全淹没，agent 学不到「交易决策 ↔ reward」的关联）。
+        #    先卖后买卖出的底仓视为负向敞口：价格上涨 → 尾盘需高价买回 → 做T亏损
         cur_close = self._current_kline["Close"] if self._current_kline else prev_close
         if prev_close > 0:
             price_return = (cur_close - prev_close) / prev_close * 100.0
         else:
             price_return = 0.0
-        mtm_delta = self.total_position * price_return
+        intraday_net = len(self._today_bought) - len(self._sold_short)
+        mtm_delta = intraday_net * price_return
         # 库存惩罚只针对 agent 可控的日内双向敞口（当日买入 + 先卖后买的卖出底仓），
         # 恒定底仓 3 份不参与惩罚（否则每步恒定 -λ·9 偏置会淹没学习信号）
         intraday_exposure = len(self._today_bought) + len(self._sold_short)
@@ -394,9 +402,17 @@ class T0Environment:
         elif action in self.SELL_AMOUNTS:
             # T+1：当天买入不可卖出，SELL 只卖底仓（先卖后买）。一次可卖 N 份（N=1/2/3），需 ≤ 底仓
             n = self.SELL_AMOUNTS[action]
-            if n <= self._base_position:
-                return True, action
-            return False, self.HOLD
+            if n > self._base_position:
+                return False, self.HOLD
+            # 空头尾部风险抑制：只在「当日已回落跌破开盘价」的弱势环境允许卖底仓做空，
+            # 逢强势（price >= open）一律禁空。基线证实开盘价附近做空遇暴力拉升会被
+            # 收盘强平买回造成单笔 -8% 灾难损失，故必须要求当日已确认弱势才可做空。
+            if self.config.short_guard_enabled and self._day_open > 0:
+                cur = self._current_kline.get("Close", 0.0) if self._current_kline else 0.0
+                up_pct = (cur / self._day_open - 1.0) * 100.0
+                if up_pct >= -self.config.short_down_margin:
+                    return False, self.HOLD
+            return True, action
         return False, self.HOLD
 
     def _execute_action(self, action: int) -> float:
@@ -471,6 +487,43 @@ class T0Environment:
     # ═══════════════════════════════════════════════
     #  奖励函数
     # ═══════════════════════════════════════════════
+
+    def _check_short_stop(self) -> None:
+        """做空日内硬止损：对每笔先卖后买做空，若当前价格相对卖出价反弹幅度
+        超过 short_stop(%)，立即按现价买回、结算利润/亏损并从 _sold_short 移除，
+        同时恢复一份底仓。这从根本上把单笔做空的最大亏损封在 short_stop 附近，
+        防止「先弱后强」的暴力拉升日被收盘强平买回造成单笔 -8% 的灾难性损失。
+
+        注：动量守卫（short_guard_enabled）只挡得住「逢强势做空」，拦不住
+        「盘中短暂跌破开盘价做空、随后暴涨」的漏网，硬止损是兜底机制。
+        """
+        if self.config.short_stop <= 0.0:
+            return
+        k = self._current_kline
+        if not k:
+            return
+        cur_price = k["Close"]
+        if cur_price <= 0.0 or not self._sold_short:
+            return
+        remaining: List[float] = []
+        for sell_price in self._sold_short:
+            if sell_price > 0.0 and (cur_price / sell_price - 1.0) * 100.0 > self.config.short_stop:
+                # 止损买回：先卖后买，卖出价低于买回价则亏损，计入已实现做T收益
+                gross_return = (sell_price - cur_price) / cur_price * 100 - self.config.transaction_cost
+                self._realized_pnl += gross_return
+                # reward cost 项：买回单边成本
+                self._step_cost += self.config.per_side_cost
+                # 已买回一份底仓 → 底仓恢复 1 份
+                self._base_position += 1
+                self._trades.append({
+                    "time": k.get("time", k.get("datetime", "")),
+                    "action": "SHORT_STOP",
+                    "price": cur_price,
+                    "pnl": gross_return,
+                })
+            else:
+                remaining.append(sell_price)
+        self._sold_short = remaining
 
     def _force_close(self) -> float:
         """收盘强制平仓，使用收盘价，仅保留 3 份底仓

@@ -192,6 +192,10 @@ class PrioritizedReplayBuffer:
 class DQNModel(AbstractRLModel):
     """DQN 算法实现（Double DQN + Dueling DQN + Prioritized Experience Replay）"""
 
+    # Q 值裁剪边界（%刻度）：reward_clip=5、γ=0.9 时收敛上限 ≈ 5/(1-γ) = 50。
+    # 用于 target_q 与预测 Q 值的有界化，阻断 bootstrap 正反馈发散
+    Q_VALUE_CLIP: float = 50.0
+
     def __init__(self, config: "RLConfig"):
         super().__init__(config)
         self.q_network = create_dqn_network(config).to(self.device)
@@ -252,7 +256,7 @@ class DQNModel(AbstractRLModel):
         q_values = self.q_network(states)
         q_value = q_values.gather(1, actions.unsqueeze(1)).squeeze(1)
 
-        # 目标 Q 值
+        # 目标 Q 值（Double DQN + 裁剪）
         with torch.no_grad():
             if self.config.dqn_double:
                 # Double DQN: 用 q_network 选动作，target_network 评估
@@ -260,7 +264,16 @@ class DQNModel(AbstractRLModel):
                 next_q_values = self.target_network(next_states).gather(1, next_actions).squeeze(1)
             else:
                 next_q_values = self.target_network(next_states).max(dim=1)[0]
-            target_q = rewards + self.config.gamma * next_q_values * (1 - dones)
+            # Q 值裁剪（防发散核心）：限制 target 输出值域 [-Q_VALUE_CLIP, Q_VALUE_CLIP]。
+            # 此前未裁剪：Q 值经 bootstrap 正反馈（target → TD误差 → 权重 → Q）指数膨胀，
+            # 实测涨到 +4546（%刻度）而真实回报为负，agent 误以为交易能赚几百点。
+            # 理论推导：reward_clip=5、γ=0.9 时 Q 值收敛上限 ≈ 5/(1-0.9) = 50，取 50 为界。
+            next_q_values = torch.clamp(next_q_values, -self.Q_VALUE_CLIP, self.Q_VALUE_CLIP)
+            target_q = torch.clamp(
+                rewards + self.config.gamma * next_q_values * (1 - dones),
+                -self.Q_VALUE_CLIP,
+                self.Q_VALUE_CLIP,
+            )
 
         # TD 误差（用于更新 PER 优先级）
         td_errors = (target_q - q_value).detach()

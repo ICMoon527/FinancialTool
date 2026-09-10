@@ -196,8 +196,10 @@ class RLEvaluator:
                 trade_count += 1
             state = next_state
 
-        # 日收益率（近似）
-        day_return = total_reward / 100.0
+        # 日收益率：采用真实的做T已实现盈亏（realized_pnl %）作为当日收益口径，
+        # 而非把 per-step reward 近似当收益。reward 是训练信号（每天约 -80~-90），
+        # 若误当天收益率复利会得到虚假的 -99.9%，严重失真。
+        day_return = float(self.env._realized_pnl) / 100.0
 
         # 基准收益率（买入持有）
         if len(klines) >= 2:

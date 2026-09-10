@@ -22,13 +22,18 @@ from pathlib import Path
 
 # ── Windows 原生崩溃防护（必须在任何 numpy/torch 导入之前设置）──
 # 1. KMP_DUPLICATE_LIB_OK：numpy(MKL) 与 torch 各自捆绑 libiomp5md.dll，
-#    重复加载触发 OMP 初始化冲突 → 随机 0xC0000005 段错误（adams/numpy 采样处崩）
-# 2. OMP/MKL 线程数限制：避免 MKL 与 CUDA 线程竞争加剧原生崩溃
-# 3. FOR_DISABLE_CONSOLE_CTRL_HANDLER：numpy 的 Intel Fortran 运行时
-#    注册 Ctrl+C 处理器干扰 Python 信号（webui 同款坑，一并防护）
+#    重复加载触发 OMP 初始化冲突 → 随机 0xC0000005 段错误（adams/numpy 采样处崩）。
+#    该开关只压制重复库的致命报错，不能阻止两套线程库并发互踩内存。
+# 2. 根治措施：将 OMP/MKL 线程数强制为 1。冲突本源是两套 OpenMP 运行时各自开线程池、
+#    跨运行时竞争同一批线程/内存；单线程化后所有 OpenMP 调用退化为串行，消除共享线程池竞争
+#    （实测纯 torch 多线程稳定，但 numpy+torch 混跑多线程必炸；单线程最稳妥）。
+# 3. KMP_BLOCKTIME=0：OpenMP 并行区结束后立即归还线程，进一步削弱线程驻留竞争。
+# 4. FOR_DISABLE_CONSOLE_CTRL_HANDLER：numpy 的 Intel Fortran 运行时
+#    注册 Ctrl+C 处理器干扰 Python 信号（webui 同款坑，一并防护）。
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
-os.environ.setdefault("OMP_NUM_THREADS", "4")
-os.environ.setdefault("MKL_NUM_THREADS", "4")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("KMP_BLOCKTIME", "0")
 os.environ.setdefault("FOR_DISABLE_CONSOLE_CTRL_HANDLER", "1")
 
 # 确保项目根目录在 sys.path 中
@@ -66,7 +71,9 @@ def setup_logging(log_dir: Path) -> None:
 
 def main():
     # 故障定位：每 60 秒 dump 一次主线程堆栈到 stderr（卡死时能从 job 日志看到卡住位置）
-    faulthandler.dump_traceback_later(60, repeat=True)
+    # ⚠️ 2026-09-09 临时禁用验证：Windows 下 faulthandler.dump_traceback_later 遍历线程栈
+    #    与 torch 内部状态存在竞态，疑似触发随机 0xC0000005（崩溃均紧跟 dump 之后）
+    # faulthandler.dump_traceback_later(60, repeat=True)
     parser = argparse.ArgumentParser(description="使用真实数据训练 DQN 模型")
     parser.add_argument("--episodes", type=int, default=None, help="训练轮数（覆盖 .env，续训时为续训轮数）")
     parser.add_argument("--batch-size", type=int, default=None, help="批次大小")
@@ -112,6 +119,12 @@ def main():
     import torch
     # 与 AbstractRLModel 保持一致：is_available 在本环境 CUDA_VISIBLE_DEVICES="" 时
     # 仍返回 True，必须追加 device_count()>0 判定，否则 --no-gpu 实际仍跑在 GPU
+    # 线程钳制：torch 的 OpenMP 线程也降为 1，与 numpy(MKL) 单线程保持一致，
+    # 从运行时侧闭环消除两套线程池竞争（env 侧已设 OMP_NUM_THREADS=1，此处再显式钉死）
+    torch.set_num_threads(1)
+    if torch.cuda.is_available():
+        # CUDA 后端 PyTorch 默认用独立的非阻塞流，显式禁用其 OpenMP 残余线程
+        torch.backends.cudnn.benchmark = False
     cuda_ok = torch.cuda.is_available() and torch.cuda.device_count() > 0
     device = "cuda" if (cuda_ok and not args.no_gpu) else "cpu"
     logger.info(f"设备: {device}")

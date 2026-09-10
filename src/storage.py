@@ -49,7 +49,9 @@ from sqlalchemy.orm import (
 )
 from sqlalchemy.exc import IntegrityError
 
-from src.search_service import sanitize_news_text
+# 惰性导入 sanitize_news_text：search_service 会级联拉取 LLM/搜索/数据源整套依赖
+# （litellm、openai、newspaper、akshare 等），顶层导入会让仅需 DatabaseManager 的
+# 轻量调用（如 RL 训练）被迫加载整套重依赖。改在 save_news_intel 内部按需导入。
 
 from src.config import get_config
 from src.cache import get_cache
@@ -1086,6 +1088,13 @@ class DatabaseManager:
         关联策略：
         - query_context 记录用户查询信息（平台、用户、会话、原始指令等）
         """
+        # 惰性导入：search_service 会级联拉取 LLM/搜索/数据源整套重依赖，
+        # 仅当真正需要清洗新闻文本时才加载，避免轻量调用（如 RL 训练）被迫加载。
+        try:
+            from src.search_service import sanitize_news_text
+        except Exception:  # pragma: no cover - 防御：缺依赖时降级为原样保留
+            sanitize_news_text = lambda s: s  # noqa: E731
+
         if not response or not response.results:
             return 0
 

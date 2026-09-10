@@ -68,6 +68,15 @@ class RLConfig:
     early_stopping_patience: int = 15    # 连续 N 次验证未提升则停止（验证指标为真实做T收益，耐心加大减少噪声误触发）
     reward_clip: float = 5.0             # reward 裁剪范围 [-5, 5]
 
+    # ── 空头尾部风险抑制（卖底仓做空）──
+    # 基线评估暴露：模型偶尔「先卖后买」卖底仓做空，遇到当日暴力拉升（如600519单日+8%）
+    # 被收盘强平买回，单笔亏 -8%，两笔就拖垮整个账户。单点动量检查挡不住「开盘价附近就做空、
+    # 之后才拉升」的灾难尾。改为只在「当日已跌破开盘价（弱势）」时允许做空，逢强势一律禁空，
+    # 从动作层面彻底切断空头灾难尾，而非依赖模型自行规避。
+    short_guard_enabled: bool = True        # 是否启用卖底仓做空的当日弱势约束
+    short_down_margin: float = 0.0          # 允许做空需当日相对开盘价回落到该值(%)以下（默认0：仅低于开盘价时做空）
+    short_stop: float = 2.0                 # 做空日内硬止损(%)：价格相对卖出价反弹超该值立即买回封死亏损
+
     # ── 模型存储 ──
     model_dir: str = "rl/models"
     save_best_only: bool = True
@@ -130,6 +139,9 @@ class RLConfig:
             "RL_MODEL_DIR": ("model_dir", "str"),
             "RL_SAVE_BEST_ONLY": ("save_best_only", "bool"),
             "RL_USE_SIGNAL_SCORES": ("use_signal_scores", "bool"),
+            "RL_SHORT_GUARD_ENABLED": ("short_guard_enabled", "bool"),
+            "RL_SHORT_DOWN_MARGIN": ("short_down_margin", "float"),
+            "RL_SHORT_STOP": ("short_stop", "float"),
         }
 
         for env_name, (attr_name, type_name) in env_map.items():
