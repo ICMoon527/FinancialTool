@@ -8,6 +8,11 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+# 加载 .env（与 train_dqn 的 import 链一致，确保 RL_USE_SIGNAL_SCORES 等生效）
+from dotenv import load_dotenv
+
+load_dotenv(Path(PROJECT_ROOT / ".env"))
+
 import numpy as np
 
 

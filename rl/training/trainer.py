@@ -355,59 +355,36 @@ class RLTrainer:
 
         Args:
             max_val_days: 验证集抽样上限（验证集可能非常大，全量验证过慢）
+
+        可复现性修复：直接复用 RLEvaluator（与训练完成后的独立评估同一套代码），
+        确保「训练日志中的 best 验证指标」与「独立评估结果」口径完全一致（同为
+        realized_pnl 复利聚合、同为新建 env 无训练残留），避免两套验证实现出现
+        np.sum/np.prod 口径差异或 env 状态残留导致 best 选择失真（曾出现训练验证
+        +7.15% 而独立评估同权重 -10.17% 的假象）。
         """
-        daily_returns = []
-        daily_summaries = []
+        from rl.evaluation.evaluator import RLEvaluator
 
         # 验证集抽样（数据量大时避免全量验证拖慢训练）
         # 固定种子（独立 Random 实例，不污染全局随机状态）：保证每次验证抽同一批样本，
-        # 验证曲线（canvas 图中的 val_sharpe/val_return/val_win_rate）稳定可比；
-        # 仅影响训练过程中的验证曲线，不影响训练完成后的模型评估（评估为独立抽样，seed=42）
-        val_samples = self.dataset.val_samples
-        if len(val_samples) > max_val_days:
+        # 验证曲线（canvas 图中的 val_sharpe/val_return/val_win_rate）稳定可比
+        samples = self.dataset.val_samples
+        if len(samples) > max_val_days:
             import random as _random
-            val_samples = _random.Random(42).sample(val_samples, max_val_days)
+            samples = _random.Random(42).sample(samples, max_val_days)
             logger.info(f"验证集抽样: {max_val_days}/{len(self.dataset.val_samples)}")
 
-        for sample in val_samples:
-            klines, prev_klines = self._load_sample_data(sample)
-            state = self.env.reset(
-                self._sample_to_dict(sample, klines),
-                prev_klines,
-            )
-            done = False
-            day_reward = 0.0
-            trade_count = 0
-
-            while not done:
-                action = self.model.predict(state, deterministic=True)
-                next_state, reward, done, info = self.env.step(action)
-                day_reward += reward
-                if info.get("action_applied", 0) != 0:
-                    trade_count += 1
-                state = next_state
-
-            # 日收益率 = 当日做T已实现收益（% → 小数），与评估器 realized_pnl 一致。
-            # 不再用 total_reward 近似（其被底仓市场波动主导，会导致验证指标与真实做T能力错位、误触发早停）
-            daily_returns.append(self.env._realized_pnl / 100.0)
-            daily_summaries.append({
-                "trade_count": trade_count,
-                "reward": day_reward,
-            })
-
-        returns = np.array(daily_returns)
-        # Sharpe Ratio（年化，假设252个交易日）
-        sharpe = float(np.mean(returns) / (np.std(returns) + 1e-8) * np.sqrt(252))
-        # 总收益
-        total_return = float(np.sum(returns))
-        # 胜率
-        win_count = sum(1 for r in returns if r > 0)
-        win_rate = float(win_count / max(len(returns), 1))
+        # 与独立评估完全一致：RLEvaluator 内部新建 T0Environment（无训练残留），
+        # 按 realized_pnl 复利聚合，返回 summary_metrics
+        evaluator = RLEvaluator(self.config, self.model, self.dataset)
+        result = evaluator.evaluate(samples=samples)
+        m = result["summary_metrics"]
 
         return {
-            "sharpe": sharpe,
-            "total_return": total_return,
-            "win_rate": win_rate,
+            "sharpe": m["sharpe_ratio"],
+            "total_return": m["total_return"],
+            "win_rate": m["win_rate"],
+            "max_drawdown": m["max_drawdown"],
+            "n_days": len(result["daily_summaries"]),
         }
 
     def _save_checkpoint(self, tag: str, next_episode: Optional[int] = None) -> str:

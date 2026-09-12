@@ -9,12 +9,13 @@
 - 预热期：前 warmup_steps 步强制 HOLD + reward=0
 - 每个交易日为一个独立 episode
 
-奖励机制（密集浮盈信号，r = ΔPnL - cost - λ·inventory² + terminal_constraint）：
+奖励机制（密集浮盈信号，r = ΔPnL - cost - λ·开仓敞口² + terminal_constraint）：
 - ΔPnL：总持仓（底仓 + 当日买入）的逐分钟 mark-to-market 盈亏（% 刻度），
   让模型在每根K线都能感知持仓浮盈变化，而非仅事件驱动
 - cost ：每笔成交的单边交易成本（佣金+滑点，每份 0.1%），含尾盘强平/买回成本
-- λ·inventory²：库存惩罚（λ=reward_lambda，库存=agent可控的日内双向敞口=当日买入+先卖后买，
-  不含恒定底仓；不做T时惩罚为0，避免恒定偏置淹没学习信号）
+- λ·开仓敞口²：开仓惩罚（λ=reward_lambda），仅对本步「净新增」的日内敞口一次性收取
+  （库存=agent可控的日内双向敞口=当日买入+先卖后买，不含恒定底仓）。改为开仓时收取而非
+  逐steps持仓，避免「持有多日寸」在约240步/天的高频累加下被罚成最大负项、淹没做T信号。
 - terminal_constraint：收盘仍有未平当日买入时惩罚 -κ·leftover²（κ=reward_terminal_coef），
   鼓励日内 SELL 配对平仓而非拖到收盘强平
 
@@ -247,6 +248,10 @@ class T0Environment:
         # 0. 记录动作前状态（奖励计算用：本步成交价 = 当前K线收盘价）
         prev_close = self._current_kline["Close"] if self._current_kline else 0.0
         self._step_cost = 0.0
+        # 记录本步动作前敞口（用于开仓惩罚：只罚「新开仓」增量，不再逐step罚持仓）
+        exp_before = len(self._today_bought) + len(self._sold_short)
+        # R2：记录动作前已实现收益，用于计算本步「已实现收益增量」reward
+        realized_before = self._realized_pnl
 
         # 1. 动作合法性校验
         is_valid, applied_action = self._parse_action(action)
@@ -277,24 +282,26 @@ class T0Environment:
             terminal_constraint = -self.config.reward_terminal_coef * leftover**2
             self._force_close()
 
-        # 5. 奖励计算：r = ΔPnL - cost - λ·inventory² + terminal_constraint
-        #    ΔPnL：仅对 agent 可控的日内净敞口（当日买入 − 先卖后买卖出）mark-to-market。
-        #    恒定底仓 3 份不参与（否则 HOLD 也随市场波动 ±6.5std，把做T收益 ±0.1 的信号
-        #    完全淹没，agent 学不到「交易决策 ↔ reward」的关联）。
-        #    先卖后买卖出的底仓视为负向敞口：价格上涨 → 尾盘需高价买回 → 做T亏损
-        cur_close = self._current_kline["Close"] if self._current_kline else prev_close
-        if prev_close > 0:
-            price_return = (cur_close - prev_close) / prev_close * 100.0
-        else:
-            price_return = 0.0
-        intraday_net = len(self._today_bought) - len(self._sold_short)
-        mtm_delta = intraday_net * price_return
-        # 库存惩罚只针对 agent 可控的日内双向敞口（当日买入 + 先卖后买的卖出底仓），
-        # 恒定底仓 3 份不参与惩罚（否则每步恒定 -λ·9 偏置会淹没学习信号）
+        # 5. 奖励计算：r = Δrealized_pnl - λ·Δexposure² + terminal_constraint
+        #    R2 修复（对齐评估口径，消除 reward hacking）：
+        #    旧实现 r = mtm_delta - step_cost - inv_penalty，其中 mtm_delta 是
+        #    「单根K线未实现浮动盈亏」。模型只需「买入后持有一阵」，未平仓的浮动
+        #    就能刷正 reward（实测 16 笔交易全部集中在 600036、每天固定 1 笔，
+        #    reward 累计 -75.65 而 realized -7.94% —— 训练目标与真实绩效严重错位），
+        #    而真实做T收益要到配对/强平时才按 realized_pnl 结算（并扣双边成本 0.4%）。
+        #    现改为：reward = 当日已实现收益增量（_realized_pnl 本步增量）。只有
+        #    「真实平仓赚钱」才给正 reward；成本已在 _execute_action/_force_close
+        #    结算时计入 realized（transaction_cost），与评估口径完全一致，杜绝刷浮动。
+        cur_realized = self._realized_pnl
+        realized_delta = cur_realized - realized_before
+        # 开仓惩罚：只对本步净新增的日内敞口一次性收取 λ·Δexposure²，
+        # 惩罚过度开仓/换手，不再对「持仓过程」逐 step 收取（逐step罚会把
+        # 「持有日内仓位」（做T盈利前提）罚成最大负项，淹没一切正信号）。
         intraday_exposure = len(self._today_bought) + len(self._sold_short)
-        inv_penalty = self.config.reward_lambda * intraday_exposure**2
+        open_exposure = max(0.0, intraday_exposure - exp_before)
+        inv_penalty = self.config.reward_lambda * open_exposure**2
 
-        reward = mtm_delta - self._step_cost - inv_penalty + terminal_constraint
+        reward = realized_delta - inv_penalty + terminal_constraint
         reward = float(np.clip(reward, -self.config.reward_clip, self.config.reward_clip))
 
         self._total_reward += reward
