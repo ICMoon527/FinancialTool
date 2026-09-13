@@ -334,6 +334,11 @@ def test_full_training_loop(config):
     # 创建模型
     model = DQNModel(config)
 
+    # 创建训练器（model_dir 指向临时目录：冒烟测试用模拟数据，绝不能写入真实模型目录，
+    # 否则会覆盖已训练的 dqn_best/dqn_latest 造成误评估）
+    import tempfile
+    config.model_dir = tempfile.mkdtemp(prefix="rl_test_models_")
+
     # 创建训练器
     progress_store = {}
     trainer = RLTrainer(

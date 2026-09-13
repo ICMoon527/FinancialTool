@@ -87,13 +87,24 @@ class RLConfig:
     # 仅用于新训练的对照实验
     use_signal_scores: bool = False
 
+    # ── 前日K线时间拼接 ──
+    # 是否在时间维度拼接前一日全天分时K线（约240根）到当日K线序列前，
+    # 使 return_1/5/15/60、波动率等跨日特征在开盘时刻即有完整前日上下文，
+    # 而非仅用前日尾盘30根预热。解决「开盘时刻状态无当日信息、只能开盘秒买赌方向」：
+    # 模型可对比「今日当前价 vs 前日各时段」判断当日强弱再决定买卖时点。
+    # 注意：状态维度不变（18/20），但特征值基于更长的跨日序列，权重需重新训练
+    use_prev_day_features: bool = False
+
     @property
     def model_tag(self) -> str:
-        """模型目录/ID 使用的算法前缀；开启先验买卖点时加 _prior 标识，
-        用于在文件夹名上区分 20 维（带先验）与 18 维（不带）模型"""
+        """模型目录/ID 使用的算法前缀；开启先验买卖点加 _prior，开启前日K线拼接加 _prevf，
+        用于在文件夹名上区分不同训练配置（权重特征分布不同，不能混用）"""
+        tag = self.default_algorithm
         if self.use_signal_scores:
-            return f"{self.default_algorithm}_prior"
-        return self.default_algorithm
+            tag += "_prior"
+        if self.use_prev_day_features:
+            tag += "_prevf"
+        return tag
 
     @classmethod
     def from_env(cls) -> "RLConfig":
@@ -139,6 +150,7 @@ class RLConfig:
             "RL_MODEL_DIR": ("model_dir", "str"),
             "RL_SAVE_BEST_ONLY": ("save_best_only", "bool"),
             "RL_USE_SIGNAL_SCORES": ("use_signal_scores", "bool"),
+            "RL_USE_PREV_DAY_FEATURES": ("use_prev_day_features", "bool"),
             "RL_SHORT_GUARD_ENABLED": ("short_guard_enabled", "bool"),
             "RL_SHORT_DOWN_MARGIN": ("short_down_margin", "float"),
             "RL_SHORT_STOP": ("short_stop", "float"),
@@ -188,6 +200,7 @@ class RLConfig:
 
         基础 18 维 = OHLCV(5) + 多尺度return(4: 1/5/15/60根) + 波动率(1)
                      + 时间编码(3) + 仓位状态(5)
+        （前日K线时间拼接不改变维度，只扩展特征计算的历史上下文）
         """
         return 20 if self.use_signal_scores else 18
 

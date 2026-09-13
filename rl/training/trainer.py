@@ -294,20 +294,27 @@ class RLTrainer:
             ])
 
     def _load_sample_data(self, sample):
-        """加载样本的当日K线和前一日K线（惰性加载，兼容 MockDataset）"""
+        """加载样本的当日K线、前一日K线、前日全天K线（惰性加载，兼容 MockDataset）"""
         if hasattr(self.dataset, "get_klines"):
             # IntradayDataset：按需查询数据库
             klines = self.dataset.get_klines(sample)
             prev_klines = self.dataset.get_prev_klines(sample)
+            prev_full = (
+                self.dataset.get_prev_day_full_klines(sample)
+                if hasattr(self.dataset, "get_prev_day_full_klines")
+                else None
+            )
         else:
             # MockDataset 等自带数据的数据集
             if isinstance(sample, dict):
                 klines = sample["klines"]
                 prev_klines = sample.get("prev_day_klines")
+                prev_full = sample.get("prev_day_full_klines")
             else:
                 klines = sample.klines
                 prev_klines = sample.prev_day_klines
-        return klines, prev_klines
+                prev_full = getattr(sample, "prev_day_full_klines", None)
+        return klines, prev_klines, prev_full
 
     def _run_episode(
         self, sample: "DaySample", training: bool
@@ -321,10 +328,11 @@ class RLTrainer:
         Returns:
             (总奖励, 步数, 训练指标)
         """
-        klines, prev_klines = self._load_sample_data(sample)
+        klines, prev_klines, prev_full = self._load_sample_data(sample)
         state = self.env.reset(
             self._sample_to_dict(sample, klines),
             prev_klines,
+            prev_full,
         )
         done = False
         total_reward = 0.0

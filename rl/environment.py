@@ -83,7 +83,10 @@ class T0Environment:
 
         # 指标计算
         self._indicator_engine = indicator_engine or IntradayIndicatorEngine()
-        self._data_buffer = IntradayDataBuffer(max_window=200)
+        # max_window=500：容纳「前日全天(约240根) + 当日全天(约240根)」的跨日K线拼接，
+        # 保证开盘时 return_1/5/15/60、波动率等特征能看到完整前日上下文，
+        # 且盘中不因裁剪挤掉前日数据导致中期特征断档
+        self._data_buffer = IntradayDataBuffer(max_window=500)
 
         # 规则买卖点评分器（use_signal_scores=True 时为状态特征提供人工先验）
         self._signal_evaluator = SignalEvaluator()
@@ -137,6 +140,7 @@ class T0Environment:
         self,
         sample: Dict[str, object],
         prev_day_klines: Optional[List[Dict]] = None,
+        prev_day_full_klines: Optional[List[Dict]] = None,
     ) -> np.ndarray:
         """重置环境到新 episode
 
@@ -149,6 +153,8 @@ class T0Environment:
                 - stock_code: str     股票代码
                 - date: date          交易日
             prev_day_klines: 前一日最后 N 根K线（用于预热），None 时启用 episode 内预热
+            prev_day_full_klines: 前一日全天分时K线（用于前日形态特征，
+                use_prev_day_features=True 时生效；None 时前日特征补 0）
 
         Returns:
             state: np.ndarray 形状 (state_dim,)，初始状态向量
@@ -183,12 +189,14 @@ class T0Environment:
         if hasattr(sample.get("date"), "isoformat"):
             self._current_date = sample["date"].isoformat()
 
-        # 预热指标
-        self._data_buffer = IntradayDataBuffer(max_window=200)
+        # 预热指标：时间维度拼接前日K线（优先前日全天，兜底前日尾盘30根），
+        # 使 return_1/5/15/60、波动率等特征在开盘时刻即包含前日上下文
+        self._data_buffer = IntradayDataBuffer(max_window=500)
         self._warmup_bar_count = 0
-        if prev_day_klines:
-            self._data_buffer.warmup(prev_day_klines)
-            self._warmup_bar_count = len(prev_day_klines)
+        warmup_klines = prev_day_full_klines or prev_day_klines
+        if warmup_klines:
+            self._data_buffer.warmup(warmup_klines)
+            self._warmup_bar_count = len(warmup_klines)
             self._is_warmup = False  # 有前日数据，无需 episode 内预热
             # 用前日数据预计算指标初始状态
             self._precompute_indicators_from_buffer()
@@ -318,7 +326,7 @@ class T0Environment:
     # ═══════════════════════════════════════════════
 
     def _get_state(self) -> np.ndarray:
-        """构建 18 维状态向量（use_signal_scores=True 时 20 维），所有特征归一化到合理范围
+        """构建状态向量（基础 18 维；use_signal_scores 时 20 维），所有特征归一化到合理范围
 
         组成：OHLCV(5) + 多尺度return(4: 1/5/15/60根) + 波动率(1)
               + 时间编码(3) + 仓位状态(5) [+ 规则买卖点得分(2)]

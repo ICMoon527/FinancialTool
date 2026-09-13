@@ -21,6 +21,7 @@ def main():
     parser.add_argument("--model", default="rl/models/dqn_best", help="模型目录（含 model.pt）")
     parser.add_argument("--stock", default="000001,600519,000858,600036")
     parser.add_argument("--max-samples", type=int, default=5000)
+    parser.add_argument("--prev-day-features", action="store_true", help="时间维度拼接前日全天分时K线（与训练时一致）")
     parser.add_argument("--no-gpu", action="store_true", help="强制 CPU 评估")
     args = parser.parse_args()
 
@@ -35,6 +36,8 @@ def main():
     from src.storage import get_db
 
     config = RLConfig.from_env()
+    if args.prev_day_features:
+        config.use_prev_day_features = True
     logger = logging.getLogger("rl_eval")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%H:%M:%S")
 

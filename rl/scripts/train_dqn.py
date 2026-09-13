@@ -87,6 +87,7 @@ def main():
     parser.add_argument("--save-freq", type=int, default=50, help="latest checkpoint 保存频率（episode，0=不保存）")
     parser.add_argument("--log-dir", type=str, default=None, help="日志目录（默认 rl/models/logs）")
     parser.add_argument("--no-signal-scores", action="store_true", help="关闭规则买卖点得分状态特征（纯 OHLCV 基线，state_dim=18）")
+    parser.add_argument("--prev-day-features", action="store_true", help="时间维度拼接前日全天分时K线（特征上下文扩展到前日，维度不变）")
     args = parser.parse_args()
 
     # 强制 CPU
@@ -109,6 +110,8 @@ def main():
     config = RLConfig.from_env()
     if args.no_signal_scores:
         config.use_signal_scores = False
+    if args.prev_day_features:
+        config.use_prev_day_features = True
     if args.episodes:
         config.training_episodes = args.episodes
     if args.batch_size:
@@ -165,7 +168,7 @@ def main():
     # 断点续训
     start_episode = 0
     if args.resume:
-        resume_path = args.resume_path or str(Path(config.model_dir) / "dqn_latest")
+        resume_path = args.resume_path or str(Path(config.model_dir) / f"{config.model_tag}_latest")
         if not Path(resume_path, "model.pt").exists():
             logger.error(f"找不到可恢复的 checkpoint: {resume_path}")
             logger.error("请先完成一次训练，或用 --resume-path 指定 checkpoint 目录")
