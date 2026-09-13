@@ -88,6 +88,7 @@ def main():
     parser.add_argument("--log-dir", type=str, default=None, help="日志目录（默认 rl/models/logs）")
     parser.add_argument("--no-signal-scores", action="store_true", help="关闭规则买卖点得分状态特征（纯 OHLCV 基线，state_dim=18）")
     parser.add_argument("--prev-day-features", action="store_true", help="时间维度拼接前日全天分时K线（特征上下文扩展到前日，维度不变）")
+    parser.add_argument("--cnn-encoder", action="store_true", help="启用 1D-CNN 形态编码器（序列建模，需与 --prev-day-features 配合最佳）")
     args = parser.parse_args()
 
     # 强制 CPU
@@ -112,6 +113,8 @@ def main():
         config.use_signal_scores = False
     if args.prev_day_features:
         config.use_prev_day_features = True
+    if args.cnn_encoder:
+        config.use_cnn_encoder = True
     if args.episodes:
         config.training_episodes = args.episodes
     if args.batch_size:

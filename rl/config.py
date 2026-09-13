@@ -95,15 +95,29 @@ class RLConfig:
     # 注意：状态维度不变（18/20），但特征值基于更长的跨日序列，权重需重新训练
     use_prev_day_features: bool = False
 
+    # ── 1D-CNN 形态编码器（序列建模）──
+    # 时间拼接让 buffer 含「前日全天+当日」K线，但 MLP 无法从长序列归纳形态；
+    # 本开关启用 CNN 编码器：最近 cnn_window 根K线（OHLCV 相对前收归一）经两层
+    # Conv1d 编码为 cnn_out_dim 维形态向量，与 state_dim 状态拼接后进 MLP 输出 Q 值。
+    # 模型可直接观察「昨日尾盘走势/今日开盘方向/V型W型」等局部形态。
+    # 注意：开启后模型输入 = state_dim + cnn_out_dim，权重与纯 MLP 模型不兼容
+    use_cnn_encoder: bool = False
+    cnn_window: int = 60            # 形态编码器输入的K线窗口长度（滚动最近 N 根）
+    cnn_out_dim: int = 16           # 形态编码器输出维度（拼接进状态）
+    cnn_hidden_channels: Tuple[int, ...] = (32, 64)  # 两层 Conv1d 通道数
+    cnn_kernel_size: int = 5        # Conv1d 卷积核大小
+
     @property
     def model_tag(self) -> str:
         """模型目录/ID 使用的算法前缀；开启先验买卖点加 _prior，开启前日K线拼接加 _prevf，
-        用于在文件夹名上区分不同训练配置（权重特征分布不同，不能混用）"""
+        开启 CNN 形态编码器加 _cnn，用于在文件夹名上区分不同训练配置（权重结构不同，不能混用）"""
         tag = self.default_algorithm
         if self.use_signal_scores:
             tag += "_prior"
         if self.use_prev_day_features:
             tag += "_prevf"
+        if self.use_cnn_encoder:
+            tag += "_cnn"
         return tag
 
     @classmethod
@@ -151,6 +165,11 @@ class RLConfig:
             "RL_SAVE_BEST_ONLY": ("save_best_only", "bool"),
             "RL_USE_SIGNAL_SCORES": ("use_signal_scores", "bool"),
             "RL_USE_PREV_DAY_FEATURES": ("use_prev_day_features", "bool"),
+            "RL_USE_CNN_ENCODER": ("use_cnn_encoder", "bool"),
+            "RL_CNN_WINDOW": ("cnn_window", "int"),
+            "RL_CNN_OUT_DIM": ("cnn_out_dim", "int"),
+            "RL_CNN_HIDDEN_CHANNELS": ("cnn_hidden_channels", "tuple_int"),
+            "RL_CNN_KERNEL_SIZE": ("cnn_kernel_size", "int"),
             "RL_SHORT_GUARD_ENABLED": ("short_guard_enabled", "bool"),
             "RL_SHORT_DOWN_MARGIN": ("short_down_margin", "float"),
             "RL_SHORT_STOP": ("short_stop", "float"),

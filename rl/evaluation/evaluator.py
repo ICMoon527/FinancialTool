@@ -159,10 +159,12 @@ class RLEvaluator:
         done = False
         decisions = []
         reward_heatmap = []
+        window = self.env.kline_window
 
         while not done:
-            action = self.model.predict(state, deterministic=True)
+            action = self.model.predict(state, window, deterministic=True)
             next_state, reward, done, info = self.env.step(action)
+            window = self.env.kline_window
             decisions.append({
                 "step": info.get("step", len(decisions)),
                 "action": T0Environment.ACTION_NAMES[action],
@@ -196,10 +198,12 @@ class RLEvaluator:
         done = False
         total_reward = 0.0
         trade_count = 0
+        window = self.env.kline_window
 
         while not done:
-            action = self.model.predict(state, deterministic=True)
+            action = self.model.predict(state, window, deterministic=True)
             next_state, reward, done, info = self.env.step(action)
+            window = self.env.kline_window
             total_reward += reward
             if info.get("action_applied", 0) != 0:
                 trade_count += 1

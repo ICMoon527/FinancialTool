@@ -334,14 +334,16 @@ class RLTrainer:
             prev_klines,
             prev_full,
         )
+        window = self.env.kline_window  # 形态窗口（与 state 同一时刻；CNN 编码器输入）
         done = False
         total_reward = 0.0
         episode_length = 0
         train_metrics = None
 
         while not done:
-            action = self.model.predict(state, deterministic=not training)
+            action = self.model.predict(state, window, deterministic=not training)
             next_state, reward, done, info = self.env.step(action)
+            next_window = self.env.kline_window
             total_reward += reward
             episode_length += 1
 
@@ -349,12 +351,12 @@ class RLTrainer:
                 # 存储经验到 Replay Buffer（DQN）
                 if isinstance(self.model, DQNModel):
                     self.model.replay_buffer.push(
-                        state, action, reward, next_state, float(done)
+                        state, action, reward, next_state, float(done), window, next_window
                     )
                     # 每步执行一次训练
                     train_metrics = self.model.train_step()
 
-            state = next_state
+            state, window = next_state, next_window
 
         return total_reward, episode_length, train_metrics
 

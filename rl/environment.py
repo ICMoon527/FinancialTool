@@ -601,6 +601,40 @@ class T0Environment:
     #  内部辅助方法
     # ═══════════════════════════════════════════════
 
+    @property
+    def kline_window(self) -> np.ndarray:
+        """最近 cnn_window 根K线的 OHLCV 形态窗口（供 1D-CNN 形态编码器输入）
+
+        归一化（与状态特征同量纲）：
+        - OHLC：相对前收的收益率 pct：(price / prev_close - 1)
+        - Volume：相对窗口内均量的偏离比：(vol / mean_vol - 1)
+
+        时间拼接语义：buffer 含「前日全天 + 当日」K线，窗口随步进滚动；
+        历史不足 cnn_window 根时前置补 0（CNN 视为无历史）。无数据时全 0。
+        """
+        W = self.config.cnn_window
+        df = self._data_buffer.data.tail(W)
+        if len(df) == 0:
+            return np.zeros((W, 5), dtype=np.float32)
+
+        closes = df["Close"].to_numpy(dtype=np.float64)
+        # 归一化基准：优先取「前日收盘价」（warmup 的最后一根），
+        # 使 OHLC 特征表达「相对前收的位置」（跨日绝对位置，状态 return 特征同口径）；
+        # 前日数据被挤出窗口时退化为窗口首根收盘
+        if self._warmup_bar_count > 0 and len(df) >= self._warmup_bar_count:
+            pc = float(df.iloc[self._warmup_bar_count - 1]["Close"])
+        else:
+            pc = float(closes[0])
+        ohlc = df[["Open", "High", "Low", "Close"]].to_numpy(dtype=np.float64)
+        vol = df["Volume"].to_numpy(dtype=np.float64)
+        mean_vol = float(vol.mean()) if vol.size else 0.0
+
+        window = np.zeros((W, 5), dtype=np.float32)
+        n = len(df)
+        window[:n, 0:4] = (ohlc / pc - 1.0).astype(np.float32)
+        window[:n, 4] = (vol / (mean_vol + 1e-8) - 1.0).astype(np.float32)
+        return window
+
     def _advance_kline(self) -> None:
         """推进到当前 step 对应的K线"""
         if self._step < len(self._klines):

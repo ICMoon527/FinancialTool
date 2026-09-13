@@ -45,10 +45,12 @@ class PrioritizedReplayBuffer:
         beta_end: float = 1.0,
         eps: float = 1e-6,
         beta_anneal_steps: int = 200_000,
+        window_len: int = 0,
     ):
         self.capacity = capacity
         self.device = device
         self.state_dim = state_dim
+        self.window_len = window_len  # 形态窗口长度（0 = 不使用 CNN 编码器）
 
         # PER 超参数
         self.alpha = alpha
@@ -64,6 +66,13 @@ class PrioritizedReplayBuffer:
         self._next_states = np.zeros((capacity, state_dim), dtype=np.float32)
         self._dones = np.zeros(capacity, dtype=np.float32)
         self._priorities = np.zeros(capacity, dtype=np.float32)
+        # 形态窗口数组（CNN 编码器输入；window_len=0 时不分配）
+        if window_len > 0:
+            self._windows = np.zeros((capacity, window_len, 5), dtype=np.float32)
+            self._next_windows = np.zeros((capacity, window_len, 5), dtype=np.float32)
+        else:
+            self._windows = None
+            self._next_windows = None
 
         # 环形指针与状态
         self._ptr = 0
@@ -74,7 +83,16 @@ class PrioritizedReplayBuffer:
 
     # ── 写入 ──
 
-    def push(self, state: np.ndarray, action: int, reward: float, next_state: np.ndarray, done: float) -> None:
+    def push(
+        self,
+        state: np.ndarray,
+        action: int,
+        reward: float,
+        next_state: np.ndarray,
+        done: float,
+        window: Optional[np.ndarray] = None,
+        next_window: Optional[np.ndarray] = None,
+    ) -> None:
         """存入一条经验（新经验赋予当前最大优先级，保证至少被采样一次）
 
         NaN/Inf 防护：状态向量或奖励非有限时丢弃该经验，避免脏数据进入
@@ -95,6 +113,13 @@ class PrioritizedReplayBuffer:
         self._next_states[idx] = np.asarray(next_state, dtype=np.float32)
         self._dones[idx] = float(done)
         self._priorities[idx] = self._max_priority
+        if self._windows is not None:
+            self._windows[idx] = (
+                np.asarray(window, dtype=np.float32) if window is not None else 0.0
+            )
+            self._next_windows[idx] = (
+                np.asarray(next_window, dtype=np.float32) if next_window is not None else 0.0
+            )
         self._ptr = (self._ptr + 1) % self.capacity
         self._size = min(self._size + 1, self.capacity)
 
@@ -130,6 +155,9 @@ class PrioritizedReplayBuffer:
             torch.FloatTensor(self._dones[indices]).to(self.device),
             indices,
             torch.FloatTensor(weights).to(self.device),
+            # 形态窗口（CNN 编码器输入；未启用时返回 None）
+            (torch.FloatTensor(self._windows[indices]).to(self.device) if self._windows is not None else None),
+            (torch.FloatTensor(self._next_windows[indices]).to(self.device) if self._next_windows is not None else None),
         )
 
     def update_priorities(self, indices: np.ndarray, td_errors: np.ndarray) -> None:
@@ -157,7 +185,7 @@ class PrioritizedReplayBuffer:
 
     def serialize(self) -> Dict:
         """导出缓冲区内容（numpy 数组）"""
-        return {
+        data = {
             "states": self._states[: self._size],
             "actions": self._actions[: self._size],
             "rewards": self._rewards[: self._size],
@@ -169,6 +197,10 @@ class PrioritizedReplayBuffer:
             "beta": self._beta,
             "anneal_count": self._anneal_count,
         }
+        if self._windows is not None:
+            data["windows"] = self._windows[: self._size]
+            data["next_windows"] = self._next_windows[: self._size]
+        return data
 
     def restore(self, data: Dict) -> None:
         """从序列化字典恢复缓冲区"""
@@ -179,6 +211,15 @@ class PrioritizedReplayBuffer:
         self._next_states[:n] = data["next_states"]
         self._dones[:n] = data["dones"]
         self._priorities[:n] = data["priorities"]
+        if self._windows is not None:
+            if "windows" in data:
+                self._windows[:n] = data["windows"]
+                self._next_windows[:n] = data["next_windows"]
+            else:
+                # 兼容旧版无窗口 checkpoint：历史经验窗口置 0（旧策略行为已变化，
+                # 但保留可继续训练，新经验将携带正确窗口）
+                self._windows[:n] = 0.0
+                self._next_windows[:n] = 0.0
         self._ptr = n % self.capacity
         self._size = n
         self._max_priority = float(data.get("max_priority", 1.0))
@@ -210,16 +251,24 @@ class DQNModel(AbstractRLModel):
             beta_start=config.per_beta_start,
             beta_end=config.per_beta_end,
             eps=config.per_eps,
+            window_len=config.cnn_window if config.use_cnn_encoder else 0,
         )
         self.epsilon = config.epsilon_start
         self._train_step_count = 0
         self._loss_fn = nn.MSELoss(reduction="none")
 
-    def predict(self, state: np.ndarray, deterministic: bool = False) -> int:
+    def predict(
+        self,
+        state: np.ndarray,
+        window: Optional[np.ndarray] = None,
+        deterministic: bool = False,
+    ) -> int:
         """ε-greedy 策略
 
         Args:
             state: 状态向量，形状 (state_dim,)
+            window: 形态窗口（最近 cnn_window 根K线 OHLCV，形状 (W, 5)）；
+                    仅 use_cnn_encoder 时使用
             deterministic: 是否使用确定性策略
 
         Returns:
@@ -230,7 +279,10 @@ class DQNModel(AbstractRLModel):
 
         with torch.no_grad():
             state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
-            q_values = self.q_network(state_tensor)
+            window_tensor = None
+            if window is not None:
+                window_tensor = torch.FloatTensor(window).unsqueeze(0).to(self.device)
+            q_values = self.q_network(state_tensor, window_tensor)
             if not torch.isfinite(q_values).all():
                 # 兜底：Q 值含 NaN/Inf（权重被污染）时返回 HOLD，
                 # 避免 argmax 在 NaN 上返回任意动作进一步污染经验
@@ -248,22 +300,22 @@ class DQNModel(AbstractRLModel):
         if len(self.replay_buffer) < self.config.batch_size:
             return {"loss": 0.0, "td_error": 0.0}
 
-        states, actions, rewards, next_states, dones, indices, is_weights = (
+        states, actions, rewards, next_states, dones, indices, is_weights, windows, next_windows = (
             self.replay_buffer.sample(self.config.batch_size)
         )
 
         # 当前 Q 值
-        q_values = self.q_network(states)
+        q_values = self.q_network(states, windows)
         q_value = q_values.gather(1, actions.unsqueeze(1)).squeeze(1)
 
         # 目标 Q 值（Double DQN + 裁剪）
         with torch.no_grad():
             if self.config.dqn_double:
                 # Double DQN: 用 q_network 选动作，target_network 评估
-                next_actions = self.q_network(next_states).argmax(dim=1, keepdim=True)
-                next_q_values = self.target_network(next_states).gather(1, next_actions).squeeze(1)
+                next_actions = self.q_network(next_states, next_windows).argmax(dim=1, keepdim=True)
+                next_q_values = self.target_network(next_states, next_windows).gather(1, next_actions).squeeze(1)
             else:
-                next_q_values = self.target_network(next_states).max(dim=1)[0]
+                next_q_values = self.target_network(next_states, next_windows).max(dim=1)[0]
             # Q 值裁剪（防发散核心）：限制 target 输出值域 [-Q_VALUE_CLIP, Q_VALUE_CLIP]。
             # 此前未裁剪：Q 值经 bootstrap 正反馈（target → TD误差 → 权重 → Q）指数膨胀，
             # 实测涨到 +4546（%刻度）而真实回报为负，agent 误以为交易能赚几百点。
