@@ -81,6 +81,8 @@ def main():
     parser.add_argument("--stock", type=str, default=None, help="仅使用指定股票（逗号分隔，如 000001,600519）")
     parser.add_argument("--max-samples", type=int, default=5000, help="样本总数上限（0=不限制），防止验证/训练规模失控")
     parser.add_argument("--rebuild", action="store_true", help="强制重建元数据缓存")
+    parser.add_argument("--max-stocks", type=int, default=None, help="每次训练从候选池随机抽取的标的数（None=全部），实现训练/验证股票池可变")
+    parser.add_argument("--split-mode", type=str, default="time", choices=["time", "stock"], help="训练/验证切分方式：time=按日期时间切分（默认，同批股票）；stock=按标的分组（A组训练/B组验证，测个股泛化）")
     parser.add_argument("--no-gpu", action="store_true", help="强制使用 CPU")
     parser.add_argument("--resume", action="store_true", help="从最近 checkpoint 断点续训")
     parser.add_argument("--resume-path", type=str, default=None, help="指定续训的 checkpoint 目录（默认自动找 dqn_latest）")
@@ -144,6 +146,8 @@ def main():
         max_samples=args.max_samples if args.max_samples > 0 else None,
         stock_filter=stock_filter,
         rebuild=args.rebuild,
+        max_stocks=args.max_stocks,
+        split_mode=args.split_mode,
     )
     dataset.load()
 

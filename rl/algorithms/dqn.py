@@ -46,11 +46,13 @@ class PrioritizedReplayBuffer:
         eps: float = 1e-6,
         beta_anneal_steps: int = 200_000,
         window_len: int = 0,
+        window_channels: int = 5,
     ):
         self.capacity = capacity
         self.device = device
         self.state_dim = state_dim
         self.window_len = window_len  # 形态窗口长度（0 = 不使用 CNN 编码器）
+        self.window_channels = window_channels  # 形态窗口通道数（OHLCV + 会话标记）
 
         # PER 超参数
         self.alpha = alpha
@@ -68,8 +70,8 @@ class PrioritizedReplayBuffer:
         self._priorities = np.zeros(capacity, dtype=np.float32)
         # 形态窗口数组（CNN 编码器输入；window_len=0 时不分配）
         if window_len > 0:
-            self._windows = np.zeros((capacity, window_len, 5), dtype=np.float32)
-            self._next_windows = np.zeros((capacity, window_len, 5), dtype=np.float32)
+            self._windows = np.zeros((capacity, window_len, window_channels), dtype=np.float32)
+            self._next_windows = np.zeros((capacity, window_len, window_channels), dtype=np.float32)
         else:
             self._windows = None
             self._next_windows = None
@@ -252,6 +254,7 @@ class DQNModel(AbstractRLModel):
             beta_end=config.per_beta_end,
             eps=config.per_eps,
             window_len=config.cnn_window if config.use_cnn_encoder else 0,
+            window_channels=config.cnn_in_channels,
         )
         self.epsilon = config.epsilon_start
         self._train_step_count = 0
@@ -267,7 +270,7 @@ class DQNModel(AbstractRLModel):
 
         Args:
             state: 状态向量，形状 (state_dim,)
-            window: 形态窗口（最近 cnn_window 根K线 OHLCV，形状 (W, 5)）；
+            window: 形态窗口（时间序列拼接，形状 (W, C)）；
                     仅 use_cnn_encoder 时使用
             deterministic: 是否使用确定性策略
 
@@ -350,9 +353,18 @@ class DQNModel(AbstractRLModel):
         # 更新被采样经验的优先级
         self.replay_buffer.update_priorities(indices, td_errors.cpu().numpy())
 
-        # 目标网络更新
+        # 目标网络更新：优先 Polyak 软更新（τ 平滑追踪在线网络）。
+        # 旧实现每 target_update_freq 步硬拷贝一次，目标网络阶跃跳变，配合 Q 值
+        # 高估易造成「验证冲高后暴跌」的不稳定；软更新让目标平滑跟随。
         self._train_step_count += 1
-        if self._train_step_count % self.config.target_update_freq == 0:
+        tau = self.config.target_update_tau
+        if tau and tau > 0:
+            with torch.no_grad():
+                for target_p, online_p in zip(
+                    self.target_network.parameters(), self.q_network.parameters()
+                ):
+                    target_p.data.mul_(1.0 - tau).add_(online_p.data, alpha=tau)
+        elif self._train_step_count % self.config.target_update_freq == 0:
             self.target_network.load_state_dict(self.q_network.state_dict())
 
         return {

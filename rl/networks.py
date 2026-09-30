@@ -173,21 +173,25 @@ class CNNEncoderDQN(RLNetworkBase):
     """1D-CNN 形态编码器 + MLP 输出 Q 值（时间序列形态归纳）
 
     结构：
-      - cnn：输入 (batch, 5, window)（OHLCV×时间）→ 两层 Conv1d → 全局平均池化
+      - cnn：输入 (batch, C, window) → 三层空洞 Conv1d（保留序列长度）
+      - 多尺度池化：全局平均 + 全局最大 + 末段时点 → 拼接
       - shape_fc：压缩为 cnn_out_dim 维形态向量
       - head：形态向量与 state 拼接后经 Dueling 式 MLP 输出 Q 值
 
-    设计动机：时间拼接让 buffer 含「前日全天+当日」K线序列，但纯 MLP 无法从
-    长序列归纳「昨日尾盘走势/今日开盘方向/V型W型」等局部形态；CNN 卷积天然
-    提取局部时间模式，弥补 MLP 的时序盲区。
+    设计动机：时间序列拼接让 buffer 含「前日全天 + 当日」K线序列，但纯 MLP
+    无法从长序列归纳「昨日尾盘走势/今日开盘方向/V型W型」等形态；CNN 卷积天然
+    提取局部时间模式，弥补 MLP 的时序盲区。注意 state 维度不变，前日信息只经
+    由这条时间序列进入模型。
 
     Args:
         state_dim: 状态维度
         action_dim: 动作维度
-        window: 形态窗口长度（最近 N 根K线）
+        window: 时间序列窗口长度（前日全天 + 当日全天，约 480 根）
         out_dim: 形态向量维度
-        hidden_channels: 两层 Conv1d 通道数
+        in_channels: 输入通道数（OHLCV + day_flag + intraday_pos + valid_mask = 8）
+        hidden_channels: 各层 Conv1d 通道数
         kernel_size: Conv1d 卷积核大小
+        dilation: 各层膨胀率（逐层扩大感受野）
         hidden_sizes: 拼接后 MLP 隐藏层节点数，默认 (256, 128)
     """
 
@@ -195,25 +199,33 @@ class CNNEncoderDQN(RLNetworkBase):
         self,
         state_dim: int,
         action_dim: int,
-        window: int = 60,
+        window: int = 480,
         out_dim: int = 16,
-        hidden_channels: Tuple[int, ...] = (32, 64),
+        in_channels: int = 8,
+        hidden_channels: Tuple[int, ...] = (32, 64, 64),
         kernel_size: int = 5,
+        dilation: Tuple[int, ...] = (1, 2, 4),
         hidden_sizes: Tuple[int, ...] = (256, 128),
     ):
         super().__init__()
         self.window = window
+        self.in_channels = in_channels
 
-        # 1D-CNN 形态编码器（输入通道 = OHLCV 5 维）
+        # 1D-CNN 形态编码器：三层空洞卷积逐层扩大感受野（约 60 根K线），
+        # padding 按膨胀率补足以保持序列长度（不在此处做池化，保留时序给下游多尺度池化）
         cnn_layers = []
-        in_ch = 5
-        for ch in hidden_channels:
-            cnn_layers.append(nn.Conv1d(in_ch, ch, kernel_size=kernel_size, padding=kernel_size // 2))
+        in_ch = in_channels
+        for i, ch in enumerate(hidden_channels):
+            d = dilation[i] if i < len(dilation) else 1
+            pad = d * (kernel_size - 1) // 2
+            cnn_layers.append(
+                nn.Conv1d(in_ch, ch, kernel_size=kernel_size, padding=pad, dilation=d)
+            )
             cnn_layers.append(nn.ReLU())
             in_ch = ch
-        cnn_layers.append(nn.AdaptiveAvgPool1d(1))
-        self.cnn = nn.Sequential(*cnn_layers)      # → (batch, last_ch, 1)
-        self.shape_fc = nn.Linear(hidden_channels[-1], out_dim)
+        self.cnn = nn.Sequential(*cnn_layers)      # → (batch, last_ch, W)
+        # 多尺度池化（平均 + 最大 + 末段）拼接后压缩为形态向量
+        self.shape_fc = nn.Linear(hidden_channels[-1] * 3, out_dim)
 
         # 形态向量与状态拼接后走 Dueling 式 MLP
         shared = []
@@ -235,14 +247,24 @@ class CNNEncoderDQN(RLNetworkBase):
 
         Args:
             x: 状态张量 (batch, state_dim)
-            window: 形态窗口张量 (batch, W, 5)，OHLCV 相对前收归一化；
+            window: 形态窗口张量 (batch, W, C)，时间序列拼接（前日 + 当日）归一化后；
                     为 None 时以全 0 窗口兜底（预测早期无历史数据场景）
         """
         if window is None:
             batch = x.shape[0]
-            window = torch.zeros(batch, self.window, 5, device=x.device, dtype=x.dtype)
-        # CNN: (batch, W, 5) → permute → (batch, 5, W) → (batch, last_ch)
-        h = self.cnn(window.permute(0, 2, 1)).squeeze(-1)
+            window = torch.zeros(
+                batch, self.window, self.in_channels, device=x.device, dtype=x.dtype
+            )
+        # CNN: (batch, W, C) → permute → (batch, C, W) → (batch, last_ch, W)
+        h = self.cnn(window.permute(0, 2, 1))
+        # 多尺度池化：全局平均 + 全局最大 + 末段时点拼接。
+        # 旧实现仅用 AdaptiveAvgPool1d(1) 做全局平均池化，输出对时间位置不变，
+        # 「V 型」与「倒 V 型」得到完全相同的表达，结构上无法表征形态；
+        # 加入最大池化（捕捉极值事件）与末段（最近时点状态）后保留时序信息。
+        h_avg = h.mean(dim=2)
+        h_max = h.max(dim=2).values
+        h_last = h[:, :, -1]
+        h = torch.cat([h_avg, h_max, h_last], dim=1)
         h = F.relu(self.shape_fc(h))               # (batch, out_dim)
         features = self.shared(torch.cat([x, h], dim=1))
         value = self.value_stream(features)
@@ -259,8 +281,10 @@ def create_dqn_network(config: "RLConfig") -> nn.Module:
             config.action_dim,
             window=config.cnn_window,
             out_dim=config.cnn_out_dim,
+            in_channels=config.cnn_in_channels,
             hidden_channels=config.cnn_hidden_channels,
             kernel_size=config.cnn_kernel_size,
+            dilation=config.cnn_dilation,
         )
     if config.dqn_dueling:
         return DuelingDQNNetwork(config.state_dim, config.action_dim)

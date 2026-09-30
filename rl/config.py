@@ -39,6 +39,10 @@ class RLConfig:
     epsilon_decay: float = 0.99   # 按 episode 衰减系数（每轮衰减一次，约460轮到终值）
     replay_buffer_size: int = 10000
     target_update_freq: int = 100
+    # Polyak 软更新系数 τ（>0 时启用软更新，替代每 target_update_freq 步的硬拷贝）：
+    # 硬拷贝会让目标网络每 100 步阶跃跳变，配合 Q 值高估易出现
+    # 「验证冲高后暴跌」的不稳定（此前 E1350 +2.33% → E1400-1500 -19%~-41%）
+    target_update_tau: float = 0.005
     dqn_double: bool = True
     dqn_dueling: bool = True
     dqn_hidden_sizes: Tuple[int, ...] = (256, 128, 64)
@@ -97,15 +101,25 @@ class RLConfig:
 
     # ── 1D-CNN 形态编码器（序列建模）──
     # 时间拼接让 buffer 含「前日全天+当日」K线，但 MLP 无法从长序列归纳形态；
-    # 本开关启用 CNN 编码器：最近 cnn_window 根K线（OHLCV 相对前收归一）经两层
-    # Conv1d 编码为 cnn_out_dim 维形态向量，与 state_dim 状态拼接后进 MLP 输出 Q 值。
-    # 模型可直接观察「昨日尾盘走势/今日开盘方向/V型W型」等局部形态。
+    # 本开关启用 CNN 编码器：最近 cnn_window 根K线（时间序列拼接：前日全天 + 当日，
+    # 8 通道）经三层空洞 Conv1d 编码为 cnn_out_dim 维形态向量，与 state_dim 状态拼接后
+    # 进 MLP 输出 Q 值。模型可直接观察「昨日尾盘走势/今日开盘方向/V型W型」等形态。
     # 注意：开启后模型输入 = state_dim + cnn_out_dim，权重与纯 MLP 模型不兼容
     use_cnn_encoder: bool = False
-    cnn_window: int = 60            # 形态编码器输入的K线窗口长度（滚动最近 N 根）
+    # 窗口 480 = 前日全天(240) + 当日全天(240)。旧值 60 会在 10:30 后把前日K线
+    # 全部挤出窗口，前日信息实际只存活 1 小时，「时间序列拼接」名存实亡；
+    # 扩到 480 后前日数据在整个交易日都可见（buffer max_window=500 已够容纳）。
+    cnn_window: int = 480
     cnn_out_dim: int = 16           # 形态编码器输出维度（拼接进状态）
-    cnn_hidden_channels: Tuple[int, ...] = (32, 64)  # 两层 Conv1d 通道数
+    cnn_hidden_channels: Tuple[int, ...] = (32, 64, 64)  # 三层 Conv1d 通道数
     cnn_kernel_size: int = 5        # Conv1d 卷积核大小
+    # 空洞卷积膨胀率：逐层扩大感受野（1,2,4 时约 60 根K线），
+    # 旧实现两层无膨胀感受野仅 9 根，连半小时形态都覆盖不到
+    cnn_dilation: Tuple[int, ...] = (1, 2, 4)
+    # 形态窗口输入通道数：OHLCV(5) + day_flag + intraday_pos + valid_mask = 8。
+    # day_flag 标记该根属于前日(0)/当日(1)，intraday_pos 为日内归一化位置，
+    # valid_mask 标记补零位，避免 CNN 把 padding 当作真实行情。
+    cnn_in_channels: int = 8
 
     @property
     def model_tag(self) -> str:
@@ -170,6 +184,9 @@ class RLConfig:
             "RL_CNN_OUT_DIM": ("cnn_out_dim", "int"),
             "RL_CNN_HIDDEN_CHANNELS": ("cnn_hidden_channels", "tuple_int"),
             "RL_CNN_KERNEL_SIZE": ("cnn_kernel_size", "int"),
+            "RL_CNN_DILATION": ("cnn_dilation", "tuple_int"),
+            "RL_CNN_IN_CHANNELS": ("cnn_in_channels", "int"),
+            "RL_TARGET_UPDATE_TAU": ("target_update_tau", "float"),
             "RL_SHORT_GUARD_ENABLED": ("short_guard_enabled", "bool"),
             "RL_SHORT_DOWN_MARGIN": ("short_down_margin", "float"),
             "RL_SHORT_STOP": ("short_stop", "float"),

@@ -109,6 +109,8 @@ class T0Environment:
         self._day_high: float = 0.0
         self._day_low: float = float("inf")
         self._prev_close: float = 0.0
+        # 形态窗口的固定归一化基准（前日收盘价，reset 时锁定）
+        self._prev_close_ref: float = 0.0
 
         # 单步交易成本累计（reward 的 cost 项：每笔成交单边佣金+滑点）
         self._step_cost: float = 0.0
@@ -193,10 +195,17 @@ class T0Environment:
         # 使 return_1/5/15/60、波动率等特征在开盘时刻即包含前日上下文
         self._data_buffer = IntradayDataBuffer(max_window=500)
         self._warmup_bar_count = 0
+        # 锁定前日收盘价作为形态窗口的归一化基准：
+        # 旧实现按「窗口长度是否覆盖预热段」动态选取基准（len(df)=60 < 240 时
+        # 回退为窗口首根收盘），导致基准随窗口滚动每步变化、同一根K线数值不稳定，
+        # CNN 看到的是漂移的分布。锁定后整个交易日基准恒定。
+        self._prev_close_ref = 0.0
         warmup_klines = prev_day_full_klines or prev_day_klines
         if warmup_klines:
             self._data_buffer.warmup(warmup_klines)
             self._warmup_bar_count = len(warmup_klines)
+            latest = self._data_buffer.get_latest_price()
+            self._prev_close_ref = float(latest) if latest else 0.0
             self._is_warmup = False  # 有前日数据，无需 episode 内预热
             # 用前日数据预计算指标初始状态
             self._precompute_indicators_from_buffer()
@@ -603,36 +612,58 @@ class T0Environment:
 
     @property
     def kline_window(self) -> np.ndarray:
-        """最近 cnn_window 根K线的 OHLCV 形态窗口（供 1D-CNN 形态编码器输入）
+        """时间序列拼接的形态窗口，形状 (cnn_window, cnn_in_channels)
 
-        归一化（与状态特征同量纲）：
-        - OHLC：相对前收的收益率 pct：(price / prev_close - 1)
-        - Volume：相对窗口内均量的偏离比：(vol / mean_vol - 1)
+        语义：把「前日全天K线」与「当日已走过的K线」在时间轴上首尾相接，
+        形成一条连续序列供 1D-CNN 读取（注意：这是时间维度的拼接，不是把前日
+        特征拼进 18 维 state 向量；state 维度始终不变）。
 
-        时间拼接语义：buffer 含「前日全天 + 当日」K线，窗口随步进滚动；
-        历史不足 cnn_window 根时前置补 0（CNN 视为无历史）。无数据时全 0。
+        通道定义（8 通道）：
+        - 0~3：OHLC 相对前日收盘价的收益率
+        - 4  ：成交量相对窗口内均量的偏离比
+        - 5  ：day_flag（0=前日，1=当日）——让 CNN 分辨该根属于哪一天
+        - 6  ：intraday_pos（日内归一化位置 0~1）——让 CNN 锚定开盘/尾盘
+        - 7  ：valid_mask（1=真实K线，0=补零）——避免 padding 被当成行情
+
+        归一化基准固定为 reset 时锁定的前日收盘价，整个交易日不随窗口滚动变化。
+        数据左对齐排列（前日固定占前置段），历史不足 cnn_window 根时在末尾补 0。
         """
         W = self.config.cnn_window
-        df = self._data_buffer.data.tail(W)
-        if len(df) == 0:
-            return np.zeros((W, 5), dtype=np.float32)
+        C = self.config.cnn_in_channels
+        window = np.zeros((W, C), dtype=np.float32)
 
-        closes = df["Close"].to_numpy(dtype=np.float64)
-        # 归一化基准：优先取「前日收盘价」（warmup 的最后一根），
-        # 使 OHLC 特征表达「相对前收的位置」（跨日绝对位置，状态 return 特征同口径）；
-        # 前日数据被挤出窗口时退化为窗口首根收盘
-        if self._warmup_bar_count > 0 and len(df) >= self._warmup_bar_count:
-            pc = float(df.iloc[self._warmup_bar_count - 1]["Close"])
-        else:
-            pc = float(closes[0])
+        df_all = self._data_buffer.data
+        if len(df_all) == 0:
+            return window
+
+        # 取最近 W 根；记录全局起始下标以便判定「前日 / 当日」归属
+        start = max(0, len(df_all) - W)
+        df = df_all.iloc[start:]
+        n = len(df)
+
+        pc = self._prev_close_ref
+        if pc <= 0:
+            pc = float(df["Close"].iloc[0])
         ohlc = df[["Open", "High", "Low", "Close"]].to_numpy(dtype=np.float64)
         vol = df["Volume"].to_numpy(dtype=np.float64)
         mean_vol = float(vol.mean()) if vol.size else 0.0
 
-        window = np.zeros((W, 5), dtype=np.float32)
-        n = len(df)
         window[:n, 0:4] = (ohlc / pc - 1.0).astype(np.float32)
         window[:n, 4] = (vol / (mean_vol + 1e-8) - 1.0).astype(np.float32)
+
+        # 会话标记：全局下标 < 预热根数 视为前日，其余为当日
+        warm = max(1, self._warmup_bar_count)
+        global_idx = np.arange(start, start + n)
+        is_today = global_idx >= self._warmup_bar_count
+        window[:n, 5] = is_today.astype(np.float32)
+
+        pos = np.where(
+            is_today,
+            (global_idx - self._warmup_bar_count + 1) / float(self.MAX_STEPS),
+            (global_idx + 1) / float(warm),
+        )
+        window[:n, 6] = np.clip(pos, 0.0, 1.0).astype(np.float32)
+        window[:n, 7] = 1.0
         return window
 
     def _advance_kline(self) -> None:
