@@ -923,9 +923,32 @@ class RLService:
         return config
 
     def _build_dataset(self, config: "RLConfig" = None) -> IntradayDataset:
-        """构建数据集"""
+        """构建数据集
+
+        max_samples 透传给数据集：0/None 表示不限制（全量），>0 时超出部分随机下采样，
+        由训练面板滑块控制，用于在数据集过大时限制抽取的样本规模。
+        """
         cfg = config or self.config
-        return IntradayDataset(cfg, self.db)
+        max_samples = cfg.max_samples if cfg.max_samples else None
+        return IntradayDataset(cfg, self.db, max_samples=max_samples)
+
+    def get_dataset_info(self) -> Dict:
+        """获取分时数据集规模（供训练面板滑块上限展示）
+
+        直接读取元数据缓存 _meta_cache.pkl（毫秒级，不构建样本对象），
+        返回股票数与样本总数（股票×交易日）。缓存不存在时 cache_exists=False，
+        表示尚未建立索引（可先跑一次训练或脚本 --rebuild 生成）。
+        """
+        from rl.data.dataset import read_meta_cache
+
+        meta = read_meta_cache()
+        if not meta:
+            return {"cache_exists": False, "total_stocks": 0, "total_samples": 0}
+        return {
+            "cache_exists": True,
+            "total_stocks": len(meta),
+            "total_samples": sum(len(dates) for dates in meta.values()),
+        }
 
     def _create_model(self, config: "RLConfig") -> "AbstractRLModel":
         """根据配置创建模型"""

@@ -24,6 +24,10 @@ class TrainRequest(BaseModel):
         None,
         description="是否启用 CNN 形态编码器（True→CNN+MLP 结构，False/None→纯 MLP；两种结构权重不兼容）",
     )
+    max_samples: Optional[int] = Field(
+        None,
+        description="数据集样本（股票×交易日）总数上限，超出随机下采样；0=不限制（全量）",
+    )
 
 
 class TrainResponse(BaseModel):
@@ -32,6 +36,14 @@ class TrainResponse(BaseModel):
     task_id: str
     status: str
     message: str
+
+
+class DatasetInfoResponse(BaseModel):
+    """分时数据集规模信息（训练面板滑块上限）"""
+
+    cache_exists: bool = Field(..., description="元数据索引是否已建立")
+    total_stocks: int = Field(..., description="候选股票数")
+    total_samples: int = Field(..., description="样本总数（股票×交易日）")
 
 
 class TaskStatusResponse(BaseModel):

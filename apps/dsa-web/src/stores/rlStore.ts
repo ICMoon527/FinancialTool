@@ -85,6 +85,8 @@ interface RLState {
     resumeFrom?: string;
     useSignalScores?: boolean;
     useCnnEncoder?: boolean;
+    /** 数据集样本总数上限，0=不限制（全量） */
+    maxSamples?: number;
   }) => Promise<void>;
   pauseTraining: () => Promise<void>;
   resumeTraining: () => Promise<void>;

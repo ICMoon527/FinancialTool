@@ -3,6 +3,7 @@ import { toCamelCase } from './utils';
 import type {
   TrainRequest,
   TrainResponse,
+  DatasetInfo,
   TaskStatusResponse,
   TrainingProgressResponse,
   ModelListResponse,
@@ -28,7 +29,14 @@ export const rlApi = {
     if (request.resumeFrom) payload.resume_from = request.resumeFrom;
     if (request.useSignalScores != null) payload.use_signal_scores = request.useSignalScores;
     if (request.useCnnEncoder != null) payload.use_cnn_encoder = request.useCnnEncoder;
+    if (request.maxSamples != null) payload.max_samples = request.maxSamples;
     const response = await apiClient.post('/api/v1/rl/train', payload);
+    return toCamelCase(response.data);
+  },
+
+  /** 获取分时数据集规模（股票数 / 样本总数），用于训练面板滑块上限 */
+  getDatasetInfo: async (): Promise<DatasetInfo> => {
+    const response = await apiClient.get('/api/v1/rl/dataset/info');
     return toCamelCase(response.data);
   },
 

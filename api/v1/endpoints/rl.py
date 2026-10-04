@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from api.deps import get_database_manager
 from api.v1.schemas.rl import (
     DailyReplayResponse,
+    DatasetInfoResponse,
     EvaluateCompareRequest,
     EvaluateProgressResponse,
     EvaluateRequest,
@@ -51,6 +52,12 @@ def reload_rl_service_config() -> None:
         _rl_service.reload_config()
 
 
+@router.get("/dataset/info", response_model=DatasetInfoResponse)
+async def get_dataset_info(service: RLService = Depends(get_rl_service)):
+    """获取分时数据集规模（股票数 / 样本总数），供训练面板滑块上限展示"""
+    return DatasetInfoResponse(**service.get_dataset_info())
+
+
 @router.get("/models", response_model=ModelListResponse)
 async def list_models(service: RLService = Depends(get_rl_service)):
     """获取已训练的模型列表"""
@@ -88,6 +95,8 @@ async def start_training(
         params["use_signal_scores"] = request.use_signal_scores
     if request.use_cnn_encoder is not None:
         params["use_cnn_encoder"] = request.use_cnn_encoder
+    if request.max_samples is not None:
+        params["max_samples"] = request.max_samples
 
     task_id = service.start_training(params)
     return TrainResponse(task_id=task_id, status="pending", message="训练任务已创建")

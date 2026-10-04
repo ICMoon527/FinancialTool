@@ -85,7 +85,7 @@ def main():
     parser.add_argument("--batch-size", type=int, default=None, help="批次大小")
     parser.add_argument("--lr", type=float, default=None, help="学习率")
     parser.add_argument("--stock", type=str, default=None, help="仅使用指定股票（逗号分隔，如 000001,600519）")
-    parser.add_argument("--max-samples", type=int, default=5000, help="样本总数上限（0=不限制），防止验证/训练规模失控")
+    parser.add_argument("--max-samples", type=int, default=None, help="样本总数上限（0=不限制）；未指定时跟随 .env 的 RL_MAX_SAMPLES")
     parser.add_argument("--rebuild", action="store_true", help="强制重建元数据缓存")
     parser.add_argument("--max-stocks", type=int, default=None, help="每次训练从候选池随机抽取的标的数（None=全部），实现训练/验证股票池可变")
     parser.add_argument("--split-mode", type=str, default="time", choices=["time", "stock"], help="训练/验证切分方式：time=按日期时间切分（默认，同批股票）；stock=按标的分组（A组训练/B组验证，测个股泛化）")
@@ -147,9 +147,13 @@ def main():
     # 加载数据（惰性：仅建立元数据索引）
     db = get_db()
     stock_filter = args.stock.split(",") if args.stock else None
+    # 样本上限：命令行 > .env(RL_MAX_SAMPLES)；0 或未设表示不限制（全量）
+    max_samples = args.max_samples if args.max_samples is not None else config.max_samples
+    max_samples = max_samples if max_samples else None
+    logger.info(f"样本上限: {max_samples if max_samples else '不限制（全量）'}")
     dataset = IntradayDataset(
         config, db,
-        max_samples=args.max_samples if args.max_samples > 0 else None,
+        max_samples=max_samples,
         stock_filter=stock_filter,
         rebuild=args.rebuild,
         max_stocks=args.max_stocks,

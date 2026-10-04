@@ -12,12 +12,21 @@ export interface TrainRequest {
   resumeFrom?: string;
   useSignalScores?: boolean;
   useCnnEncoder?: boolean;
+  /** 数据集样本总数上限，0=不限制（全量） */
+  maxSamples?: number;
 }
 
 export interface TrainResponse {
   taskId: string;
   status: string;
   message: string;
+}
+
+/** 分时数据集规模（训练面板滑块上限） */
+export interface DatasetInfo {
+  cacheExists: boolean;
+  totalStocks: number;
+  totalSamples: number;
 }
 
 export type RLTaskStatus = 'pending' | 'running' | 'completed' | 'failed' | 'stopped' | 'stopping';

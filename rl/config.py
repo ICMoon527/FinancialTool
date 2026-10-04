@@ -21,6 +21,7 @@ class RLConfig:
     gamma: float = 0.99
     train_data_days: int = 60  # 已弃用（保留兼容）：数据切分按 validation_split 全量执行，此字段无引用，修改不生效
     validation_split: float = 0.2
+    max_samples: int = 0  # 数据集样本总数上限（0=不限制全量）；训练面板滑块可调，控制抽取的样本规模
     dense_reward_scale: float = 20.0  # 已弃用（保留兼容）：奖励函数已不含该项，仅设置页展示，修改不生效
     trade_act_bonus: float = 0.05     # 已弃用（保留兼容）：奖励函数已不含行为激励，修改不生效
     warmup_steps: int = 20
@@ -149,6 +150,7 @@ class RLConfig:
             "RL_GAMMA": ("gamma", "float"),
             "RL_TRAIN_DATA_DAYS": ("train_data_days", "int"),
             "RL_VALIDATION_SPLIT": ("validation_split", "float"),
+            "RL_MAX_SAMPLES": ("max_samples", "int"),
             "RL_DENSE_REWARD_SCALE": ("dense_reward_scale", "float"),
             "RL_TRADE_ACT_BONUS": ("trade_act_bonus", "float"),
             "RL_WARMUP_STEPS": ("warmup_steps", "int"),

@@ -3,6 +3,7 @@ import { Card } from '../common/Card';
 import { Button } from '../common/Button';
 import { useRLStore } from '../../stores/rlStore';
 import { systemConfigApi } from '../../api/systemConfig';
+import { rlApi } from '../../api/rl';
 import { formatModelId, isPriorModel, isCnnModel } from '../../utils/format';
 
 /**
@@ -33,6 +34,11 @@ export const TrainingConfigPanel: React.FC<Props> = ({ disabled }) => {
   const [resumeFromModel, setResumeFromModel] = React.useState('latest');
   const [useSignalScores, setUseSignalScores] = React.useState(true);
   const [useCnnEncoder, setUseCnnEncoder] = React.useState(false);
+  const [maxSamples, setMaxSamples] = React.useState(0); // 采样样本数上限：0=全量（不限制）
+  // 数据集规模（滑块上限）：从索引缓存读取，totalSamples=0 表示尚未建立索引
+  const [totalSamples, setTotalSamples] = React.useState(0);
+  const [totalStocks, setTotalStocks] = React.useState(0);
+  const [datasetIndexed, setDatasetIndexed] = React.useState(true);
   const [starting, setStarting] = React.useState(false);
 
   // 挂载时拉取 RL 配置，替换本地兜底默认，避免训练页与设置页出现两套值
@@ -67,6 +73,7 @@ export const TrainingConfigPanel: React.FC<Props> = ({ disabled }) => {
         setLearningRate(readNumber('RL_LEARNING_RATE', 0.0003));
         setUseSignalScores(readBoolean('RL_USE_SIGNAL_SCORES', true));
         setUseCnnEncoder(readBoolean('RL_USE_CNN_ENCODER', false));
+        setMaxSamples(readNumber('RL_MAX_SAMPLES', 0));
       } catch {
         // 配置接口不可用时保留本地兜底默认，不阻塞训练流程
       }
@@ -75,6 +82,31 @@ export const TrainingConfigPanel: React.FC<Props> = ({ disabled }) => {
       cancelled = true;
     };
   }, []);
+
+  // 挂载时拉取数据集规模，作为滑块上限（读取元数据索引缓存，毫秒级）
+  React.useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const info = await rlApi.getDatasetInfo();
+        if (cancelled) return;
+        setTotalSamples(info.totalSamples);
+        setTotalStocks(info.totalStocks);
+        setDatasetIndexed(info.cacheExists);
+      } catch {
+        // 接口不可用时保留兜底上限，不阻塞训练流程
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // 滑块上限 = 数据集真实样本总数（未建索引时用兜底值）；步长随规模自适应
+  const sliderMax = totalSamples > 0 ? totalSamples : 50000;
+  const sliderStep = Math.max(1, Math.round(sliderMax / 200));
+  // 超过真实总数即等价「全量」，统一归零，保证显示值与下发票值一致
+  const effectiveMaxSamples = maxSamples > sliderMax ? 0 : maxSamples;
 
   const handleStart = async () => {
     setStarting(true);
@@ -87,6 +119,7 @@ export const TrainingConfigPanel: React.FC<Props> = ({ disabled }) => {
         resumeFrom: resumeEnabled ? resumeFromModel : undefined,
         useSignalScores,
         useCnnEncoder,
+        maxSamples: effectiveMaxSamples,
       });
     } finally {
       setStarting(false);
@@ -196,6 +229,37 @@ export const TrainingConfigPanel: React.FC<Props> = ({ disabled }) => {
             disabled={disabled}
             onChange={(e) => setLearningRate(Number(e.target.value) || 0.001)}
           />
+        </div>
+
+        {/* 采样样本数上限（滑块） */}
+        <div>
+          <label className="block text-xs text-gray-400 mb-1">
+            采样样本数上限
+            <span className="text-gray-500 ml-1">（股票 × 交易日）</span>
+          </label>
+          <div className="flex items-center gap-3">
+            <input
+              type="range"
+              min={0}
+              max={sliderMax}
+              step={sliderStep}
+              className="flex-1 accent-cyan-500 cursor-pointer disabled:opacity-50"
+              value={effectiveMaxSamples}
+              disabled={disabled}
+              onChange={(e) => setMaxSamples(Number(e.target.value))}
+            />
+            <span className="w-28 text-right text-xs text-cyan-300 font-mono tabular-nums">
+              {effectiveMaxSamples === 0
+                ? '全量（不限）'
+                : `${effectiveMaxSamples.toLocaleString()} / ${sliderMax.toLocaleString()}`}
+            </span>
+          </div>
+          <p className="text-[11px] text-gray-500 mt-1">
+            {datasetIndexed && totalSamples > 0
+              ? `数据集共 ${totalSamples.toLocaleString()} 个样本（${totalStocks.toLocaleString()} 只股票 × 交易日）。`
+              : '尚未建立数据索引，无法获取样本总数（可先运行一次训练生成）。'}
+            0 = 全量；设为 N 时最多使用 N 个样本（超出则随机下采样）。
+          </p>
         </div>
 
         {/* 断点续训 */}
