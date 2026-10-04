@@ -2,14 +2,16 @@ import React from 'react';
 import { Card } from '../common/Card';
 import { Button } from '../common/Button';
 import { useRLStore } from '../../stores/rlStore';
+import { systemConfigApi } from '../../api/systemConfig';
 import { formatModelId, isPriorModel } from '../../utils/format';
 
 /**
  * 模型参数配置面板
  *
- * 核心训练参数（算法/轮数/批次/学习率）在此配置，随 POST /train 下发；
- * 高级参数（奖励函数权重、折扣因子、交易成本等 29 项 RL_* 配置）
- * 已注册到设置页「RL Training」分类，此处展示当前值并跳转设置页修改。
+ * 核心训练参数（算法/轮数/批次/学习率/先验开关）在挂载时从系统配置接口读取，
+ * 与「设置 → RL Training」及 .env 共用同一数据源，随 POST /train 下发；
+ * 其余高级参数（奖励函数权重、折扣因子、交易成本等）在设置页「RL Training」统一管理，
+ * 此处仅展示当前值并跳转设置页修改。
  */
 
 interface Props {
@@ -21,8 +23,8 @@ export const TrainingConfigPanel: React.FC<Props> = ({ disabled }) => {
   const totalEpisodes = useRLStore((s) => s.totalEpisodes);
   const models = useRLStore((s) => s.models);
 
-  // 默认值与 .env 同步（RL_TRAINING_EPISODES=300 / RL_BATCH_SIZE=128 /
-  // RL_LEARNING_RATE=0.0003 / RL_USE_SIGNAL_SCORES=true），确保「开始训练」即 P0 基准
+  // 核心参数（算法/轮数/批次/学习率/先验开关）从系统配置接口读取，与「设置 → RL Training」
+  // 及 .env 共用同一数据源；以下常量仅在接口不可用或字段缺失时作为兜底
   const [algorithm, setAlgorithm] = React.useState<'dqn' | 'ppo'>('dqn');
   const [episodes, setEpisodes] = React.useState(300);
   const [batchSize, setBatchSize] = React.useState(128);
@@ -31,6 +33,46 @@ export const TrainingConfigPanel: React.FC<Props> = ({ disabled }) => {
   const [resumeFromModel, setResumeFromModel] = React.useState('latest');
   const [useSignalScores, setUseSignalScores] = React.useState(true);
   const [starting, setStarting] = React.useState(false);
+
+  // 挂载时拉取 RL 配置，替换本地兜底默认，避免训练页与设置页出现两套值
+  React.useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const resp = await systemConfigApi.getConfig(false);
+        if (cancelled) return;
+        const configMap = new Map(resp.items.map((item) => [item.key, item.value]));
+
+        const readString = (key: string): string | undefined => {
+          const raw = configMap.get(key);
+          return raw === undefined || raw.trim() === '' ? undefined : raw.trim();
+        };
+        const readNumber = (key: string, fallback: number): number => {
+          const raw = readString(key);
+          if (raw === undefined) return fallback;
+          const parsed = Number(raw);
+          return Number.isFinite(parsed) ? parsed : fallback;
+        };
+        const readBoolean = (key: string, fallback: boolean): boolean => {
+          const raw = readString(key)?.toLowerCase();
+          if (raw === undefined) return fallback;
+          return raw === 'true' || raw === '1' || raw === 'yes';
+        };
+
+        const algo = readString('RL_DEFAULT_ALGORITHM');
+        if (algo === 'dqn' || algo === 'ppo') setAlgorithm(algo);
+        setEpisodes(readNumber('RL_TRAINING_EPISODES', 300));
+        setBatchSize(readNumber('RL_BATCH_SIZE', 128));
+        setLearningRate(readNumber('RL_LEARNING_RATE', 0.0003));
+        setUseSignalScores(readBoolean('RL_USE_SIGNAL_SCORES', true));
+      } catch {
+        // 配置接口不可用时保留本地兜底默认，不阻塞训练流程
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleStart = async () => {
     setStarting(true);

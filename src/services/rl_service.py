@@ -129,6 +129,21 @@ class RLService:
         if count:
             logger.info(f"已扫描到 {count} 个磁盘模型 checkpoint")
 
+    def reload_config(self) -> None:
+        """重新加载 .env 中的 RL 配置（设置页保存后由端点调用）
+
+        就地替换 self.config，不重建 RLService，从而保留运行中的训练/评估任务
+        与已加载模型权重；仅当 model_dir 变化时才重新扫描磁盘模型，避免每次
+        保存配置都做全量 rglob。
+        """
+        from rl.config import RLConfig
+
+        old_model_dir = str(Path(self.config.model_dir).resolve())
+        self.config = RLConfig.from_env()
+        new_model_dir = str(Path(self.config.model_dir).resolve())
+        if new_model_dir != old_model_dir:
+            self._scan_disk_models()
+
     def start_training(self, params: Dict) -> str:
         """启动异步训练任务
 

@@ -160,6 +160,15 @@ def update_system_config(
             mask_token=request.mask_token,
             reload_now=request.reload_now,
         )
+        # 若本次更新涉及 RL_* 配置，通知 RLService 就地重载（保留运行中任务）
+        updated_keys = [str(key) for key in payload.get("updated_keys", [])]
+        if any(key.upper().startswith("RL_") for key in updated_keys):
+            try:
+                from api.v1.endpoints.rl import reload_rl_service_config
+
+                reload_rl_service_config()
+            except Exception as rl_exc:  # 重载失败不应影响配置保存结果
+                logger.warning("RL 配置重载失败: %s", rl_exc, exc_info=True)
         return UpdateSystemConfigResponse.model_validate(payload)
     except ConfigValidationError as exc:
         raise HTTPException(

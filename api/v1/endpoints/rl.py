@@ -42,6 +42,15 @@ def get_rl_service() -> RLService:
     return _rl_service
 
 
+def reload_rl_service_config() -> None:
+    """设置页更新 RL 配置后调用：若 RLService 已创建则就地重载配置
+
+    不重建单例，避免丢失运行中训练/评估任务的状态（task_id 轮询会因此 404）。
+    """
+    if _rl_service is not None:
+        _rl_service.reload_config()
+
+
 @router.get("/models", response_model=ModelListResponse)
 async def list_models(service: RLService = Depends(get_rl_service)):
     """获取已训练的模型列表"""
