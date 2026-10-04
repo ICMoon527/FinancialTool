@@ -608,8 +608,15 @@ class IntradayIndicatorEngine:
 
     # ---------- 综合计算 ----------
 
-    def calculate_all(self, data: pd.DataFrame) -> pd.DataFrame:
-        """计算全部指标，返回包含所有指标列的 DataFrame"""
+    def calculate_all(self, data: pd.DataFrame, warmup_rows: int = 0) -> pd.DataFrame:
+        """计算全部指标，返回包含所有指标列的 DataFrame
+
+        Args:
+            data: 分时K线数据（需含 Open/High/Low/Close/Volume）
+            warmup_rows: 预热行数（前 warmup_rows 行仅用于指标初始化，不参与当日累计）。
+                当 > 0 时，从 warmup_rows 起按当日区间重算 MACD_Bar_Sum（即该区间
+                MACD_Bar 的累计和），与前端 indicator_sub_charts（仅当日数据）口径一致。
+        """
         df = data.copy()
         df = self.calc_absorption(df)
         df = self.calc_distribution(df)
@@ -622,6 +629,15 @@ class IntradayIndicatorEngine:
         df = self.calc_avg_price_deviation(df)
 
         df["absorption"] = df["absorption"].fillna(0) + df["distribution"].fillna(0)
+
+        # 统一前后端 MACD_Bar_Sum 计算逻辑：仅累计当日分时数据（预热数据不参与累加）
+        # 前端从 indicator_sub_charts（仅当日数据）计算 runningMacdBarSum，
+        # 而对全量（含预热）做 cumsum() 会导致 MACD_Bar_Sum 被预热期负值压低。
+        if warmup_rows > 0 and "MACD_Bar" in df.columns:
+            today_macd_bars = df.iloc[warmup_rows:]["MACD_Bar"].fillna(0)
+            today_cumsum = today_macd_bars.cumsum()
+            df.loc[df.index[warmup_rows:], "MACD_Bar_Sum"] = today_cumsum.values
+
         return df
 
 
@@ -1034,6 +1050,103 @@ class SignalEvaluator:
 
 
 # ============================================================
+# 共享指标快照构造（策略侧 / 分时做T页面 / RL 训练侧唯一真源）
+# ============================================================
+
+
+def build_indicator_snapshot(row: pd.Series, prev_row: Optional[pd.Series] = None,
+                             prev2_row: Optional[pd.Series] = None) -> IndicatorSnapshot:
+    """从 DataFrame 行构建指标快照
+
+    该函数是「分时做T页面」与「RL 训练环境」共用的唯一快照构造真源，
+    仅依赖传入的 DataFrame 行，不依赖任何实例状态，保证两侧信号彻底同源。
+
+    Args:
+        row: 当前K线对应的指标行
+        prev_row: 前一根K线对应的指标行（用于检测前一根K线的金叉/死叉状态）
+        prev2_row: 前两根K线对应的指标行（用于检测前两根K线的金叉/死叉状态）
+    """
+    # 检查前一根K线是否发生了金叉/死叉
+    prev_golden = bool(prev_row.get("macd_golden_cross", False)) if prev_row is not None else False
+    prev_death = bool(prev_row.get("macd_death_cross", False)) if prev_row is not None else False
+    # 检查前两根K线是否发生了金叉/死叉
+    prev2_golden = bool(prev2_row.get("macd_golden_cross", False)) if prev2_row is not None else False
+    prev2_death = bool(prev2_row.get("macd_death_cross", False)) if prev2_row is not None else False
+
+    return IndicatorSnapshot(
+        absorption_value=float(row.get("absorption", 0)),
+        absorption_active=float(row.get("absorption", 0)) > 0,
+        distribution_active=float(row.get("absorption", 0)) < 0,
+        volume_surge=bool(row.get("volume_surge", False)),
+        volume_shrink=bool(row.get("volume_shrink", False)),
+        ma5=float(row.get("ma5", 0)),
+        ma20=float(row.get("ma20", 0)),
+        price_above_ma5=bool(row.get("price_above_ma5", False)),
+        price_above_ma20=bool(row.get("price_above_ma20", False)),
+        price_cross_ma5_up=bool(row.get("price_cross_ma5_up", False)),
+        price_cross_ma5_down=bool(row.get("price_cross_ma5_down", False)),
+        avg_price=float(row.get("avg_price", 0)),
+        deviation_pct=float(row.get("deviation_pct", 0)),
+        deviation_oversold=bool(row.get("deviation_oversold", False)),
+        deviation_narrowing=bool(row.get("deviation_narrowing", False)),
+        deviation_overbought=bool(row.get("deviation_overbought", False)),
+        deviation_peaking=bool(row.get("deviation_peaking", False)),
+        dif=float(row.get("DIF", 0)),
+        dea=float(row.get("DEA", 0)),
+        macd_bar=float(row.get("MACD_Bar", 0)),
+        macd_golden_cross=bool(row.get("macd_golden_cross", False)),
+        macd_death_cross=bool(row.get("macd_death_cross", False)),
+        macd_bullish_weakening=(  # 多头动能衰减→卖出: 金叉后DIF仍在DEA上方但柱体收窄, 预示多头力竭
+            # 【策略排除规则】prev/prev2只排除金叉不排除死叉, 因为本信号发生在金叉后的多头区,
+            # 死叉已在上一轮被多头区隔开, 不会同时出现; prev_golden/prev2_golden则阻断金叉当根
+            # 及之后2根的误触(右侧面板金叉文字持续3根), 确保金叉后至少等2根才重新允许卖出信号
+            float(row.get("DIF", 0)) > float(row.get("DEA", 0))
+            and float(row.get("MACD_Bar_Sum", 0)) >= -0.015
+            and (float(row.get("MACD_Bar_Diff", 0)) if not pd.isna(row.get("MACD_Bar_Diff")) else 0) >= -0.005
+            and not(bool(row.get("macd_death_cross", False)) or bool(row.get("macd_golden_cross", False)))
+            and not prev_golden
+            and not prev2_golden
+        ),
+        macd_bearish_recovering=(  # 空头动能衰竭→买入: 死叉后DIF仍在DEA下方但柱体收窄, 预示空头力竭
+            # 【策略排除规则】prev/prev2只排除死叉不排除金叉, 因为本信号发生在死叉后的空头区,
+            # 金叉已在上一轮被空头区隔开, 不会同时出现; prev_death/prev2_death则阻断死叉当根
+            # 及之后2根的误触(右侧面板死叉文字持续3根), 确保死叉后至少等2根才重新允许买入信号
+            float(row.get("DIF", 0)) < float(row.get("DEA", 0))
+            and float(row.get("MACD_Bar_Sum", 0)) <= 0
+            and (float(row.get("MACD_Bar_Diff", 0)) if not pd.isna(row.get("MACD_Bar_Diff")) else 0) <= 0
+            and not(bool(row.get("macd_death_cross", False)) or bool(row.get("macd_golden_cross", False)))
+            and not prev_death
+            and not prev2_death
+        ),
+        rsi_value=float(row.get("RSI", 50)),
+        rsi_oversold=bool(row.get("rsi_oversold", False)),
+        rsi_overbought=bool(row.get("rsi_overbought", False)),
+        kdj_k=float(row.get("K", 50)),
+        kdj_d=float(row.get("D", 50)),
+        kdj_j=float(row.get("J", 50)),
+        kdj_oversold=(
+            float(row.get("K", 50)) < 20
+            and float(row.get("D", 50)) < 20
+            and float(row.get("J", 50)) < 20
+        ),
+        kdj_overbought=(
+            float(row.get("K", 50)) > 80
+            and float(row.get("D", 50)) > 80
+            and float(row.get("J", 50)) > 80
+        ),
+        kdj_golden_cross=bool(row.get("kdj_golden_cross", False)),
+        kdj_death_cross=bool(row.get("kdj_death_cross", False)),
+        mfi_value=float(row.get("mfi_value", 50)),
+        mfi_oversold=bool(row.get("mfi_oversold", False)),
+        mfi_overbought=bool(row.get("mfi_overbought", False)),
+        mfi_cross_50_up=bool(row.get("mfi_cross_50_up", False)),
+        mfi_cross_50_down=bool(row.get("mfi_cross_50_down", False)),
+        mfi_bottom_divergence=bool(row.get("mfi_bottom_divergence", False)),
+        mfi_top_divergence=bool(row.get("mfi_top_divergence", False)),
+    )
+
+
+# ============================================================
 # Task 4: IntradayT0Strategy 主类
 # ============================================================
 
@@ -1195,91 +1308,11 @@ class IntradayT0Strategy:
 
     def _build_snapshot(self, row: pd.Series, prev_row: Optional[pd.Series] = None,
                          prev2_row: Optional[pd.Series] = None) -> IndicatorSnapshot:
-        """从 DataFrame 行构建指标快照
+        """从 DataFrame 行构建指标快照（委托给模块级共享函数 build_indicator_snapshot）
 
-        Args:
-            row: 当前K线对应的指标行
-            prev_row: 前一根K线对应的指标行（用于检测前一根K线的金叉/死叉状态）
-            prev2_row: 前两根K线对应的指标行（用于检测前两根K线的金叉/死叉状态）
+        保证「分时做T页面」与「RL 训练环境」使用完全相同的快照构造逻辑。
         """
-        # 检查前一根K线是否发生了金叉/死叉
-        prev_golden = bool(prev_row.get("macd_golden_cross", False)) if prev_row is not None else False
-        prev_death = bool(prev_row.get("macd_death_cross", False)) if prev_row is not None else False
-        # 检查前两根K线是否发生了金叉/死叉
-        prev2_golden = bool(prev2_row.get("macd_golden_cross", False)) if prev2_row is not None else False
-        prev2_death = bool(prev2_row.get("macd_death_cross", False)) if prev2_row is not None else False
-
-        return IndicatorSnapshot(
-            absorption_value=float(row.get("absorption", 0)),
-            absorption_active=float(row.get("absorption", 0)) > 0,
-            distribution_active=float(row.get("absorption", 0)) < 0,
-            volume_surge=bool(row.get("volume_surge", False)),
-            volume_shrink=bool(row.get("volume_shrink", False)),
-            ma5=float(row.get("ma5", 0)),
-            ma20=float(row.get("ma20", 0)),
-            price_above_ma5=bool(row.get("price_above_ma5", False)),
-            price_above_ma20=bool(row.get("price_above_ma20", False)),
-            price_cross_ma5_up=bool(row.get("price_cross_ma5_up", False)),
-            price_cross_ma5_down=bool(row.get("price_cross_ma5_down", False)),
-            avg_price=float(row.get("avg_price", 0)),
-            deviation_pct=float(row.get("deviation_pct", 0)),
-            deviation_oversold=bool(row.get("deviation_oversold", False)),
-            deviation_narrowing=bool(row.get("deviation_narrowing", False)),
-            deviation_overbought=bool(row.get("deviation_overbought", False)),
-            deviation_peaking=bool(row.get("deviation_peaking", False)),
-            dif=float(row.get("DIF", 0)),
-            dea=float(row.get("DEA", 0)),
-            macd_bar=float(row.get("MACD_Bar", 0)),
-            macd_golden_cross=bool(row.get("macd_golden_cross", False)),
-            macd_death_cross=bool(row.get("macd_death_cross", False)),
-            macd_bullish_weakening=(  # 多头动能衰减→卖出: 金叉后DIF仍在DEA上方但柱体收窄, 预示多头力竭
-                # 【策略排除规则】prev/prev2只排除金叉不排除死叉, 因为本信号发生在金叉后的多头区,
-                # 死叉已在上一轮被多头区隔开, 不会同时出现; prev_golden/prev2_golden则阻断金叉当根
-                # 及之后2根的误触(右侧面板金叉文字持续3根), 确保金叉后至少等2根才重新允许卖出信号
-                float(row.get("DIF", 0)) > float(row.get("DEA", 0))
-                and float(row.get("MACD_Bar_Sum", 0)) >= -0.015
-                and (float(row.get("MACD_Bar_Diff", 0)) if not pd.isna(row.get("MACD_Bar_Diff")) else 0) >= -0.005
-                and not(bool(row.get("macd_death_cross", False)) or bool(row.get("macd_golden_cross", False)))
-                and not prev_golden
-                and not prev2_golden
-            ),
-            macd_bearish_recovering=(  # 空头动能衰竭→买入: 死叉后DIF仍在DEA下方但柱体收窄, 预示空头力竭
-                # 【策略排除规则】prev/prev2只排除死叉不排除金叉, 因为本信号发生在死叉后的空头区,
-                # 金叉已在上一轮被空头区隔开, 不会同时出现; prev_death/prev2_death则阻断死叉当根
-                # 及之后2根的误触(右侧面板死叉文字持续3根), 确保死叉后至少等2根才重新允许买入信号
-                float(row.get("DIF", 0)) < float(row.get("DEA", 0))
-                and float(row.get("MACD_Bar_Sum", 0)) <= 0
-                and (float(row.get("MACD_Bar_Diff", 0)) if not pd.isna(row.get("MACD_Bar_Diff")) else 0) <= 0
-                and not(bool(row.get("macd_death_cross", False)) or bool(row.get("macd_golden_cross", False)))
-                and not prev_death
-                and not prev2_death
-            ),
-            rsi_value=float(row.get("RSI", 50)),
-            rsi_oversold=bool(row.get("rsi_oversold", False)),
-            rsi_overbought=bool(row.get("rsi_overbought", False)),
-            kdj_k=float(row.get("K", 50)),
-            kdj_d=float(row.get("D", 50)),
-            kdj_j=float(row.get("J", 50)),
-            kdj_oversold=(
-                float(row.get("K", 50)) < 20
-                and float(row.get("D", 50)) < 20
-                and float(row.get("J", 50)) < 20
-            ),
-            kdj_overbought=(
-                float(row.get("K", 50)) > 80
-                and float(row.get("D", 50)) > 80
-                and float(row.get("J", 50)) > 80
-            ),
-            kdj_golden_cross=bool(row.get("kdj_golden_cross", False)),
-            kdj_death_cross=bool(row.get("kdj_death_cross", False)),
-            mfi_value=float(row.get("mfi_value", 50)),
-            mfi_oversold=bool(row.get("mfi_oversold", False)),
-            mfi_overbought=bool(row.get("mfi_overbought", False)),
-            mfi_cross_50_up=bool(row.get("mfi_cross_50_up", False)),
-            mfi_cross_50_down=bool(row.get("mfi_cross_50_down", False)),
-            mfi_bottom_divergence=bool(row.get("mfi_bottom_divergence", False)),
-            mfi_top_divergence=bool(row.get("mfi_top_divergence", False)),
-        )
+        return build_indicator_snapshot(row, prev_row, prev2_row)
 
     def feed_kline(self, kline: Dict[str, Any],
                    reference_lines: Optional[List[Dict[str, Any]]] = None,

@@ -36,6 +36,7 @@ from watchdog.strategies.intraday_t0_strategy import (
     IntradayDataBuffer,
     IntradayIndicatorEngine,
     SignalEvaluator,
+    build_indicator_snapshot,
 )
 
 if TYPE_CHECKING:
@@ -870,153 +871,25 @@ class T0Environment:
             self._current_indicator = None
             return
 
-        # 计算指标
+        # 计算指标：复用策略侧「分时做T页面」同一套引擎与快照构造函数，彻底同源
         data = self._data_buffer.data
         if len(data) < 5:
             self._current_indicator = IndicatorSnapshot()
             return
 
         try:
-            # 计算各指标
-            ind = IndicatorSnapshot()
-
-            # 主力吸筹/出货
-            # 与策略侧口径一致：两份镜像公式分别产出吸筹(≥0)与出货(≤0)，各自已在
-            # calc_absorption/calc_distribution 内按 YAML 阈值过滤掉无效信号；
-            # 再合并为单一有符号值，符号决定方向：
-            #   >0 → 吸筹买入信号有效；<0 → 出货卖出信号有效；==0 → 无有效信号。
-            # 因此二者严格互斥（对应策略 line 624 合并 + 1214-1215 取符号）。
-            abs_data = self._indicator_engine.calc_absorption(data)
-            dist_data = self._indicator_engine.calc_distribution(data)
-
-            absorption_raw = (
-                float(abs_data["absorption"].iloc[-1])
-                if "absorption" in abs_data.columns
-                else 0.0
-            )
-            distribution_raw = (
-                float(dist_data["distribution"].iloc[-1])
-                if "distribution" in dist_data.columns
-                else 0.0
-            )
-            merged = absorption_raw + distribution_raw
-            ind.absorption_value = merged
-            ind.absorption_active = merged > 0
-            ind.distribution_active = merged < 0
-
-            # 量能
-            close = data["Close"]
-            volume = data["Volume"]
-            if len(volume) >= self._indicator_engine.vol_ma_period:
-                vol_ma = volume.rolling(window=self._indicator_engine.vol_ma_period).mean()
-                ind.volume_surge = bool(volume.iloc[-1] > vol_ma.iloc[-1] * self._indicator_engine.vol_surge_ratio)
-                ind.volume_shrink = bool(volume.iloc[-1] < vol_ma.iloc[-1] * 0.5)
-
-            # 价格均线
-            if len(close) >= self._indicator_engine.price_ma20_period:
-                ma5 = close.rolling(window=self._indicator_engine.price_ma5_period).mean()
-                ma20 = close.rolling(window=self._indicator_engine.price_ma20_period).mean()
-                ind.ma5 = float(ma5.iloc[-1])
-                ind.ma20 = float(ma20.iloc[-1])
-                price = close.iloc[-1]
-                ind.price_above_ma5 = price > ind.ma5
-                ind.price_above_ma20 = price > ind.ma20
-                if len(ma5) >= 2:
-                    ind.price_cross_ma5_up = (close.iloc[-2] <= ma5.iloc[-2]) and (price > ma5.iloc[-1])
-                    ind.price_cross_ma5_down = (close.iloc[-2] >= ma5.iloc[-2]) and (price < ma5.iloc[-1])
-
-            # 均价偏离度
-            if "AvgPrice" in data.columns:
-                avg_price = data["AvgPrice"].iloc[-1]
-                if avg_price > 0:
-                    ind.avg_price = float(avg_price)
-                    ind.deviation_pct = float((close.iloc[-1] - avg_price) / avg_price * 100)
-                    ind.deviation_oversold = ind.deviation_pct < self._indicator_engine.dev_oversold_threshold
-                    ind.deviation_overbought = ind.deviation_pct > self._indicator_engine.dev_overbought_threshold
-
-            # MACD
-            if len(close) >= self._indicator_engine.macd_slow + self._indicator_engine.macd_signal:
-                ema_fast = close.ewm(span=self._indicator_engine.macd_fast, adjust=False).mean()
-                ema_slow = close.ewm(span=self._indicator_engine.macd_slow, adjust=False).mean()
-                dif = ema_fast - ema_slow
-                dea = dif.ewm(span=self._indicator_engine.macd_signal, adjust=False).mean()
-                macd_bar = 2 * (dif - dea)
-                ind.dif = float(dif.iloc[-1])
-                ind.dea = float(dea.iloc[-1])
-                ind.macd_bar = float(macd_bar.iloc[-1])
-
-                # 统一前后端 MACD_Bar_Sum 计算逻辑：从当日第一根K线开始累加，预热数据不参与
-                # 预热数据（prev_day_klines）仅用于 EMA 初始化，不参与柱高和累加
-                if self._warmup_bar_count > 0 and len(macd_bar) > self._warmup_bar_count:
-                    current_day_bars = macd_bar.iloc[self._warmup_bar_count:]
-                    ind.macd_bar_sum = float(current_day_bars.sum())
-                else:
-                    # 无预热数据或 episode 内预热：从第一根K线开始累加
-                    ind.macd_bar_sum = float(macd_bar.sum())
-                if len(macd_bar) >= 2 and macd_bar.iloc[-2] != 0:
-                    ind.macd_bar_diff = float((macd_bar.iloc[-1] - macd_bar.iloc[-2]) / macd_bar.iloc[-2])
-                else:
-                    ind.macd_bar_diff = 0.0
-
-                # 金叉死叉
-                if len(dif) >= 2:
-                    ind.macd_golden_cross = (dif.iloc[-2] <= dea.iloc[-2]) and (dif.iloc[-1] > dea.iloc[-1])
-                    ind.macd_death_cross = (dif.iloc[-2] >= dea.iloc[-2]) and (dif.iloc[-1] < dea.iloc[-1])
-                # 多头动能衰减/空头动能衰竭
-                if len(macd_bar) >= 2:
-                    ind.macd_bullish_weakening = (macd_bar.iloc[-1] > 0) and (macd_bar.iloc[-1] < macd_bar.iloc[-2])
-                    ind.macd_bearish_recovering = (macd_bar.iloc[-1] < 0) and (macd_bar.iloc[-1] > macd_bar.iloc[-2])
-
-            # RSI
-            if len(close) >= self._indicator_engine.rsi_period + 1:
-                delta = close.diff()
-                gain = delta.clip(lower=0)
-                loss = (-delta).clip(lower=0)
-                avg_gain = gain.rolling(window=self._indicator_engine.rsi_period).mean()
-                avg_loss = loss.rolling(window=self._indicator_engine.rsi_period).mean()
-                rs = avg_gain / avg_loss.replace(0, np.nan)
-                rsi = 100 - 100 / (1 + rs)
-                ind.rsi_value = float(rsi.iloc[-1]) if not np.isnan(rsi.iloc[-1]) else 50.0
-                ind.rsi_oversold = ind.rsi_value < self._indicator_engine.rsi_oversold
-                ind.rsi_overbought = ind.rsi_value > self._indicator_engine.rsi_overbought
-
-            # KDJ
-            if len(close) >= self._indicator_engine.kdj_n_period:
-                low_n = data["Low"].rolling(window=self._indicator_engine.kdj_n_period).min()
-                high_n = data["High"].rolling(window=self._indicator_engine.kdj_n_period).max()
-                rsv = (close - low_n) / (high_n - low_n).replace(0, np.nan) * 100
-                k = rsv.ewm(com=self._indicator_engine.kdj_m1_period - 1, adjust=False).mean()
-                d = k.ewm(com=self._indicator_engine.kdj_m2_period - 1, adjust=False).mean()
-                j = 3 * k - 2 * d
-                ind.kdj_k = float(k.iloc[-1]) if not np.isnan(k.iloc[-1]) else 50.0
-                ind.kdj_d = float(d.iloc[-1]) if not np.isnan(d.iloc[-1]) else 50.0
-                ind.kdj_j = float(j.iloc[-1]) if not np.isnan(j.iloc[-1]) else 50.0
-                ind.kdj_oversold = ind.kdj_j < self._indicator_engine.kdj_oversold
-                ind.kdj_overbought = ind.kdj_j > self._indicator_engine.kdj_overbought
-                if len(k) >= 2:
-                    ind.kdj_golden_cross = (k.iloc[-2] <= d.iloc[-2]) and (k.iloc[-1] > d.iloc[-1])
-                    ind.kdj_death_cross = (k.iloc[-2] >= d.iloc[-2]) and (k.iloc[-1] < d.iloc[-1])
-
-            # MFI
-            if len(close) >= self._indicator_engine.mfi_period + 1:
-                typical_price = (data["High"] + data["Low"] + close) / 3
-                raw_money_flow = typical_price * volume
-                pos_flow = raw_money_flow.where(typical_price > typical_price.shift(1), 0)
-                neg_flow = raw_money_flow.where(typical_price < typical_price.shift(1), 0)
-                pos_sum = pos_flow.rolling(window=self._indicator_engine.mfi_period).sum()
-                neg_sum = neg_flow.rolling(window=self._indicator_engine.mfi_period).sum()
-                money_ratio = pos_sum / neg_sum.replace(0, np.nan)
-                mfi = 100 - 100 / (1 + money_ratio)
-                ind.mfi_value = float(mfi.iloc[-1]) if not np.isnan(mfi.iloc[-1]) else 50.0
-                ind.mfi_oversold = ind.mfi_value < self._indicator_engine.mfi_oversold
-                ind.mfi_overbought = ind.mfi_value > self._indicator_engine.mfi_overbought
-                if len(mfi) >= 2:
-                    ind.mfi_cross_50_up = (mfi.iloc[-2] <= 50) and (mfi.iloc[-1] > 50)
-                    ind.mfi_cross_50_down = (mfi.iloc[-2] >= 50) and (mfi.iloc[-1] < 50)
-
-            self._current_indicator = ind
+            # warmup_rows=self._warmup_bar_count：MACD_Bar_Sum 仅累计当日，预热数据不参与
+            df = self._indicator_engine.calculate_all(data, warmup_rows=self._warmup_bar_count)
+            if df.empty:
+                self._current_indicator = IndicatorSnapshot()
+                return
+            latest = df.iloc[-1]
+            prev = df.iloc[-2] if len(df) >= 2 else None
+            prev2 = df.iloc[-3] if len(df) >= 3 else None
+            # 与策略侧 _build_snapshot 共用同一实现，保证 RL 先验信号与页面信号一致
+            self._current_indicator = build_indicator_snapshot(latest, prev, prev2)
         except Exception as e:
-            logger.debug(f"指标计算异常: {e}")
+            logger.debug("指标计算异常: %s", e)
             self._current_indicator = IndicatorSnapshot()
 
     def _update_price_stats(self) -> None:
