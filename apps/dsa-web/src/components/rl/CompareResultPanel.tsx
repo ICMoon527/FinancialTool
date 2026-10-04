@@ -4,6 +4,7 @@ import { BaseChart } from '../charts/BaseChart';
 import { Card } from '../common/Card';
 import { Button } from '../common/Button';
 import { useRLStore } from '../../stores/rlStore';
+import { formatModelId } from '../../utils/format';
 import type { CompareModelResult } from '../../types/rl';
 
 /**
@@ -98,7 +99,7 @@ export const CompareResultPanel: React.FC = () => {
                     }`}
                   />
                   <span className="font-mono text-gray-300 truncate shrink-0 max-w-[180px]" title={pm.modelId}>
-                    模型{pm.idx + 1}: {pm.modelId}
+                    模型{pm.idx + 1}: {formatModelId(pm.modelId)}
                   </span>
                   <span className="text-gray-500 shrink-0">{pm.done}/{pm.total}</span>
                   <div className="h-1.5 rounded-full bg-slate-700/60 flex-1 overflow-hidden">
@@ -189,7 +190,7 @@ export const CompareResultPanel: React.FC = () => {
 
   // 模型曲线 series（每个模型一条线，标注模型 ID）
   const modelSeries = models.map((m) => ({
-    name: m.modelId,
+    name: formatModelId(m.modelId),
     type: 'line' as const,
     data: m.cumulativeReturns,
     symbol: 'none',
@@ -257,7 +258,7 @@ export const CompareResultPanel: React.FC = () => {
                           style={{ background: colorByModelId.get(m.modelId) }}
                         />
                         <span className="font-mono text-gray-200 truncate" title={m.modelId}>
-                          {m.modelId}
+                          {formatModelId(m.modelId)}
                         </span>
                       </div>
                     </td>

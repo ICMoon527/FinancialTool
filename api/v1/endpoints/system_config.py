@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from api.deps import get_system_config_service
 from api.v1.schemas.common import ErrorResponse
 from api.v1.schemas.system_config import (
+    PickFileResponse,
     SystemConfigConflictResponse,
     SystemConfigResponse,
     SystemConfigSchemaResponse,
@@ -25,6 +26,84 @@ from src.services.system_config_service import ConfigConflictError, ConfigValida
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _pick_file_windows(title: str, initial_dir: str = "", file_filter: str = "SQLite 数据库 (*.db)\0*.db\0所有文件 (*.*)\0*.*\0\0") -> str:
+    """使用 Windows 原生打开文件对话框选择文件，返回选中文件的绝对路径；取消时返回空字符串。"""
+    import ctypes
+    from ctypes import wintypes
+
+    # 定义 Windows OPENFILENAME 结构体
+    class OPENFILENAME(ctypes.Structure):
+        _fields_ = [
+            ("lStructSize", wintypes.DWORD),
+            ("hwndOwner", wintypes.HWND),
+            ("hInstance", wintypes.HINSTANCE),
+            ("lpstrFilter", wintypes.LPCWSTR),
+            ("lpstrCustomFilter", wintypes.LPWSTR),
+            ("nMaxCustFilter", wintypes.DWORD),
+            ("nFilterIndex", wintypes.DWORD),
+            ("lpstrFile", wintypes.LPWSTR),
+            ("nMaxFile", wintypes.DWORD),
+            ("lpstrFileTitle", wintypes.LPWSTR),
+            ("nMaxFileTitle", wintypes.DWORD),
+            ("lpstrInitialDir", wintypes.LPCWSTR),
+            ("lpstrTitle", wintypes.LPCWSTR),
+            ("Flags", wintypes.DWORD),
+            ("nFileOffset", wintypes.WORD),
+            ("nFileExtension", wintypes.WORD),
+            ("lpstrDefExt", wintypes.LPCWSTR),
+            ("lCustData", wintypes.LPARAM),
+            ("lpfnHook", ctypes.c_void_p),
+            ("lpTemplateName", wintypes.LPCWSTR),
+        ]
+
+    file_buffer = ctypes.create_unicode_buffer(1024)
+    ofn = OPENFILENAME()
+    ofn.lStructSize = ctypes.sizeof(OPENFILENAME)
+    ofn.lpstrFilter = file_filter
+    ofn.lpstrFile = file_buffer
+    ofn.nMaxFile = 1024
+    ofn.lpstrTitle = title
+    if initial_dir:
+        ofn.lpstrInitialDir = initial_dir
+    ofn.Flags = 0x00001000 | 0x00000200 | 0x00000400  # OFN_PATHMUSTEXIST | OFN_HIDEREADONLY | OFN_FILEMUSTEXIST
+
+    get_open_file_name = ctypes.windll.comdlg32.GetOpenFileNameW
+    get_open_file_name.argtypes = [ctypes.POINTER(OPENFILENAME)]
+    get_open_file_name.restype = wintypes.BOOL
+
+    if get_open_file_name(ctypes.byref(ofn)):
+        return file_buffer.value
+    return ""
+
+
+def _pick_file(title: str, initial_dir: str = "") -> str:
+    """弹出本机文件选择窗口，返回选中文件的绝对路径；取消时返回空字符串。"""
+    # 优先使用 Windows 原生对话框（与操作系统文件管理器体验一致）
+    try:
+        return _pick_file_windows(title, initial_dir)
+    except Exception as win_err:  # 非 Windows 环境或调用失败时回退到 tkinter
+        logger.debug("Windows 原生文件对话框不可用，回退 tkinter: %s", win_err)
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+
+            root = tk.Tk()
+            root.withdraw()
+            root.attributes("-topmost", True)
+            try:
+                path = filedialog.askopenfilename(
+                    parent=root,
+                    title=title,
+                    initialdir=initial_dir or None,
+                    filetypes=[("SQLite 数据库", "*.db"), ("所有文件", "*.*")],
+                )
+                return path or ""
+            finally:
+                root.destroy()
+        except Exception as tk_err:
+            raise RuntimeError(f"无法打开文件选择窗口（Windows 原生失败: {win_err}；tkinter 失败: {tk_err}）") from tk_err
 
 
 @router.get(
@@ -193,4 +272,48 @@ def get_system_config_version(
                 "error": "internal_error",
                 "message": "Failed to get config version",
             },
+        )
+
+
+@router.post(
+    "/config/pick-file",
+    response_model=PickFileResponse,
+    responses={
+        200: {"description": "File picked or canceled"},
+        500: {"description": "Failed to open file dialog", "model": ErrorResponse},
+    },
+    summary="Pick a file via native dialog",
+    description="Open a native file picker on the server machine and return the selected absolute path.",
+)
+def pick_file(
+    service: SystemConfigService = Depends(get_system_config_service),
+) -> PickFileResponse:
+    """在后端本机弹出系统原生文件选择窗口，返回选中的文件绝对路径。"""
+    try:
+        # 初始目录：优先使用当前 DATABASE_PATH 所在的目录，便于直接找到现有数据库
+        initial_dir = ""
+        try:
+            current_path = next(
+                (item["value"] for item in service.get_config(include_schema=False).get("items", []) if item["key"] == "DATABASE_PATH"),
+                "",
+            )
+            if current_path:
+                import os
+
+                candidate = os.path.dirname(current_path)
+                if candidate and os.path.isdir(candidate):
+                    initial_dir = candidate
+        except Exception as dir_exc:
+            logger.debug("获取数据库初始目录失败，忽略: %s", dir_exc)
+
+        selected = _pick_file(title="选择数据库文件", initial_dir=initial_dir)
+        if not selected:
+            return PickFileResponse(success=False, path=None, message="用户取消选择")
+        return PickFileResponse(success=True, path=selected)
+    except Exception as exc:
+        logger.error("Failed to open file dialog: %s", exc, exc_info=True)
+        return PickFileResponse(
+            success=False,
+            path=None,
+            message=f"无法打开文件选择窗口: {exc}",
         )

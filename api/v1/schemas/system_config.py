@@ -139,3 +139,11 @@ class SystemConfigVersionResponse(BaseModel):
 
     config_version: str = Field(..., description="Aggregated config version hash")
     updated_at: Optional[str] = Field(None, description="Last update timestamp in ISO8601 format")
+
+
+class PickFileResponse(BaseModel):
+    """响应：后端本机文件选择结果。"""
+
+    success: bool = Field(..., description="是否成功打开文件选择窗口并选中文件")
+    path: Optional[str] = Field(None, description="选中的文件绝对路径，取消选择时为 None")
+    message: Optional[str] = Field(None, description="错误信息（success=False 时提供）")

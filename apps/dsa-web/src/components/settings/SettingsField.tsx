@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type React from 'react';
 import { EyeToggleIcon, Select } from '../common';
+import { systemConfigApi } from '../../api/systemConfig';
 import type { ConfigValidationIssue, SystemConfigItem } from '../../types/systemConfig';
 import { getFieldDescriptionZh, getFieldTitleZh } from '../../utils/systemConfigI18n';
 
@@ -39,6 +40,9 @@ function renderFieldControl(
   onToggleSecretVisible: () => void,
   isPasswordEditable: boolean,
   onPasswordFocus: () => void,
+  showBrowseButton: boolean,
+  onBrowse: () => void,
+  isBrowsing: boolean,
 ) {
   const schema = item.schema;
   const commonClass = 'input-terminal';
@@ -169,6 +173,29 @@ function renderFieldControl(
 
   const inputType = controlType === 'number' ? 'number' : controlType === 'time' ? 'time' : 'text';
 
+  if (showBrowseButton) {
+    return (
+      <div className="flex items-center gap-2">
+        <input
+          type={inputType}
+          className={`${commonClass} flex-1`}
+          value={value}
+          disabled={disabled || !schema?.isEditable}
+          onChange={(event) => onChange(event.target.value)}
+        />
+        <button
+          type="button"
+          className="btn-secondary !px-3 !py-2 text-xs whitespace-nowrap"
+          disabled={disabled || !schema?.isEditable || isBrowsing}
+          onClick={onBrowse}
+          title="打开文件选择窗口，选中数据库文件后自动填充路径"
+        >
+          {isBrowsing ? '打开中…' : '浏览…'}
+        </button>
+      </div>
+    );
+  }
+
   return (
     <input
       type={inputType}
@@ -194,6 +221,26 @@ export const SettingsField: React.FC<SettingsFieldProps> = ({
   const hasError = issues.some((issue) => issue.severity === 'error');
   const [isSecretVisible, setIsSecretVisible] = useState(false);
   const [isPasswordEditable, setIsPasswordEditable] = useState(false);
+  const [isBrowsing, setIsBrowsing] = useState(false);
+  // 数据库路径字段显示「浏览…」按钮，通过系统原生文件窗口选择
+  const showBrowseButton = item.key === 'DATABASE_PATH' && !isMultiValue;
+
+  const handleBrowse = async () => {
+    if (isBrowsing) {
+      return;
+    }
+    setIsBrowsing(true);
+    try {
+      const result = await systemConfigApi.pickFile();
+      if (result.success && result.path) {
+        onChange(item.key, result.path);
+      }
+    } catch {
+      // 网络或后端异常时保持原值，静默处理
+    } finally {
+      setIsBrowsing(false);
+    }
+  };
 
   return (
     <div className={`rounded-xl border p-4 ${hasError ? 'border-red-500/35' : 'border-white/8'} bg-elevated/50`}>
@@ -222,6 +269,9 @@ export const SettingsField: React.FC<SettingsFieldProps> = ({
           () => setIsSecretVisible((previous) => !previous),
           isPasswordEditable,
           () => setIsPasswordEditable(true),
+          showBrowseButton,
+          handleBrowse,
+          isBrowsing,
         )}
       </div>
 

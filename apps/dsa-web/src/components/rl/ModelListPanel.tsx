@@ -3,6 +3,7 @@ import { Card } from '../common/Card';
 import { Button } from '../common/Button';
 import { useRLStore } from '../../stores/rlStore';
 import { rlApi } from '../../api/rl';
+import { formatModelId } from '../../utils/format';
 
 /**
  * 模型列表面板：展示已训练模型，支持评估 / 断点续训选中 / 删除
@@ -126,7 +127,7 @@ export const ModelListPanel: React.FC = () => {
                     title={m.modelId}
                     onClick={() => selectModel(selectedModelId === m.modelId ? null : m.modelId)}
                   >
-                    {m.modelId}
+                    {formatModelId(m.modelId)}
                   </button>
                 </div>
                 <span className="shrink-0 px-1.5 py-0.5 rounded bg-slate-700 text-[10px] uppercase text-gray-300">
@@ -239,7 +240,7 @@ export const ModelListPanel: React.FC = () => {
           >
             <h3 className="text-white font-semibold mb-2">确认删除模型</h3>
             <p className="text-sm text-gray-400 mb-4 break-all">
-              确定要删除 <span className="text-red-400 font-mono">{pendingDelete}</span> 吗？
+              确定要删除 <span className="text-red-400 font-mono" title={pendingDelete}>{formatModelId(pendingDelete)}</span> 吗？
               <span className="block mt-1 text-gray-500">
                 该操作会删除对应模型文件夹，且不可恢复。
               </span>

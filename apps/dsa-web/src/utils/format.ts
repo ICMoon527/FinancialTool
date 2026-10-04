@@ -56,3 +56,31 @@ export const formatReportType = (value?: string): string => {
   if (value === 'detailed') return '标准';
   return value;
 };
+
+/**
+ * 解析 RL model_id
+ *
+ * 后端 model_id = 相对 rl/models 的 checkpoint 路径，各段用 "__" 连接：
+ * - 嵌套布局（训练用 RL_MODEL_DIR 指向实验子目录）：`{实验名}__{checkpoint名}`
+ * - 扁平布局（checkpoint 直接位于 rl/models 下）：仅 `{checkpoint名}`
+ */
+export const parseModelId = (
+  modelId: string
+): { experiment: string | null; checkpoint: string } => {
+  const sepIndex = modelId.indexOf('__');
+  if (sepIndex === -1) return { experiment: null, checkpoint: modelId };
+  return {
+    experiment: modelId.slice(0, sepIndex),
+    checkpoint: modelId.slice(sepIndex + 2),
+  };
+};
+
+/** 由 model_id 判断是否为「开启先验买卖点」的模型（checkpoint 名第 2 段为 prior） */
+export const isPriorModel = (modelId: string): boolean =>
+  parseModelId(modelId).checkpoint.split('_')[1] === 'prior';
+
+/** model_id 的展示名：嵌套布局显示为「实验名 / checkpoint 名」，扁平布局仅显示 checkpoint 名 */
+export const formatModelId = (modelId: string): string => {
+  const { experiment, checkpoint } = parseModelId(modelId);
+  return experiment ? `${experiment} / ${checkpoint}` : checkpoint;
+};

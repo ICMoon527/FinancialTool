@@ -99,8 +99,6 @@ class T0Environment:
         # 持仓状态
         self._base_position: int = 0          # 底仓（可卖出）
         self._today_bought: List[float] = []  # 当日买入的每笔成本
-        self._avg_cost: float = 0.0           # 加权平均成本
-        self._unrealized_pnl: float = 0.0     # 未实现盈亏
         self._realized_pnl: float = 0.0       # 已实现盈亏
         self._total_reward: float = 0.0       # episode 累计 reward
 
@@ -164,8 +162,6 @@ class T0Environment:
         # 重置持仓状态
         self._base_position = self.MAX_BASE_POSITION
         self._today_bought = []
-        self._avg_cost = 0.0
-        self._unrealized_pnl = 0.0
         self._realized_pnl = 0.0
         self._total_reward = 0.0
         self._step_cost = 0.0
@@ -335,60 +331,75 @@ class T0Environment:
     # ═══════════════════════════════════════════════
 
     def _get_state(self) -> np.ndarray:
-        """构建状态向量（基础 18 维；use_signal_scores 时 20 维），所有特征归一化到合理范围
+        """构建状态向量（基础 8 维；use_signal_scores 时 10 维），所有特征股票无关
 
-        组成：OHLCV(5) + 多尺度return(4: 1/5/15/60根) + 波动率(1)
-              + 时间编码(3) + 仓位状态(5) [+ 规则买卖点得分(2)]
+        组成：OHLCV(5, 相对前收的百分比 / 相对均量倍数) + 时间编码(1: 距收盘剩余比例)
+              + 仓位状态(2: 底仓比例/有符号净敞口) [+ 规则买卖点得分(2)]
+
+        设计分工：市场时序信息（动量、波动率、形态）全部由 CNN 编码器承担，
+        state 只保留 CNN 看不到的「账户状态」与决策紧迫度。已移除：
+        绝对价格 5 维（泄漏个股身份）、return/波动率 5 维（与 CNN 重复）、
+        总持仓与平均成本 2 维（与其他维线性冗余）、时间 sin/cos 2 维（与剩余时间同源）、
+        浮盈 1 维（sunk cost，不 gate 动作也不参与 reward）。
         """
         k = self._current_kline
         features = []
 
-        # ── OHLCV (5维)：原始K线数据 ──
-        if k:
+        # 归一化基准：前日收盘价（reset 时固定、全程不漂移，与 CNN 通道同一基准）
+        ref = float(self._prev_close_ref) if self._prev_close_ref > 0 else 0.0
+        if ref <= 0 and k:
+            ref = float(k.get("Open") or 0.0)
+
+        # ── OHLCV (5维)：全部改为股票无关的相对量 ──
+        # 修复要点：此前为 `价格 / 100.0`，除以常数并非归一化——不同股票价格
+        # 从 3 元到 1700 元相差数百倍，这 4 维等于给模型一条「个股身份证」通道，
+        # 使其靠记忆个股而非学习通用日内形态（B 方案 35 个验证点全负的机制解释）。
+        # 现统一以「前日收盘价」为参照取百分比偏离，任意股票的输入分布统计一致；
+        # 成交量同理由绝对规模改为「相对 20 根均量」的倍数。
+        if k and ref > 0:
+            vol_ma = 0.0
+            buf = self._data_buffer.data
+            if len(buf) >= 1:
+                vols = buf["Volume"].tail(20).tolist()
+                vol_ma = float(np.mean(vols)) if vols else 0.0
+            vol_ratio = (float(k["Volume"]) / vol_ma) if vol_ma > 0 else 1.0
             features.extend([
-                k["Open"] / 100.0,
-                k["High"] / 100.0,
-                k["Low"] / 100.0,
-                k["Close"] / 100.0,
-                np.log1p(k["Volume"]) / 20.0,
+                (k["Open"] / ref - 1.0) * 100.0,
+                (k["High"] / ref - 1.0) * 100.0,
+                (k["Low"] / ref - 1.0) * 100.0,
+                (k["Close"] / ref - 1.0) * 100.0,
+                float(np.clip(vol_ratio, 0.0, 10.0)),  # 相对均量倍数，裁剪抑制异常放量
             ])
         else:
             features.extend([0.0] * 5)
 
-        # ── 多尺度 return (4维) 与 波动率 (1维) ──
-        # 基于缓冲区已见收盘价（含前日K线，跨日上下文）；未足窗口时补 0
-        data = self._data_buffer.data
-        closes = data["Close"].tolist() if len(data) else []
-        for n in (1, 5, 15, 60):
-            if len(closes) > n and closes[-n - 1] > 0:
-                features.append((closes[-1] / closes[-n - 1] - 1.0) * 100.0)
-            else:
-                features.append(0.0)
-        if len(closes) >= 2:
-            log_ret = np.diff(np.log(np.maximum(closes[-21:], 1e-8)))
-            features.append(float(np.std(log_ret)) * 100.0)
-        else:
-            features.append(0.0)
+        # 已删除「多尺度 return(4维) + 波动率(1维)」：
+        # 本架构已启用 CNN 编码器（消费 480×8 的前日+当日K线序列），动量与波动率
+        # 均能由 CNN 从原始序列自行推导，显式放进 state 属重复表达，徒增参数与
+        # 过拟合风险。市场时序信息全部交由 CNN 承担，state 只保留账户状态。
 
-        # ── 时间编码 (3维) ──
+        # ── 时间编码 (1维) ──
+        # 只保留「距收盘剩余比例」：原 sin(2πt)/cos(2πt) 与本维承载同一信息
+        # （由 bars_remaining 可反解 t，进而唯一确定 sin/cos），属完全冗余。
+        # 且周期编码的核心价值在于消除跨周期边界跳变，而 episode 恰为单个交易日、
+        # 无边界跳变，价值不成立；CNN 的 intraday_pos 通道亦已编码时间位置。
         bar_index = self._step
         max_steps = max(len(self._klines), self.MAX_STEPS)
-        features.extend([
-            np.sin(2 * np.pi * bar_index / max_steps),
-            np.cos(2 * np.pi * bar_index / max_steps),
-            (max_steps - bar_index) / max_steps,  # bars_remaining
-        ])
+        features.append((max_steps - bar_index) / max_steps)  # bars_remaining
 
-        # ── 仓位状态 (5维) ──
-        unrealized_pct = 0.0
-        if k and self._avg_cost > 0:
-            unrealized_pct = (k["Close"] / self._avg_cost - 1.0) * 100.0
+        # ── 仓位状态 (2维) ──
+        # state 的职责是「账户状态」：CNN 只能看到市场行情，看不到持仓与盈亏。
+        # 第 7 维：底仓比例（决定 SELL 可用额度）；第 8 维：有符号净敞口
+        # （正=当日买入待平，负=先卖后买待买回，决定 BUY 额度与尾盘买回义务）。
+        # 由这两维可反解当日买入数 today_bought 与做空数 sold_short
+        # （sold_short = 3·(1-base_ratio)，today_bought = 3·net_ratio + sold_short），
+        # 账户状态信息完整。
+        # 已删除「浮盈」维：属 sunk cost（最优择时只看未来价格），不 gate 任何动作、
+        # 不参与 reward（R2 纯已实现），且环境唯一硬止损 short_stop 基于卖出价而非成本。
+        net_exposure = len(self._today_bought) - len(self._sold_short)
         features.extend([
             self._base_position / self.MAX_BASE_POSITION,
-            len(self._today_bought) / self.MAX_TODAY_BUY,
-            self.total_position / (self.MAX_BASE_POSITION + self.MAX_TODAY_BUY),
-            self._avg_cost / 100.0 if self._avg_cost > 0 else 0.0,
-            unrealized_pct,
+            net_exposure / self.MAX_TODAY_BUY,
         ])
 
         # ── 规则买卖点得分 (2维，use_signal_scores=True 时启用) ──
@@ -467,10 +478,6 @@ class T0Environment:
                     "pnl": 0.0,
                 })
 
-            # 更新平均成本
-            total_cost = sum(self._today_bought) + self._base_position * self._avg_cost
-            total_position = self.total_position
-            self._avg_cost = total_cost / total_position if total_position > 0 else price
             return 0.0
 
         elif action in self.SELL_AMOUNTS:
@@ -616,7 +623,7 @@ class T0Environment:
 
         语义：把「前日全天K线」与「当日已走过的K线」在时间轴上首尾相接，
         形成一条连续序列供 1D-CNN 读取（注意：这是时间维度的拼接，不是把前日
-        特征拼进 18 维 state 向量；state 维度始终不变）。
+        特征拼进 8 维 state 向量；state 维度始终不变）。
 
         通道定义（8 通道）：
         - 0~3：OHLC 相对前日收盘价的收益率

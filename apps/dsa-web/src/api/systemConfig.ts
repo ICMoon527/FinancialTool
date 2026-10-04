@@ -1,6 +1,7 @@
 import apiClient from './index';
 import { toCamelCase } from './utils';
 import type {
+  PickFileResponse,
   SystemConfigConflictResponse,
   SystemConfigResponse,
   SystemConfigSchemaResponse,
@@ -85,6 +86,11 @@ export const systemConfigApi = {
   async getConfigVersion(): Promise<SystemConfigVersionResponse> {
     const response = await apiClient.get<Record<string, unknown>>('/api/v1/system/config/version');
     return toCamelCase<SystemConfigVersionResponse>(response.data);
+  },
+
+  async pickFile(): Promise<PickFileResponse> {
+    const response = await apiClient.post<Record<string, unknown>>('/api/v1/system/config/pick-file', {});
+    return toCamelCase<PickFileResponse>(response.data);
   },
 
   async validate(payload: ValidateSystemConfigRequest): Promise<ValidateSystemConfigResponse> {

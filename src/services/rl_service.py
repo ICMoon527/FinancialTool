@@ -45,26 +45,49 @@ class RLService:
         # 启动时扫描磁盘上的历史模型（脚本训练/历史训练产生的 checkpoint）
         self._scan_disk_models()
 
+    def _to_model_id(self, ckpt_dir: Path) -> str:
+        """把 checkpoint 目录转换为 model_id
+
+        model_id = 相对服务端 model_dir 的路径，用双下划线 "__" 连接各段。
+        这样既避免不同实验下同名 checkpoint（如多个实验都有 dqn_prevf_cnn_best）
+        互相覆盖，又保证 id 不含 "/"（可安全放入 URL 路径供删除/回放接口使用）。
+        目录不在 model_dir 之下时退化为目录名（保底）。
+        """
+        try:
+            rel = Path(ckpt_dir).resolve().relative_to(Path(self.config.model_dir).resolve())
+            if rel.parts:
+                return "__".join(rel.parts)
+        except ValueError:
+            pass
+        return Path(ckpt_dir).name
+
     def _scan_disk_models(self) -> None:
         """扫描 model_dir 下的 checkpoint 目录，注册为可评估模型（不加载权重）
 
-        目录命名约定: {algorithm}_{tag}，tag 为 latest（最近状态）/ best（历史最优）
-        每个目录需包含 model.pt；metrics.json / trainer_state.json 可选
+        兼容两种目录布局：
+        - 扁平：{model_dir}/{algorithm}_{tag}/model.pt
+        - 嵌套：{model_dir}/{实验名}/{algorithm}_{tag}/model.pt
+          （训练用 RL_MODEL_DIR 指向实验子目录时会产生嵌套布局）
+
+        每个目录需包含 model.pt；metrics.json / trainer_state.json 可选。
+        目录名（末段）用于解析算法、先验标记与时间戳；model_id 由 _to_model_id 生成。
         """
         models_root = Path(self.config.model_dir)
         if not models_root.is_dir():
             return
         count = 0
-        for d in sorted(models_root.iterdir()):
-            if not d.is_dir() or not (d / "model.pt").exists():
-                continue
-            parts = d.name.split("_")
+        for model_file in sorted(models_root.rglob("model.pt")):
+            ckpt_dir = model_file.parent
+            name = ckpt_dir.name
+            model_id = self._to_model_id(ckpt_dir)
+
+            parts = name.split("_")
             algorithm = parts[0] if parts and parts[0] in ("dqn", "ppo") else "dqn"
-            # 目录名含 _prior 段表示训练时开启了先验买卖点（state_dim=20）
+            # 目录名含 _prior 段表示训练时开启了先验买卖点（state_dim=10）
             use_signal_scores = len(parts) >= 2 and parts[1] == "prior"
 
             # 从目录名解析创建时间，解析失败则用目录修改时间
-            created_at = datetime.fromtimestamp(d.stat().st_mtime).isoformat()
+            created_at = datetime.fromtimestamp(ckpt_dir.stat().st_mtime).isoformat()
             if len(parts) >= 3:
                 try:
                     created_at = datetime.strptime(
@@ -75,7 +98,7 @@ class RLService:
 
             # 读取指标摘要（可选）
             metrics = None
-            metrics_file = d / "metrics.json"
+            metrics_file = ckpt_dir / "metrics.json"
             if metrics_file.exists():
                 try:
                     import json
@@ -86,9 +109,9 @@ class RLService:
 
             # 保留已加载的权重引用：重扫时若已有同名校对注册（训练中已载入内存），
             # 不要用惰性占位覆盖，避免评估前被迫重新从磁盘读取
-            existing = self._models.get(d.name, {})
-            self._models[d.name] = {
-                "model_id": d.name,
+            existing = self._models.get(model_id, {})
+            self._models[model_id] = {
+                "model_id": model_id,
                 "algorithm": algorithm,
                 "use_signal_scores": use_signal_scores,
                 # 每个模型携带其专属配置：use_signal_scores 必须与训练时一致，
@@ -100,7 +123,7 @@ class RLService:
                 ),
                 "metrics": metrics,
                 "created_at": created_at,
-                "checkpoint_dir": str(d),
+                "checkpoint_dir": str(ckpt_dir),
             }
             count += 1
         if count:
@@ -249,17 +272,41 @@ class RLService:
                 task["stop_event"].set()
                 task["pause_event"].clear()
 
-        # 删除磁盘 checkpoint 目录
+        # 删除磁盘 checkpoint 目录，并向上清理随之变空的实验子目录
         ckpt_dir = model_info.get("checkpoint_dir")
-        if ckpt_dir and Path(ckpt_dir).is_dir():
-            shutil.rmtree(ckpt_dir, ignore_errors=True)
-            logger.info(f"[模型管理] 已删除磁盘 checkpoint 目录: {ckpt_dir}")
+        if ckpt_dir:
+            ckpt_path = Path(ckpt_dir)
+            if ckpt_path.is_dir():
+                shutil.rmtree(ckpt_path, ignore_errors=True)
+                logger.info(f"[模型管理] 已删除磁盘 checkpoint 目录: {ckpt_path}")
+            self._cleanup_empty_parents(ckpt_path)
 
         # 释放已加载的模型权重引用（惰性加载的模型在删除后应可被 GC 回收）
         model_info["model"] = None
         del self._models[model_id]
         logger.info(f"[模型管理] 模型已删除: {model_id}")
         return True
+
+    def _cleanup_empty_parents(self, ckpt_dir: Path) -> None:
+        """删除 checkpoint 后，向上清理随之变空的实验子目录
+
+        嵌套布局下 checkpoint 位于 {model_dir}/{实验名}/{checkpoint}/，
+        删除 checkpoint 后实验目录可能已空，一并删除避免残留空文件夹；
+        清理到 model_dir 边界即停，不会误删 model_dir 自身，
+        也不影响扁平布局（checkpoint 的父目录就是 model_dir）。
+        """
+        models_root = Path(self.config.model_dir).resolve()
+        parent = Path(ckpt_dir).resolve().parent
+        while parent != models_root and parent.is_relative_to(models_root):
+            try:
+                # 目录非空（仍有同级 checkpoint）则停止向上清理
+                if any(parent.iterdir()):
+                    break
+                parent.rmdir()
+                logger.info(f"[模型管理] 已清理空的实验目录: {parent}")
+            except OSError:
+                break
+            parent = parent.parent
 
     def _get_loaded_model(self, model_id: str):
         """获取已加载权重的模型（磁盘模型首次使用时惰性加载）"""
@@ -783,30 +830,41 @@ class RLService:
             task["message"] = str(e)
 
     def _resolve_checkpoint_dir(self, resume_from: str):
-        """解析续训来源：模型 ID 或 checkpoint 目录名 → Path"""
+        """解析续训来源：模型 ID / checkpoint 目录名 / latest → Path"""
         # 1) 已注册模型 ID → 取其 checkpoint 目录
         model_info = self._models.get(resume_from)
         if model_info and model_info.get("checkpoint_dir"):
             return Path(model_info["checkpoint_dir"])
-        # 2) "latest" 或直接目录名 → rl/models/<name>
-        from rl.config import RLConfig
         models_root = Path(self.config.model_dir)
-        candidate = models_root / resume_from
-        if candidate.is_dir() and (candidate / "model.pt").exists():
-            return candidate
-        # 3) 特殊值 "latest" → dqn_latest / ppo_latest（带先验时为 dqn_prior_latest）
-        candidate = models_root / f"{self.config.model_tag}_latest"
-        if candidate.is_dir() and (candidate / "model.pt").exists():
-            return candidate
+        # 2) 嵌套 model_id（实验名__checkpoint名）→ 还原为目录路径
+        if resume_from and resume_from != "latest" and "__" in resume_from:
+            candidate = models_root.joinpath(*resume_from.split("__"))
+            if candidate.is_dir() and (candidate / "model.pt").exists():
+                return candidate
+        # 3) 直接目录名 → model_dir/<name>（兼容扁平布局）
+        if resume_from and resume_from != "latest":
+            candidate = models_root / resume_from
+            if candidate.is_dir() and (candidate / "model.pt").exists():
+                return candidate
+        # 4) 特殊值 "latest" → 递归查找最近的 <model_tag>_latest（兼容嵌套布局）
+        target = f"{self.config.model_tag}_latest"
+        matches = [
+            p.parent for p in models_root.rglob("model.pt") if p.parent.name == target
+        ]
+        if matches:
+            return max(matches, key=lambda d: d.stat().st_mtime)
         return None
 
     def _register_model(self, task: Dict, config: "RLConfig", model, trainer) -> None:
         """注册模型到内存列表（供评估/续训）
 
         合并到固定目录 {model_tag}_latest，不再生成时间戳 ID 的模型条目
-        （模型目录只保留 best/latest，避免列表中出现"带时间戳的新模型"）
+        （模型目录只保留 best/latest，避免列表中出现"带时间戳的新模型"）。
+        model_id 由 _to_model_id 生成，与磁盘扫描结果保持一致：训练中注册的内存条目
+        与随后扫描到的磁盘条目是同一个 key，不会重复出现。
         """
-        model_id = f"{config.model_tag}_latest"
+        ckpt_path = Path(config.model_dir) / f"{config.model_tag}_latest"
+        model_id = self._to_model_id(ckpt_path)
         self._models[model_id] = {
             "model_id": model_id,
             "algorithm": config.default_algorithm,
@@ -815,7 +873,7 @@ class RLService:
             "config": config,
             "metrics": trainer.metrics.to_dict(),
             "created_at": datetime.now().isoformat(),
-            "checkpoint_dir": str(Path(config.model_dir) / model_id),
+            "checkpoint_dir": str(ckpt_path),
         }
         task["model_id"] = model_id
 

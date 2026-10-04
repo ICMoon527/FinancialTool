@@ -2,6 +2,7 @@ import React from 'react';
 import { Card } from '../common/Card';
 import { Button } from '../common/Button';
 import { useRLStore } from '../../stores/rlStore';
+import { formatModelId, isPriorModel } from '../../utils/format';
 
 /**
  * 模型参数配置面板
@@ -51,11 +52,11 @@ export const TrainingConfigPanel: React.FC<Props> = ({ disabled }) => {
   const handleResumeModelChange = (id: string) => {
     setResumeFromModel(id);
     if (id !== 'latest') {
-      setUseSignalScores(id.includes('_prior'));
+      setUseSignalScores(isPriorModel(id));
     }
   };
 
-  const resumePrior = resumeFromModel !== 'latest' && resumeFromModel.includes('_prior');
+  const resumePrior = resumeFromModel !== 'latest' && isPriorModel(resumeFromModel);
 
   const inputCls =
     'w-full rounded-lg bg-slate-800/60 border border-slate-600 px-3 py-2 text-sm text-gray-200 ' +
@@ -165,13 +166,13 @@ export const TrainingConfigPanel: React.FC<Props> = ({ disabled }) => {
               <option value="latest">latest（最近断点，自动匹配当前先验设置）</option>
               {models.map((m) => (
                 <option key={m.modelId} value={m.modelId}>
-                  {m.modelId}
+                  {formatModelId(m.modelId)}
                 </option>
               ))}
             </select>
             {resumePrior && (
               <p className="text-[11px] text-cyan-400 mt-1">
-                已自动启用规则先验买卖点以匹配该模型维度（state_dim 20）
+                已自动启用规则先验买卖点以匹配该模型维度（state_dim 10）
               </p>
             )}
           </div>
@@ -189,7 +190,7 @@ export const TrainingConfigPanel: React.FC<Props> = ({ disabled }) => {
           <span className="text-xs text-gray-300">
             启用规则先验买卖点
             <span className="block text-gray-500 text-[11px]">
-              将规则买卖点评分接入状态特征（state_dim 18→20），需重新训练，不可续训旧维度模型
+              将规则买卖点评分接入状态特征（state_dim 8→10），需重新训练，不可续训旧维度模型
             </span>
           </span>
         </label>

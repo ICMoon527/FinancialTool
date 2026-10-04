@@ -3898,9 +3898,10 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "display_order": 320,
     },
     "DATABASE_PATH": {
-        "title": "Database Path",
-        "description": "数据库文件路径。",
+        "title": "数据库存储路径",
+        "description": "SQLite 数据库文件路径，用于切换不同版本/环境的数据库。修改后需重启服务生效。",
         "category": "settings",
+        "group": "数据库",
         "data_type": "string",
         "ui_control": "text",
         "is_sensitive": False,

@@ -135,3 +135,9 @@ export interface SystemConfigVersionResponse {
   configVersion: string;
   updatedAt?: string;
 }
+
+export interface PickFileResponse {
+  success: boolean;
+  path?: string | null;
+  message?: string | null;
+}
