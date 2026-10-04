@@ -438,8 +438,91 @@ class RLTrainer:
             with open(model_path / "trainer_state.json", "w", encoding="utf-8") as f:
                 json.dump(trainer_state, f, indent=2)
 
+        # 保存规则信号统计报告（仅启用先验买卖点时；记录信号产生过程与有效特征分布）
+        self._save_signal_report(model_path)
+
         logger.info(f"Checkpoint 已保存: {model_path}")
         return str(model_path)
+
+    def _save_signal_report(self, model_path: Path) -> None:
+        """把训练期规则信号统计写入模型目录（signal_report.json + signal_report.log）
+
+        仅当启用规则先验买卖点（use_signal_scores）时生成，记录信号「怎么产生」
+        与「有效特征数值分布」，随 checkpoint 一并落盘便于复盘。
+        """
+        report = self.env.get_signal_report()
+        if not report:
+            return
+        with open(model_path / "signal_report.json", "w", encoding="utf-8") as f:
+            json.dump(report, f, indent=2, ensure_ascii=False)
+        with open(model_path / "signal_report.log", "w", encoding="utf-8") as f:
+            f.write(self._format_signal_report(report))
+
+    @staticmethod
+    def _format_signal_report(report: Dict) -> str:
+        """把信号统计 dict 渲染为可读文本报告"""
+        steps = report.get("steps", 0) or 1
+
+        def _pct(n: int) -> str:
+            return f"{n / steps * 100:.2f}%"
+
+        def _hist(hist: List[int]) -> str:
+            total = sum(hist) or 1
+            parts = []
+            for i, c in enumerate(hist):
+                if c:
+                    parts.append(f"[{i / 10:.1f}-{(i + 1) / 10:.1f}):{c}({c / total * 100:.1f}%)")
+            return " ".join(parts) if parts else "（无）"
+
+        gate = report.get("gate_pass", {})
+        buy = report.get("buy", {})
+        sell = report.get("sell", {})
+        w = report.get("weights_used", {})
+
+        lines = [
+            "规则信号统计报告（训练期）",
+            "=" * 60,
+            f"统计步数: {report.get('steps', 0)}",
+            f"吸筹门槛通过: {gate.get('absorption_active', 0)} ({_pct(gate.get('absorption_active', 0))})"
+            f"    出货门槛通过: {gate.get('distribution_active', 0)} ({_pct(gate.get('distribution_active', 0))})",
+            f"买分命中(>0): {buy.get('hits', 0)} ({_pct(buy.get('hits', 0))})"
+            f"    卖分命中(>0): {sell.get('hits', 0)} ({_pct(sell.get('hits', 0))})",
+            f"归一化满分: buy={report.get('normalize_max', {}).get('buy')}"
+            f"  sell={report.get('normalize_max', {}).get('sell')}",
+            "",
+            "生效规则权重（来自 intraday_t0_config.yaml，仅列非零项）",
+            f"  买点: {w.get('buy', {})}",
+            f"  卖点: {w.get('sell', {})}",
+            "",
+            "买点规则贡献（仅记录 触发且得分>0 的规则）",
+            f"  {'规则':<28}{'触发次数':>10}{'累计贡献分':>14}",
+        ]
+        for row in report.get("buy_rules", []):
+            lines.append(f"  {row['rule']:<28}{row['count']:>10}{row['score_sum']:>14}")
+        if not report.get("buy_rules"):
+            lines.append("  （无）")
+
+        lines += [
+            "",
+            "卖点规则贡献（仅记录 触发且得分>0 的规则）",
+            f"  {'规则':<28}{'触发次数':>10}{'累计贡献分':>14}",
+        ]
+        for row in report.get("sell_rules", []):
+            lines.append(f"  {row['rule']:<28}{row['count']:>10}{row['score_sum']:>14}")
+        if not report.get("sell_rules"):
+            lines.append("  （无）")
+
+        lines += [
+            "",
+            f"买分: 均值={buy.get('score_mean', 0):.4f}  最大={buy.get('score_max', 0):.4f}",
+            f"买分特征(归一化): 均值={buy.get('feat_mean', 0):.4f}  最大={buy.get('feat_max', 0):.4f}",
+            f"  分布: {_hist(buy.get('feat_hist', []))}",
+            f"卖分: 均值={sell.get('score_mean', 0):.4f}  最大={sell.get('score_max', 0):.4f}",
+            f"卖分特征(归一化): 均值={sell.get('feat_mean', 0):.4f}  最大={sell.get('feat_max', 0):.4f}",
+            f"  分布: {_hist(sell.get('feat_hist', []))}",
+            "",
+        ]
+        return "\n".join(lines)
 
     @staticmethod
     def _sample_to_dict(sample, klines=None) -> dict:

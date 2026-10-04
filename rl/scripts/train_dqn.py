@@ -40,6 +40,12 @@ os.environ.setdefault("FOR_DISABLE_CONSOLE_CTRL_HANDLER", "1")
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+# 加载项目根 .env，使 RL_* 超参（批次/学习率/状态维度/轮数等）在命令行训练时生效。
+# override=False：命令行/系统已设置的同名环境变量优先（便于临时覆盖 RL_MODEL_DIR 等）。
+from dotenv import load_dotenv  # noqa: E402
+
+load_dotenv(dotenv_path=PROJECT_ROOT / ".env", override=False)
+
 logger = logging.getLogger("train_dqn")
 
 

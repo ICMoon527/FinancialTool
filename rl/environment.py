@@ -26,6 +26,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 
 import numpy as np
@@ -81,15 +82,26 @@ class T0Environment:
         self.config = config
         self.warmup_steps = config.warmup_steps
 
-        # 指标计算
-        self._indicator_engine = indicator_engine or IntradayIndicatorEngine()
+        # 加载分时做T的 YAML 配置（指标阈值/周期 + 规则买卖点权重），
+        # 与前端「分时做T」页面/策略共用同一份文件，使用户调整后训练侧同步生效；
+        # 文件缺失或解析失败时为 None，下游组件各自回退类默认值。
+        signal_config = self._load_signal_config()
+
+        # 指标计算（阈值/周期取自 YAML，回退 IntradayIndicatorEngine 类默认值）
+        self._indicator_engine = indicator_engine or IntradayIndicatorEngine(signal_config)
         # max_window=500：容纳「前日全天(约240根) + 当日全天(约240根)」的跨日K线拼接，
         # 保证开盘时 return_1/5/15/60、波动率等特征能看到完整前日上下文，
         # 且盘中不因裁剪挤掉前日数据导致中期特征断档
         self._data_buffer = IntradayDataBuffer(max_window=500)
 
-        # 规则买卖点评分器（use_signal_scores=True 时为状态特征提供人工先验）
-        self._signal_evaluator = SignalEvaluator()
+        # 规则买卖点评分器（use_signal_scores=True 时为状态特征提供人工先验，权重取自 YAML）
+        self._signal_evaluator = SignalEvaluator(signal_config)
+        # 买卖分归一化基准：按当前权重满分求和，使特征落在 0~1，兼容用户对权重的任意调整。
+        # 环境不传参考线、引力场恒为 0，故满分即权重之和。
+        self._signal_buy_max = sum(self._signal_evaluator.BUY_WEIGHTS.values()) or 1.0
+        self._signal_sell_max = sum(self._signal_evaluator.SELL_WEIGHTS.values()) or 1.0
+        # 训练期信号统计（记录信号产生过程与有效特征分布，训练结束导出 signal_report）
+        self._signal_stats = self._new_signal_stats()
 
         # 环境状态
         self._step: int = 0
@@ -131,6 +143,162 @@ class T0Environment:
 
         # 预热数据计数（用于 MACD_Bar_Sum 从当日第一根K线开始累加）
         self._warmup_bar_count: int = 0
+
+    def _load_signal_config(self) -> Optional[Dict]:
+        """加载分时做T的 YAML 配置（指标阈值/周期 + 规则买卖点权重）
+
+        与分时做T页面/策略共用 watchdog/strategies/intraday_t0_config.yaml，
+        用户在前端调整指标阈值或买卖规则权重后，训练侧同步生效；
+        文件缺失或解析失败时返回 None，下游组件各自回退类默认值（保持旧行为）。
+        """
+        cfg_path = (
+            Path(__file__).resolve().parent.parent
+            / "watchdog"
+            / "strategies"
+            / "intraday_t0_config.yaml"
+        )
+        if cfg_path.exists():
+            try:
+                import yaml
+
+                with open(cfg_path, "r", encoding="utf-8") as f:
+                    return yaml.safe_load(f)
+            except Exception as e:
+                logger.warning(f"加载分时做T信号配置失败，回退默认值: {e}")
+        return None
+
+    # ── 训练期信号统计 ──
+
+    # 归一化特征直方图桶数（[0,1) 均分，末桶含 1.0）
+    _FEAT_HIST_BUCKETS: int = 10
+
+    def _new_signal_stats(self) -> Dict:
+        """初始化信号统计累加器（跨 episode 累积，训练结束导出）"""
+        return {
+            "steps": 0,                 # 参与统计的步数（含无信号步）
+            "absorption_gate": 0,       # 吸筹门槛通过次数（买点必备条件）
+            "distribution_gate": 0,     # 出货门槛通过次数（卖点必备条件）
+            "buy_hits": 0,              # 买分 > 0 的步数
+            "sell_hits": 0,             # 卖分 > 0 的步数
+            "buy_score_sum": 0.0,
+            "buy_score_max": 0.0,
+            "sell_score_sum": 0.0,
+            "sell_score_max": 0.0,
+            "buy_feat_sum": 0.0,
+            "buy_feat_max": 0.0,
+            "sell_feat_sum": 0.0,
+            "sell_feat_max": 0.0,
+            # 归一化特征直方图（只统计有效步，即分数>0）
+            "buy_feat_hist": [0] * self._FEAT_HIST_BUCKETS,
+            "sell_feat_hist": [0] * self._FEAT_HIST_BUCKETS,
+            # 各规则触发次数 / 累计贡献分（仅 triggered 且 score>0，即有效特征）
+            "buy_rule_counts": {},
+            "buy_rule_scores": {},
+            "sell_rule_counts": {},
+            "sell_rule_scores": {},
+        }
+
+    def _accumulate_signal_stats(
+        self,
+        buy_score: float,
+        sell_score: float,
+        buy_details: List[Dict],
+        sell_details: List[Dict],
+        ind: "IndicatorSnapshot",
+    ) -> None:
+        """累加单步信号统计（信号怎么产生 + 有效特征数值分布）"""
+        s = self._signal_stats
+        s["steps"] += 1
+
+        if ind.absorption_active:
+            s["absorption_gate"] += 1
+        if ind.distribution_active:
+            s["distribution_gate"] += 1
+
+        if buy_score > 0:
+            s["buy_hits"] += 1
+            s["buy_score_sum"] += buy_score
+            s["buy_score_max"] = max(s["buy_score_max"], buy_score)
+            feat = buy_score / self._signal_buy_max
+            s["buy_feat_sum"] += feat
+            s["buy_feat_max"] = max(s["buy_feat_max"], feat)
+            s["buy_feat_hist"][min(int(feat * self._FEAT_HIST_BUCKETS), self._FEAT_HIST_BUCKETS - 1)] += 1
+        if sell_score > 0:
+            s["sell_hits"] += 1
+            s["sell_score_sum"] += sell_score
+            s["sell_score_max"] = max(s["sell_score_max"], sell_score)
+            feat = sell_score / self._signal_sell_max
+            s["sell_feat_sum"] += feat
+            s["sell_feat_max"] = max(s["sell_feat_max"], feat)
+            s["sell_feat_hist"][min(int(feat * self._FEAT_HIST_BUCKETS), self._FEAT_HIST_BUCKETS - 1)] += 1
+
+        for detail in buy_details:
+            if detail.get("triggered") and detail.get("score", 0) > 0:
+                key = detail["key"]
+                s["buy_rule_counts"][key] = s["buy_rule_counts"].get(key, 0) + 1
+                s["buy_rule_scores"][key] = s["buy_rule_scores"].get(key, 0.0) + float(detail["score"])
+        for detail in sell_details:
+            if detail.get("triggered") and detail.get("score", 0) > 0:
+                key = detail["key"]
+                s["sell_rule_counts"][key] = s["sell_rule_counts"].get(key, 0) + 1
+                s["sell_rule_scores"][key] = s["sell_rule_scores"].get(key, 0.0) + float(detail["score"])
+
+    def get_signal_report(self) -> Optional[Dict]:
+        """导出训练期规则信号统计（未启用先验买卖点时为 None）
+
+        记录信号「怎么产生」：门槛通过次数、各规则触发次数与累计贡献分、
+        买卖分与归一化特征的数值分布（均值/最大/直方图）。仅统计实际产生分数
+        （triggered 且 score>0）的规则，即「产生效果的特征」。
+        """
+        if not self.config.use_signal_scores:
+            return None
+        s = self._signal_stats
+
+        def _dist(hits: int, score_sum: float, score_max: float,
+                  feat_sum: float, feat_max: float, hist: List[int]) -> Dict:
+            return {
+                "hits": hits,
+                "score_mean": round(score_sum / hits, 6) if hits else 0.0,
+                "score_max": round(score_max, 6),
+                "feat_mean": round(feat_sum / hits, 6) if hits else 0.0,
+                "feat_max": round(feat_max, 6),
+                "feat_hist": hist,
+            }
+
+        def _nonzero(weights: Dict[str, float]) -> Dict[str, float]:
+            return {k: v for k, v in weights.items() if v}
+
+        def _sort_desc(counts: Dict[str, int], scores: Dict[str, float]) -> List[Dict]:
+            rows = [
+                {"rule": k, "count": v, "score_sum": round(scores.get(k, 0.0), 4)}
+                for k, v in counts.items()
+            ]
+            return sorted(rows, key=lambda r: r["score_sum"], reverse=True)
+
+        return {
+            "enabled": True,
+            "steps": s["steps"],
+            "normalize_max": {"buy": self._signal_buy_max, "sell": self._signal_sell_max},
+            "gate_pass": {
+                "absorption_active": s["absorption_gate"],
+                "distribution_active": s["distribution_gate"],
+            },
+            "buy": _dist(
+                s["buy_hits"], s["buy_score_sum"], s["buy_score_max"],
+                s["buy_feat_sum"], s["buy_feat_max"], s["buy_feat_hist"],
+            ),
+            "sell": _dist(
+                s["sell_hits"], s["sell_score_sum"], s["sell_score_max"],
+                s["sell_feat_sum"], s["sell_feat_max"], s["sell_feat_hist"],
+            ),
+            "buy_rules": _sort_desc(s["buy_rule_counts"], s["buy_rule_scores"]),
+            "sell_rules": _sort_desc(s["sell_rule_counts"], s["sell_rule_scores"]),
+            # 生效的规则权重（非零项），说明信号分由哪些规则构成
+            "weights_used": {
+                "buy": _nonzero(self._signal_evaluator.BUY_WEIGHTS),
+                "sell": _nonzero(self._signal_evaluator.SELL_WEIGHTS),
+            },
+        }
 
     # ═══════════════════════════════════════════════
     #  公开接口
@@ -403,16 +571,25 @@ class T0Environment:
         ])
 
         # ── 规则买卖点得分 (2维，use_signal_scores=True 时启用) ──
-        # 直接复用分时做T页面同款 SignalEvaluator 规则引擎的原始得分，
-        # 作为人工先验注入状态；引力场部分不参与（环境无参考线数据）。
-        # 买/卖满分约 40/35（规则权重和），除以 10 归一化到约 0~4 区间
+        # 直接复用分时做T页面同款 SignalEvaluator 规则引擎的原始得分（权重取自
+        # intraday_t0_config.yaml，随前端调整自动变化），作为人工先验注入状态；
+        # 引力场部分不参与（环境无参考线数据）。
+        # 除以「当前权重满分」归一化到 0~1，避免用户改权重后特征量纲漂移
         if self.config.use_signal_scores:
             buy_score = sell_score = 0.0
             ind = self._current_indicator
             if ind is not None:
-                buy_score = float(self._signal_evaluator.evaluate_buy(ind)[0])
-                sell_score = float(self._signal_evaluator.evaluate_sell(ind)[0])
-            features.extend([buy_score / 10.0, sell_score / 10.0])
+                # 取完整返回值以拿到 weight_details（各规则触发/贡献），供 signal_report 记录
+                buy_score, _, _, _, buy_details = self._signal_evaluator.evaluate_buy(ind)
+                sell_score, _, _, _, sell_details = self._signal_evaluator.evaluate_sell(ind)
+                buy_score = float(buy_score)
+                sell_score = float(sell_score)
+                self._accumulate_signal_stats(
+                    buy_score, sell_score, buy_details, sell_details, ind
+                )
+            features.extend(
+                [buy_score / self._signal_buy_max, sell_score / self._signal_sell_max]
+            )
 
         return np.array(features, dtype=np.float32)
 
@@ -704,15 +881,28 @@ class T0Environment:
             ind = IndicatorSnapshot()
 
             # 主力吸筹/出货
+            # 与策略侧口径一致：两份镜像公式分别产出吸筹(≥0)与出货(≤0)，各自已在
+            # calc_absorption/calc_distribution 内按 YAML 阈值过滤掉无效信号；
+            # 再合并为单一有符号值，符号决定方向：
+            #   >0 → 吸筹买入信号有效；<0 → 出货卖出信号有效；==0 → 无有效信号。
+            # 因此二者严格互斥（对应策略 line 624 合并 + 1214-1215 取符号）。
             abs_data = self._indicator_engine.calc_absorption(data)
             dist_data = self._indicator_engine.calc_distribution(data)
 
-            if "absorption" in abs_data.columns:
-                ind.absorption_value = float(abs_data["absorption"].iloc[-1])
-                ind.absorption_active = abs(ind.absorption_value) > 0.5
-
-            if "distribution" in dist_data.columns:
-                ind.distribution_active = dist_data["distribution"].iloc[-1] != 0
+            absorption_raw = (
+                float(abs_data["absorption"].iloc[-1])
+                if "absorption" in abs_data.columns
+                else 0.0
+            )
+            distribution_raw = (
+                float(dist_data["distribution"].iloc[-1])
+                if "distribution" in dist_data.columns
+                else 0.0
+            )
+            merged = absorption_raw + distribution_raw
+            ind.absorption_value = merged
+            ind.absorption_active = merged > 0
+            ind.distribution_active = merged < 0
 
             # 量能
             close = data["Close"]
