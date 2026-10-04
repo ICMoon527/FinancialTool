@@ -16,8 +16,9 @@ from datetime import date
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 os.environ.setdefault("RL_WARMUP_STEPS", "5")
-os.environ.setdefault("RL_DENSE_REWARD_SCALE", "20")
-os.environ.setdefault("RL_TRADE_ACT_BONUS", "0.05")
+# 本脚本只验证配对/T+1 账目，需关闭做空弱势约束与做空硬止损，避免中途强平干扰账目核对
+os.environ.setdefault("RL_SHORT_GUARD_ENABLED", "false")
+os.environ.setdefault("RL_SHORT_STOP", "0")
 
 from rl.config import RLConfig  # noqa: E402
 from rl.environment import T0Environment  # noqa: E402
@@ -52,6 +53,11 @@ def print_pos(tag):
           f"pending={len(env._pending_buys)}, sold_short={len(env._sold_short)}")
 
 
+def exposure():
+    """当前日内敞口 = 当日买入份数 + 先卖后买做空份数（reward 开仓惩罚的基数）"""
+    return len(env._today_bought) + len(env._sold_short)
+
+
 # 场景1：BUY2 + BUY1 满额，超额度无效
 print("--- 场景1: BUY2(动作2) + BUY1，超额度无效 ---")
 skip_warmup()
@@ -70,28 +76,36 @@ print(f"  买入价: {buys}")
 
 # 场景2：SELL2 配对2份当日买入（先卖后买做T），立即产生配对收益
 print("--- 场景2: SELL2(动作5) 配对2份，即时做T收益 ---")
+exp_before = exposure()
 s, r, d, info = env.step(5)  # SELL2 at kline[8]=10.40
 print(f"  SELL2 reward={r:.6f}, valid={info['action_valid']}")
 print_pos("SELL2后")
 sell_price = 10.40
-expected_pair = 2 * ((sell_price - 10.25) / 10.25 * 100 - cfg.transaction_cost) + cfg.trade_act_bonus  # 配对收益 + 有效SELL行为激励
-print(f"  期望配对收益(含SELL激励)={expected_pair:.6f}")
-assert abs(r - expected_pair) < 1e-4, f"SELL2配对收益不符: {r:.6f} vs {expected_pair:.6f}"
+# 配对收益：2 份按（卖出价 - 买入价）即时结算，扣双边成本
+pair_gain = 2 * ((sell_price - 10.25) / 10.25 * 100 - cfg.transaction_cost)
+# 开仓惩罚：本步新增敞口（先卖后买做空 2 份）一次性收 λ·Δexposure²
+inv_pen = cfg.reward_lambda * max(0, exposure() - exp_before) ** 2
+expected_r = pair_gain - inv_pen
+print(f"  期望 reward = 配对收益 {pair_gain:.6f} - 开仓惩罚 {inv_pen:.6f} = {expected_r:.6f}")
+assert abs(r - expected_r) < 1e-4, f"SELL2 奖励不符: {r:.6f} vs {expected_r:.6f}"
 assert env._base_position == 1, f"T+1：应卖2份底仓: {env._base_position}"
 assert len(env._sold_short) == 2
 assert len(env._today_bought) == 3, "T+1：当日买入应保持锁定3份"
 assert len(env._pending_buys) == 3, "当日买入仍持有（配对仅影响奖励账目）"
 assert sum(1 for b in env._pending_buys if b["paired_at"] is not None) == 2, "应有2份已配对"
-assert abs(env._realized_pnl - (expected_pair - cfg.trade_act_bonus)) < 1e-4, "realized_pnl 只含配对收益（不含行为激励）"
+assert abs(env._realized_pnl - pair_gain) < 1e-4, "realized_pnl 只含配对收益（不含开仓惩罚）"
 print("  [OK] SELL 配对当日买入即时记收益，底仓-2、当日买入仍锁定")
 
 # 场景3：SELL1 配对最后1份
 print("--- 场景3: SELL1(动作4) 配对最后1份 ---")
+exp_before = exposure()
 s, r, d, info = env.step(4)  # SELL1 at kline[9]=10.45
 sell_price2 = 10.45
-expected_pair2 = (sell_price2 - 10.30) / 10.30 * 100 - cfg.transaction_cost + cfg.trade_act_bonus
-print(f"  SELL1 reward={r:.6f}, valid={info['action_valid']} (期望 {expected_pair2:.6f})")
-assert abs(r - expected_pair2) < 1e-4
+pair_gain2 = (sell_price2 - 10.30) / 10.30 * 100 - cfg.transaction_cost
+inv_pen2 = cfg.reward_lambda * max(0, exposure() - exp_before) ** 2
+expected_r2 = pair_gain2 - inv_pen2
+print(f"  SELL1 reward={r:.6f}, valid={info['action_valid']} (期望 {expected_r2:.6f})")
+assert abs(r - expected_r2) < 1e-4
 assert env._base_position == 0 and len(env._sold_short) == 3
 assert len(env._today_bought) == 3, "当日买入3份全部锁定（T+1）"
 print("  [OK] 3份买入全部配对，底仓卖光，当日买入仍锁定")
@@ -126,15 +140,18 @@ print(f"  独立重算真实T+1总收益={expected_total:.6f}")
 assert abs(env._realized_pnl - expected_total) < 1e-6, f"总收益不符: {env._realized_pnl:.6f} vs {expected_total:.6f}"
 print("  [OK] 配对奖励+残余结算后，全天总收益与真实T+1账目精确一致")
 
-# 场景5：SELL3 卖光底仓（无当日买入）-> 纯先卖后买，reward=0；尾盘恢复3份
+# 场景5：SELL3 卖光底仓（无当日买入）-> 纯先卖后买，reward 仅含开仓惩罚；尾盘恢复3份
 print("--- 场景5: SELL3 卖光底仓（无买入），尾盘恢复3份 ---")
 env.reset(sample)
 skip_warmup()
+exp_before = exposure()
 s, r, d, info = env.step(6)  # SELL3
 print(f"  SELL3 reward={r:.6f}, valid={info['action_valid']}")
 print_pos("SELL3后")
 assert info["action_valid"] is True
-assert abs(r - cfg.trade_act_bonus) < 1e-9, "无当日买入可配对时，SELL 只产生行为激励（盈亏尾盘买回结算）"
+# 无当日买入可配对 → 无已实现收益，reward 仅含本步新增敞口的开仓惩罚
+inv_pen5 = cfg.reward_lambda * max(0, exposure() - exp_before) ** 2
+assert abs(r - (-inv_pen5)) < 1e-9, f"SELL3 应只产生开仓惩罚 -{inv_pen5:.6f}，实际 {r:.6f}"
 assert env._base_position == 0 and len(env._sold_short) == 3
 sold_prices = list(env._sold_short)  # 在尾盘强平前记录卖出价
 steps = 0

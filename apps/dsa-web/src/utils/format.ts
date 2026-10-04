@@ -79,6 +79,10 @@ export const parseModelId = (
 export const isPriorModel = (modelId: string): boolean =>
   parseModelId(modelId).checkpoint.split('_')[1] === 'prior';
 
+/** 由 model_id 判断是否为「启用 CNN 形态编码器」的模型（checkpoint 名含 cnn 标记段） */
+export const isCnnModel = (modelId: string): boolean =>
+  parseModelId(modelId).checkpoint.split('_').includes('cnn');
+
 /** model_id 的展示名：嵌套布局显示为「实验名 / checkpoint 名」，扁平布局仅显示 checkpoint 名 */
 export const formatModelId = (modelId: string): string => {
   const { experiment, checkpoint } = parseModelId(modelId);

@@ -209,16 +209,17 @@ while not done:
 | 训练 | `RL_EARLY_STOPPING_PATIENCE` | `15` | 早停耐心值（验证指标为真实做T收益，耐心加大减少噪声误触发） |
 | 数据 | `RL_TRAIN_DATA_DAYS` | `60` | 训练数据天数 |
 | 数据 | `RL_VALIDATION_SPLIT` | `0.2` | 验证集比例 |
-| 奖励 | `RL_DENSE_REWARD_SCALE` | `20` | 密集奖励缩放（已弃用，保留兼容；奖励已改为仅基于当日已实现做T收益） |
-| 奖励 | `RL_TRADE_ACT_BONUS` | `0.05` | 做T行为激励：有效 BUY 的小额奖励，鼓励做T操作、打破 HOLD 惰性 |
+| 奖励 | `RL_DENSE_REWARD_SCALE` | `20` | **已弃用（不生效）**，保留兼容；奖励已改为仅基于当日已实现做T收益 |
+| 奖励 | `RL_TRADE_ACT_BONUS` | `0.05` | **已弃用（不生效）**，保留兼容；奖励函数已不含行为激励 |
 | 奖励 | `RL_REWARD_CLIP` | `5.0` | 奖励裁剪范围 |
-| 交易成本 | `RL_COMMISSION_RATE` | `0.001` | 佣金费率 |
-| 交易成本 | `RL_SLIPPAGE_RATE` | `0.001` | 滑点费率 |
+| 交易成本 | `RL_COMMISSION_RATE` | `0.0005` | 佣金费率（0.05%/边） |
+| 交易成本 | `RL_SLIPPAGE_RATE` | `0.0005` | 滑点费率（0.05%/边） |
 | DQN | `RL_EPSILON_START` | `1.0` | 探索率初始值 |
 | DQN | `RL_EPSILON_END` | `0.01` | 探索率终值 |
 | DQN | `RL_EPSILON_DECAY` | `0.99` | 探索率衰减（按 episode 衰减，每轮一次） |
 | DQN | `RL_REPLAY_BUFFER_SIZE` | `10000` | 经验回放容量 |
-| DQN | `RL_TARGET_UPDATE_FREQ` | `100` | 目标网络更新频率 |
+| DQN | `RL_TARGET_UPDATE_FREQ` | `100` | 目标网络硬拷贝间隔（步）；仅当 `RL_TARGET_UPDATE_TAU=0` 时生效，τ>0 走软更新 |
+| DQN | `RL_TARGET_UPDATE_TAU` | `0.005` | Polyak 软更新系数 τ（>0 时优先于 `RL_TARGET_UPDATE_FREQ`） |
 | DQN | `RL_DQN_DOUBLE` | `true` | Double DQN |
 | DQN | `RL_DQN_DUELING` | `true` | Dueling DQN |
 | DQN | `RL_DQN_HIDDEN_SIZES` | `256,128,64` | 隐藏层大小 |
@@ -272,8 +273,8 @@ rl/
 - **底仓管理**：初始 3 份底仓，尾盘强制恢复为 3 份（SELL 卖出的底仓按收盘价买回补齐）
 - **T+1 规则**：当天买入的份额当天不可卖出，SELL1/2/3 只卖底仓（先卖后买）；当日买入锁定到尾盘强制平仓结算，仅保留 3 份底仓（维持现金流，防止一直买入/卖出）
 - **预热期**：前 `warmup_steps` 步强制 HOLD，reward=0
-- **奖励机制**：与单根K线无关，只与当日做T已实现收益（realized_pnl）挂钩。reward = 已实现做T收益增量 + 有效 BUY/SELL 行为激励(`RL_TRADE_ACT_BONUS`) - 无效动作惩罚 - 收盘未配对惩罚 + 当日盈利奖励。
+- **奖励机制**：与单根K线无关，只与当日已实现做T收益挂钩。reward = Δ当日已实现收益 − λ·Δexposure²（开仓惩罚，`RL_REWARD_LAMBDA`）+ 终态约束（`RL_REWARD_TERMINAL_COEF`），并按 `RL_REWARD_CLIP` 裁剪。`RL_DENSE_REWARD_SCALE` / `RL_TRADE_ACT_BONUS` 已弃用，不再参与计算。
   - SELL 卖出底仓时若当日有未配对买入，立即按（卖出价-买入成本）计入做T收益（**配对奖励**，提供日内即时信号）；
   - 配对的买入标记 `paired_at`，尾盘只结算残余（收盘价-配对卖出价），未配对按（收盘价-买入价）结算 —— 全天总收益与真实 T+1 账目**精确一致**，不重复计算
-- **状态维度**：50 维（价格、量能、MACD、RSI、KDJ、MFI、仓位、时间、预热标志）
+- **状态维度**：基础 8 维 = OHLCV(5，相对前收百分比 / 相对均量倍数) + 时间编码(1，距收盘剩余比例) + 仓位状态(2，底仓比例 / 有符号净敞口)；开启规则先验买卖点（`RL_USE_SIGNAL_SCORES`）后 +2 维 = 10 维。市场时序/形态由 CNN 编码器承担，不占 state 维度
 - **GPU 支持**：自动检测 CUDA，有 GPU 则自动使用

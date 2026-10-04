@@ -84,6 +84,7 @@ interface RLState {
     learningRate?: number;
     resumeFrom?: string;
     useSignalScores?: boolean;
+    useCnnEncoder?: boolean;
   }) => Promise<void>;
   pauseTraining: () => Promise<void>;
   resumeTraining: () => Promise<void>;

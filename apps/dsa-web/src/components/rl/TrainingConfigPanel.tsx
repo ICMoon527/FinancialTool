@@ -3,12 +3,12 @@ import { Card } from '../common/Card';
 import { Button } from '../common/Button';
 import { useRLStore } from '../../stores/rlStore';
 import { systemConfigApi } from '../../api/systemConfig';
-import { formatModelId, isPriorModel } from '../../utils/format';
+import { formatModelId, isPriorModel, isCnnModel } from '../../utils/format';
 
 /**
  * 模型参数配置面板
  *
- * 核心训练参数（算法/轮数/批次/学习率/先验开关）在挂载时从系统配置接口读取，
+ * 核心训练参数（算法/网络结构/轮数/批次/学习率/先验开关）在挂载时从系统配置接口读取，
  * 与「设置 → RL Training」及 .env 共用同一数据源，随 POST /train 下发；
  * 其余高级参数（奖励函数权重、折扣因子、交易成本等）在设置页「RL Training」统一管理，
  * 此处仅展示当前值并跳转设置页修改。
@@ -23,7 +23,7 @@ export const TrainingConfigPanel: React.FC<Props> = ({ disabled }) => {
   const totalEpisodes = useRLStore((s) => s.totalEpisodes);
   const models = useRLStore((s) => s.models);
 
-  // 核心参数（算法/轮数/批次/学习率/先验开关）从系统配置接口读取，与「设置 → RL Training」
+  // 核心参数（算法/网络结构/轮数/批次/学习率/先验开关）从系统配置接口读取，与「设置 → RL Training」
   // 及 .env 共用同一数据源；以下常量仅在接口不可用或字段缺失时作为兜底
   const [algorithm, setAlgorithm] = React.useState<'dqn' | 'ppo'>('dqn');
   const [episodes, setEpisodes] = React.useState(300);
@@ -32,6 +32,7 @@ export const TrainingConfigPanel: React.FC<Props> = ({ disabled }) => {
   const [resumeEnabled, setResumeEnabled] = React.useState(false);
   const [resumeFromModel, setResumeFromModel] = React.useState('latest');
   const [useSignalScores, setUseSignalScores] = React.useState(true);
+  const [useCnnEncoder, setUseCnnEncoder] = React.useState(false);
   const [starting, setStarting] = React.useState(false);
 
   // 挂载时拉取 RL 配置，替换本地兜底默认，避免训练页与设置页出现两套值
@@ -65,6 +66,7 @@ export const TrainingConfigPanel: React.FC<Props> = ({ disabled }) => {
         setBatchSize(readNumber('RL_BATCH_SIZE', 128));
         setLearningRate(readNumber('RL_LEARNING_RATE', 0.0003));
         setUseSignalScores(readBoolean('RL_USE_SIGNAL_SCORES', true));
+        setUseCnnEncoder(readBoolean('RL_USE_CNN_ENCODER', false));
       } catch {
         // 配置接口不可用时保留本地兜底默认，不阻塞训练流程
       }
@@ -84,21 +86,24 @@ export const TrainingConfigPanel: React.FC<Props> = ({ disabled }) => {
         learningRate,
         resumeFrom: resumeEnabled ? resumeFromModel : undefined,
         useSignalScores,
+        useCnnEncoder,
       });
     } finally {
       setStarting(false);
     }
   };
 
-  // 依据所选续训模型的先验标记自动同步 use_signal_scores，避免状态维度不匹配
+  // 依据所选续训模型的标记自动同步先验/网络结构，避免权重维度不匹配
   const handleResumeModelChange = (id: string) => {
     setResumeFromModel(id);
     if (id !== 'latest') {
       setUseSignalScores(isPriorModel(id));
+      setUseCnnEncoder(isCnnModel(id));
     }
   };
 
   const resumePrior = resumeFromModel !== 'latest' && isPriorModel(resumeFromModel);
+  const resumeCnn = resumeFromModel !== 'latest' && isCnnModel(resumeFromModel);
 
   const inputCls =
     'w-full rounded-lg bg-slate-800/60 border border-slate-600 px-3 py-2 text-sm text-gray-200 ' +
@@ -121,6 +126,23 @@ export const TrainingConfigPanel: React.FC<Props> = ({ disabled }) => {
               PPO（Phase B 实现）
             </option>
           </select>
+        </div>
+
+        {/* 网络结构 */}
+        <div>
+          <label className="block text-xs text-gray-400 mb-1">网络结构</label>
+          <select
+            className={inputCls}
+            value={useCnnEncoder ? 'cnn' : 'mlp'}
+            disabled={disabled}
+            onChange={(e) => setUseCnnEncoder(e.target.value === 'cnn')}
+          >
+            <option value="mlp">纯 MLP（Dueling DQN）</option>
+            <option value="cnn">CNN 形态编码器 + MLP</option>
+          </select>
+          <p className="text-[11px] text-gray-500 mt-1">
+            两种结构权重不兼容，切换后需重新训练，不可续训旧结构模型
+          </p>
         </div>
 
         {/* 迭代次数 */}
@@ -212,9 +234,12 @@ export const TrainingConfigPanel: React.FC<Props> = ({ disabled }) => {
                 </option>
               ))}
             </select>
-            {resumePrior && (
+            {(resumePrior || resumeCnn) && (
               <p className="text-[11px] text-cyan-400 mt-1">
-                已自动启用规则先验买卖点以匹配该模型维度（state_dim 10）
+                已自动匹配该模型结构：
+                {[resumePrior ? '规则先验买卖点' : '', resumeCnn ? 'CNN 形态编码器' : '']
+                  .filter(Boolean)
+                  .join(' + ')}
               </p>
             )}
           </div>

@@ -19,10 +19,10 @@ class RLConfig:
     batch_size: int = 64
     learning_rate: float = 0.001
     gamma: float = 0.99
-    train_data_days: int = 60
+    train_data_days: int = 60  # 已弃用（保留兼容）：数据切分按 validation_split 全量执行，此字段无引用，修改不生效
     validation_split: float = 0.2
-    dense_reward_scale: float = 20.0  # 密集奖励缩放（R_dense = 持仓变动 × 价格变动% × scale，已弃用保留兼容）
-    trade_act_bonus: float = 0.05     # 有效 BUY 的行为激励（鼓励做T操作，reward 主体为已实现做T收益增量）
+    dense_reward_scale: float = 20.0  # 已弃用（保留兼容）：奖励函数已不含该项，仅设置页展示，修改不生效
+    trade_act_bonus: float = 0.05     # 已弃用（保留兼容）：奖励函数已不含行为激励，修改不生效
     warmup_steps: int = 20
 
     # ── 交易成本配置（按 A 股真实成本，2023-08 起印花税 0.05% 卖出单边）──
@@ -38,7 +38,7 @@ class RLConfig:
     epsilon_end: float = 0.01
     epsilon_decay: float = 0.99   # 按 episode 衰减系数（每轮衰减一次，约460轮到终值）
     replay_buffer_size: int = 10000
-    target_update_freq: int = 100
+    target_update_freq: int = 100  # 目标网络硬拷贝间隔（步）；仅当 target_update_tau=0（关闭软更新）时生效
     # Polyak 软更新系数 τ（>0 时启用软更新，替代每 target_update_freq 步的硬拷贝）：
     # 硬拷贝会让目标网络每 100 步阶跃跳变，配合 Q 值高估易出现
     # 「验证冲高后暴跌」的不稳定（此前 E1350 +2.33% → E1400-1500 -19%~-41%）

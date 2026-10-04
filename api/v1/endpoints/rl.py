@@ -86,6 +86,8 @@ async def start_training(
         params["learning_rate"] = request.learning_rate
     if request.use_signal_scores is not None:
         params["use_signal_scores"] = request.use_signal_scores
+    if request.use_cnn_encoder is not None:
+        params["use_cnn_encoder"] = request.use_cnn_encoder
 
     task_id = service.start_training(params)
     return TrainResponse(task_id=task_id, status="pending", message="训练任务已创建")

@@ -4548,7 +4548,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "RL_TRAIN_DATA_DAYS": {
         "title": "训练数据天数",
-        "description": "用于训练的历史数据天数。",
+        "description": "已弃用（不生效）：数据切分按 RL_VALIDATION_SPLIT 全量执行，此字段无引用。",
         "category": "rl",
         "group": "数据配置",
         "data_type": "number",
@@ -4578,7 +4578,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "RL_DENSE_REWARD_SCALE": {
         "title": "密集奖励缩放因子",
-        "description": "R_dense 的缩放因子（R_dense = 持仓变动 × 价格变动% × scale）。已弃用：奖励已改为仅基于当日已实现做T收益，保留字段仅为兼容。",
+        "description": "已弃用（不生效）：奖励已改为仅基于当日已实现做T收益，保留字段仅为兼容与设置页展示。",
         "category": "rl",
         "group": "奖励函数",
         "data_type": "number",
@@ -4593,7 +4593,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "RL_TRADE_ACT_BONUS": {
         "title": "做T行为激励",
-        "description": "有效 BUY 动作的小额行为激励，鼓励模型执行做T操作、打破 HOLD 惰性（reward 主体为当日已实现做T收益增量）。",
+        "description": "已弃用（不生效）：奖励函数已不含行为激励，保留字段仅为兼容与设置页展示。",
         "category": "rl",
         "group": "奖励函数",
         "data_type": "number",
@@ -4713,7 +4713,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "RL_TARGET_UPDATE_FREQ": {
         "title": "目标网络更新频率",
-        "description": "DQN 目标网络延迟更新步数。",
+        "description": "DQN 目标网络硬拷贝间隔（步）。仅当 RL_TARGET_UPDATE_TAU=0（关闭软更新）时生效；τ>0 走 Polyak 软更新，该项不生效。",
         "category": "rl",
         "group": "DQN 参数",
         "data_type": "number",

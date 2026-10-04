@@ -27,6 +27,7 @@ export const rlApi = {
     if (request.learningRate != null) payload.learning_rate = request.learningRate;
     if (request.resumeFrom) payload.resume_from = request.resumeFrom;
     if (request.useSignalScores != null) payload.use_signal_scores = request.useSignalScores;
+    if (request.useCnnEncoder != null) payload.use_cnn_encoder = request.useCnnEncoder;
     const response = await apiClient.post('/api/v1/rl/train', payload);
     return toCamelCase(response.data);
   },

@@ -775,6 +775,14 @@ class RLService:
             dataset = self._build_dataset(config)
             dataset.load()
 
+            # 空训练集保护：与脚本 train_dqn.py 行为对齐。缺此检查时后续 sample_train
+            # 会在 randint(0, 0) 处抛 ValueError，前端只显示「训练失败」而无可操作指引
+            if len(dataset.train_samples) == 0:
+                raise ValueError(
+                    "训练集为空：数据库中没有可用的分时数据，"
+                    "请先确认已导入分时K线，或检查股票池与日期范围。"
+                )
+
             task["message"] = "初始化模型..."
             model = self._create_model(config)
 
@@ -801,7 +809,7 @@ class RLService:
             start_episode = 0
             resume_from = task.get("resume_from")
             if resume_from:
-                ckpt_dir = self._resolve_checkpoint_dir(resume_from)
+                ckpt_dir = self._resolve_checkpoint_dir(resume_from, config)
                 if ckpt_dir is None:
                     raise ValueError(f"找不到可恢复的 checkpoint: {resume_from}")
                 task["message"] = f"从 {ckpt_dir} 恢复..."
@@ -844,13 +852,18 @@ class RLService:
             task["status"] = "failed"
             task["message"] = str(e)
 
-    def _resolve_checkpoint_dir(self, resume_from: str):
-        """解析续训来源：模型 ID / checkpoint 目录名 / latest → Path"""
+    def _resolve_checkpoint_dir(self, resume_from: str, config: "RLConfig" = None):
+        """解析续训来源：模型 ID / checkpoint 目录名 / latest → Path
+
+        config：本次任务的训练配置。传入后 "latest" 按该配置的 model_tag 匹配
+        （面板切换网络结构/先验时，单例 config 未必与本次任务一致）。
+        """
+        cfg = config or self.config
         # 1) 已注册模型 ID → 取其 checkpoint 目录
         model_info = self._models.get(resume_from)
         if model_info and model_info.get("checkpoint_dir"):
             return Path(model_info["checkpoint_dir"])
-        models_root = Path(self.config.model_dir)
+        models_root = Path(cfg.model_dir)
         # 2) 嵌套 model_id（实验名__checkpoint名）→ 还原为目录路径
         if resume_from and resume_from != "latest" and "__" in resume_from:
             candidate = models_root.joinpath(*resume_from.split("__"))
@@ -862,7 +875,7 @@ class RLService:
             if candidate.is_dir() and (candidate / "model.pt").exists():
                 return candidate
         # 4) 特殊值 "latest" → 递归查找最近的 <model_tag>_latest（兼容嵌套布局）
-        target = f"{self.config.model_tag}_latest"
+        target = f"{cfg.model_tag}_latest"
         matches = [
             p.parent for p in models_root.rglob("model.pt") if p.parent.name == target
         ]

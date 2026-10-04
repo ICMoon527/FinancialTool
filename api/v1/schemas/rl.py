@@ -20,6 +20,10 @@ class TrainRequest(BaseModel):
         None,
         description="是否将规则买卖点评分接入状态特征（True→state_dim=10，False/None→state_dim=8）",
     )
+    use_cnn_encoder: Optional[bool] = Field(
+        None,
+        description="是否启用 CNN 形态编码器（True→CNN+MLP 结构，False/None→纯 MLP；两种结构权重不兼容）",
+    )
 
 
 class TrainResponse(BaseModel):

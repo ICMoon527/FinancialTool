@@ -11,6 +11,7 @@ export interface TrainRequest {
   learningRate?: number;
   resumeFrom?: string;
   useSignalScores?: boolean;
+  useCnnEncoder?: boolean;
 }
 
 export interface TrainResponse {
