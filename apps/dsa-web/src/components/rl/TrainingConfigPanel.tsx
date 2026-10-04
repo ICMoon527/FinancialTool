@@ -1,4 +1,5 @@
 import React from 'react';
+import { Link } from 'react-router-dom';
 import { Card } from '../common/Card';
 import { Button } from '../common/Button';
 import { useRLStore } from '../../stores/rlStore';
@@ -39,6 +40,7 @@ export const TrainingConfigPanel: React.FC<Props> = ({ disabled }) => {
   const [totalSamples, setTotalSamples] = React.useState(0);
   const [totalStocks, setTotalStocks] = React.useState(0);
   const [datasetIndexed, setDatasetIndexed] = React.useState(true);
+  const [showSampleTip, setShowSampleTip] = React.useState(false); // 悬停显示样本口径提示
   const [starting, setStarting] = React.useState(false);
 
   // 挂载时拉取 RL 配置，替换本地兜底默认，避免训练页与设置页出现两套值
@@ -231,35 +233,61 @@ export const TrainingConfigPanel: React.FC<Props> = ({ disabled }) => {
           />
         </div>
 
-        {/* 采样样本数上限（滑块） */}
+        {/* 采样样本数上限（滑块）：完整说明改为悬停显示，避免长数字换行 */}
         <div>
-          <label className="block text-xs text-gray-400 mb-1">
-            采样样本数上限
-            <span className="text-gray-500 ml-1">（股票 × 交易日）</span>
-          </label>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center justify-between gap-2 mb-1">
+            <label className="text-xs text-gray-400 whitespace-nowrap">
+              采样样本数上限
+              <span
+                className="ml-1 inline-block cursor-help rounded px-1 text-gray-500 hover:text-cyan-400"
+                onMouseEnter={() => setShowSampleTip(true)}
+                onMouseLeave={() => setShowSampleTip(false)}
+              >
+                ⓘ
+              </span>
+            </label>
+            <span className="shrink-0 whitespace-nowrap rounded-md border border-slate-700 bg-slate-800/80 px-2 py-0.5 text-[11px] font-mono tabular-nums text-cyan-300">
+              {effectiveMaxSamples === 0 ? '全量' : effectiveMaxSamples.toLocaleString()}
+            </span>
+          </div>
+
+          <div className="relative">
             <input
               type="range"
               min={0}
               max={sliderMax}
               step={sliderStep}
-              className="flex-1 accent-cyan-500 cursor-pointer disabled:opacity-50"
+              className="w-full accent-cyan-500 cursor-pointer disabled:opacity-50"
               value={effectiveMaxSamples}
               disabled={disabled}
               onChange={(e) => setMaxSamples(Number(e.target.value))}
             />
-            <span className="w-28 text-right text-xs text-cyan-300 font-mono tabular-nums">
-              {effectiveMaxSamples === 0
-                ? '全量（不限）'
-                : `${effectiveMaxSamples.toLocaleString()} / ${sliderMax.toLocaleString()}`}
-            </span>
+            <div className="mt-0.5 flex justify-between font-mono text-[10px] text-gray-600">
+              <span>0</span>
+              <span>{sliderMax.toLocaleString()}</span>
+            </div>
+
+            {/* 悬停提示：数据集规模与口径说明 */}
+            <div className={`pointer-events-none absolute bottom-full left-1/2 z-20 mb-2 w-max max-w-[280px] -translate-x-1/2 rounded-lg border border-slate-600 bg-slate-900/95 px-3 py-2 text-[11px] leading-relaxed text-gray-300 shadow-xl ${
+              showSampleTip ? 'block' : 'hidden'
+            }`}>
+              {datasetIndexed && totalSamples > 0 ? (
+                <>
+                  <div>
+                    数据集共
+                    <span className="mx-1 font-mono text-cyan-300">{totalSamples.toLocaleString()}</span>
+                    个样本
+                  </div>
+                  <div className="text-gray-500">{totalStocks.toLocaleString()} 只股票 × 交易日</div>
+                  <div className="mt-1 text-gray-400">
+                    0 = 全量；设为 N 时最多用 N 个（超出随机下采样）
+                  </div>
+                </>
+              ) : (
+                <div>尚未建立数据索引，无法获取样本总数（可先运行一次训练生成）</div>
+              )}
+            </div>
           </div>
-          <p className="text-[11px] text-gray-500 mt-1">
-            {datasetIndexed && totalSamples > 0
-              ? `数据集共 ${totalSamples.toLocaleString()} 个样本（${totalStocks.toLocaleString()} 只股票 × 交易日）。`
-              : '尚未建立数据索引，无法获取样本总数（可先运行一次训练生成）。'}
-            0 = 全量；设为 N 时最多使用 N 个样本（超出则随机下采样）。
-          </p>
         </div>
 
         {/* 断点续训 */}
@@ -343,9 +371,9 @@ export const TrainingConfigPanel: React.FC<Props> = ({ disabled }) => {
           <p className="text-gray-300 font-medium mb-1">高级参数（奖励函数、折扣因子、交易成本等）</p>
           <p>
             已在「设置 → RL Training」中统一管理，修改后自动生效。
-            <a href="/settings" className="text-cyan-400 hover:underline ml-1">
+            <Link to="/settings" className="text-cyan-400 hover:underline ml-1">
               前往设置 →
-            </a>
+            </Link>
           </p>
         </div>
       </div>
