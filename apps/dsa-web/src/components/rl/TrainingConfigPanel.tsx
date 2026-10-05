@@ -41,6 +41,7 @@ export const TrainingConfigPanel: React.FC<Props> = ({ disabled }) => {
   const [totalStocks, setTotalStocks] = React.useState(0);
   const [datasetIndexed, setDatasetIndexed] = React.useState(true);
   const [showSampleTip, setShowSampleTip] = React.useState(false); // 悬停显示样本口径提示
+  const [showBatchTip, setShowBatchTip] = React.useState(false); // 悬停显示批次大小说明
   const [starting, setStarting] = React.useState(false);
 
   // 挂载时拉取 RL 配置，替换本地兜底默认，避免训练页与设置页出现两套值
@@ -204,8 +205,17 @@ export const TrainingConfigPanel: React.FC<Props> = ({ disabled }) => {
         </div>
 
         {/* 批次大小 */}
-        <div>
-          <label className="block text-xs text-gray-400 mb-1">批次大小 (Batch Size)</label>
+        <div className="relative">
+          <label className="block text-xs text-gray-400 mb-1">
+            批次大小 (Batch Size)
+            <span
+              className="ml-1 inline-block cursor-help rounded px-1 text-gray-500 hover:text-cyan-400"
+              onMouseEnter={() => setShowBatchTip(true)}
+              onMouseLeave={() => setShowBatchTip(false)}
+            >
+              ⓘ
+            </span>
+          </label>
           <input
             type="number"
             min={16}
@@ -216,6 +226,17 @@ export const TrainingConfigPanel: React.FC<Props> = ({ disabled }) => {
             disabled={disabled}
             onChange={(e) => setBatchSize(Number(e.target.value) || 64)}
           />
+
+          {/* 悬停提示：批次大小含义与影响 */}
+          <div className={`pointer-events-none absolute bottom-full left-1/2 z-20 mb-2 w-max max-w-[280px] -translate-x-1/2 rounded-lg border border-slate-600 bg-slate-900/95 px-3 py-2 text-[11px] leading-relaxed text-gray-300 shadow-xl ${
+            showBatchTip ? 'block' : 'hidden'
+          }`}>
+            <div>每次梯度更新从经验回放缓冲区抽取的经验条数（默认 128）</div>
+            <div className="mt-1 text-gray-400">
+              越大梯度越平滑、训练越稳，但单步计算越慢；越小更新越频繁、噪声越大
+            </div>
+            <div className="mt-1 text-gray-500">缓冲区积累满该条数后才开始更新网络</div>
+          </div>
         </div>
 
         {/* 学习率 */}
@@ -234,7 +255,7 @@ export const TrainingConfigPanel: React.FC<Props> = ({ disabled }) => {
         </div>
 
         {/* 采样样本数上限（滑块）：完整说明改为悬停显示，避免长数字换行 */}
-        <div>
+        <div className="relative">
           <div className="flex items-center justify-between gap-2 mb-1">
             <label className="text-xs text-gray-400 whitespace-nowrap">
               采样样本数上限
@@ -251,7 +272,7 @@ export const TrainingConfigPanel: React.FC<Props> = ({ disabled }) => {
             </span>
           </div>
 
-          <div className="relative">
+          <div>
             <input
               type="range"
               min={0}
@@ -266,27 +287,27 @@ export const TrainingConfigPanel: React.FC<Props> = ({ disabled }) => {
               <span>0</span>
               <span>{sliderMax.toLocaleString()}</span>
             </div>
+          </div>
 
-            {/* 悬停提示：数据集规模与口径说明 */}
-            <div className={`pointer-events-none absolute bottom-full left-1/2 z-20 mb-2 w-max max-w-[280px] -translate-x-1/2 rounded-lg border border-slate-600 bg-slate-900/95 px-3 py-2 text-[11px] leading-relaxed text-gray-300 shadow-xl ${
-              showSampleTip ? 'block' : 'hidden'
-            }`}>
-              {datasetIndexed && totalSamples > 0 ? (
-                <>
-                  <div>
-                    数据集共
-                    <span className="mx-1 font-mono text-cyan-300">{totalSamples.toLocaleString()}</span>
-                    个样本
-                  </div>
-                  <div className="text-gray-500">{totalStocks.toLocaleString()} 只股票 × 交易日</div>
-                  <div className="mt-1 text-gray-400">
-                    0 = 全量；设为 N 时最多用 N 个（超出随机下采样）
-                  </div>
-                </>
-              ) : (
-                <div>尚未建立数据索引，无法获取样本总数（可先运行一次训练生成）</div>
-              )}
-            </div>
+          {/* 悬停提示：数据集规模与口径说明（相对整个块定位，向上弹出不遮挡 ⓘ） */}
+          <div className={`pointer-events-none absolute bottom-full left-1/2 z-20 mb-2 w-max max-w-[280px] -translate-x-1/2 rounded-lg border border-slate-600 bg-slate-900/95 px-3 py-2 text-[11px] leading-relaxed text-gray-300 shadow-xl ${
+            showSampleTip ? 'block' : 'hidden'
+          }`}>
+            {datasetIndexed && totalSamples > 0 ? (
+              <>
+                <div>
+                  数据集共
+                  <span className="mx-1 font-mono text-cyan-300">{totalSamples.toLocaleString()}</span>
+                  个样本
+                </div>
+                <div className="text-gray-500">{totalStocks.toLocaleString()} 只股票 × 交易日</div>
+                <div className="mt-1 text-gray-400">
+                  0 = 全量；设为 N 时最多用 N 个（超出随机下采样）
+                </div>
+              </>
+            ) : (
+              <div>尚未建立数据索引，无法获取样本总数（可先运行一次训练生成）</div>
+            )}
           </div>
         </div>
 
