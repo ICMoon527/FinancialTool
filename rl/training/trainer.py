@@ -130,6 +130,11 @@ class RLTrainer:
 
         # 1. 恢复模型（权重/优化器/epsilon/replay buffer）
         self.model.load(str(model_path))
+        # 对齐配置与环境：load 会按 checkpoint 反推真实 state_dim（先验 1 维/旧版 2 维），
+        # 若与当前配置不同则需同步 self.config 并重建环境，否则续训时喂入的 state 维度不匹配
+        if self.model.config.state_dim != self.config.state_dim:
+            self.config = self.model.config
+            self.env = T0Environment(self.config)
 
         # 2. 恢复指标历史
         if metrics_path.exists():
@@ -202,11 +207,24 @@ class RLTrainer:
                 logger.info(
                     f"验证 E{episode + 1}: sharpe={val_metrics['sharpe']:.4f}, "
                     f"return={val_metrics['total_return']:.4f}, "
-                    f"win_rate={val_metrics['win_rate']:.2%}"
+                    f"win_rate={val_metrics['win_rate']:.2%}, "
+                    f"traded_day_ratio={val_metrics['traded_day_ratio']:.2%}, "
+                    f"avg_trades/day={val_metrics['avg_trades_per_day']:.2f}"
                 )
 
-                # Early Stopping
-                if val_metrics["sharpe"] > self._best_val_sharpe:
+                # Early Stopping / best 选择
+                # 退化门槛：日收益几乎全为 0（几乎不交易）时，sharpe 的分母趋零会虚高，
+                # 「靠一两笔小运气交易压过 HOLD 基线」的退化模型会被误选为 best（实测
+                # 98% 零交易日、总收益仅 +0.03% 的模型 sharpe=1.23）。故要求验证集交易
+                # 活跃度达标才参与 best 竞争，否则本次不计为提升。
+                if val_metrics["traded_day_ratio"] < self.config.min_traded_day_ratio:
+                    logger.info(
+                        f"验证 E{episode + 1} 交易活跃度 "
+                        f"{val_metrics['traded_day_ratio']:.2%} 低于门槛 "
+                        f"{self.config.min_traded_day_ratio:.2%}（疑似退化为「不交易」），"
+                        f"本次不参与 best 选择"
+                    )
+                elif val_metrics["sharpe"] > self._best_val_sharpe:
                     self._best_val_sharpe = val_metrics["sharpe"]
                     self._patience_counter = 0
                     self._save_checkpoint("best", next_episode=episode + 1)
@@ -228,7 +246,7 @@ class RLTrainer:
 
             # 6.5 每个 episode 结束后衰减一次探索率（ε 按 episode 衰减，而非按K线步）
             if isinstance(self.model, DQNModel):
-                self.model.decay_epsilon()
+                self.model.decay_epsilon(episode, self.config.training_episodes)
 
             # 7. 定期保存 latest checkpoint（断点续训用，固定目录覆盖写入）
             if self.save_freq > 0 and (episode + 1) % self.save_freq == 0:
@@ -276,7 +294,8 @@ class RLTrainer:
             if write_header:
                 writer.writerow([
                     "run_id", "episode", "reward", "length", "loss", "td_error",
-                    "epsilon", "val_sharpe", "val_return", "val_win_rate", "seconds",
+                    "epsilon", "val_sharpe", "val_return", "val_win_rate",
+                    "val_traded_day_ratio", "val_avg_trades_per_day", "seconds",
                 ])
             self._csv_initialized = True
             writer.writerow([
@@ -290,6 +309,8 @@ class RLTrainer:
                 f"{val_metrics['sharpe']:.4f}" if val_metrics else "",
                 f"{val_metrics['total_return']:.4f}" if val_metrics else "",
                 f"{val_metrics['win_rate']:.4f}" if val_metrics else "",
+                f"{val_metrics['traded_day_ratio']:.4f}" if val_metrics else "",
+                f"{val_metrics['avg_trades_per_day']:.4f}" if val_metrics else "",
                 f"{time.time() - ep_start:.2f}",
             ])
 
@@ -394,6 +415,9 @@ class RLTrainer:
             "total_return": m["total_return"],
             "win_rate": m["win_rate"],
             "max_drawdown": m["max_drawdown"],
+            # 交易活跃度（零交易日占比过高时 sharpe 会因分母趋零而虚高）
+            "traded_day_ratio": m["traded_day_ratio"],
+            "avg_trades_per_day": m["avg_trades_per_day"],
             "n_days": len(result["daily_summaries"]),
         }
 

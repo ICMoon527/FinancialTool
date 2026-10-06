@@ -34,12 +34,14 @@ dataset.load()
 
 model = DQNModel(config)
 model.load(str(MODEL_DIR / "model.pt"))
+# load 会按 checkpoint 反推真实 state_dim（本例 dqn_cnn_best 为 8 维无先验），
+# 环境必须用模型自身配置构建，否则 state 维度与权重不匹配
+env = T0Environment(model.config)
 print(
-    f"CUDA={torch.cuda.is_available()}  state_dim={config.state_dim}  "
-    f"val_pool={len(dataset.val_samples)}  reward_clip={config.reward_clip}"
+    f"CUDA={torch.cuda.is_available()}  state_dim={model.config.state_dim}  "
+    f"val_pool={len(dataset.val_samples)}  reward_clip={model.config.reward_clip}"
 )
 
-env = T0Environment(config)
 val = dataset.val_samples
 rng = np.random.default_rng(42)
 idx = rng.choice(len(val), size=min(N_DAYS, len(val)), replace=False)

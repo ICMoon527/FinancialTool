@@ -38,6 +38,12 @@ class RLConfig:
     epsilon_start: float = 1.0
     epsilon_end: float = 0.01
     epsilon_decay: float = 0.99   # 按 episode 衰减系数（每轮衰减一次，约460轮到终值）
+    # ε 线性退火进度比例：在「前 anneal_ratio × 总轮数」内从 epsilon_start 线性降到
+    # epsilon_end，之后固定为 epsilon_end（预留剩余的纯利用阶段）。
+    # 旧实现用指数衰减 ε×decay 每轮一次：decay=0.99 时约第 458 轮就触底 0.01，
+    # 3000 轮训练里后 85% 轮次是纯利用——在「不交易=reward 0」的成本主导任务中，
+    # agent 早期偶然锁进「不交易」后再无探索机会翻盘。故改为按训练进度线性退火。
+    epsilon_anneal_ratio: float = 0.8
     replay_buffer_size: int = 10000
     target_update_freq: int = 100  # 目标网络硬拷贝间隔（步）；仅当 target_update_tau=0（关闭软更新）时生效
     # Polyak 软更新系数 τ（>0 时启用软更新，替代每 target_update_freq 步的硬拷贝）：
@@ -77,6 +83,11 @@ class RLConfig:
     max_val_days: int = 100              # 每次验证抽样的验证日上限（抽样越多 best 选择越稳，但单次验证越慢）
     early_stopping_patience: int = 15    # 连续 N 次验证未提升则停止（验证指标为真实做T收益，耐心加大减少噪声误触发）
     reward_clip: float = 5.0             # reward 裁剪范围 [-5, 5]
+    # best 选择的退化门槛：验证集「有交易的天数占比」低于该值时，本次验证不参与 best
+    # 竞争也不计早停。原因：策略退化为「不交易」时日收益几乎全为 0，sharpe 的分母趋零
+    # 会虚高（实测 98% 零交易日、总收益仅 +0.03% 的模型 sharpe=1.23），导致 best 被
+    # 「靠一两笔小运气交易压过 HOLD 基线」的退化模型骗走。设为 0 则不启用该门槛。
+    min_traded_day_ratio: float = 0.2
 
     # ── 空头尾部风险抑制（卖底仓做空）──
     # 基线评估暴露：模型偶尔「先卖后买」卖底仓做空，遇到当日暴力拉升（如600519单日+8%）
@@ -92,17 +103,22 @@ class RLConfig:
     save_best_only: bool = True
 
     # ── 状态特征扩展 ──
-    # 是否把分时做T规则引擎（SignalEvaluator）的买点/卖点得分加入状态特征（+2维）
-    # 注意：开启后 state_dim=10（基础 8 维 + 先验 2 维），与未开启时的 8 维
+    # 是否把分时做T规则引擎（SignalEvaluator）的买点/卖点得分加入状态特征（默认 +1 维）
+    # 注意：开启后 state_dim=9（基础 8 维 + 先验 1 维），与未开启时的 8 维
     # 模型权重不兼容；仅用于新训练的对照实验
     use_signal_scores: bool = False
+    # 先验买卖点占用的状态维度数：
+    #   1（默认）= 有符号净信号「买分−卖分」，一维即无损表达（买/卖分结构性互斥，见 state_dim）
+    #   2        = 旧版买/卖分列编码，仅用于兼容 10 维历史 checkpoint 的加载/回放；
+    #              加载时由 DQNModel.load 按 checkpoint 自动推断并覆盖，无需手工设置
+    signal_state_dims: int = 1
 
     # ── 前日K线时间拼接 ──
     # 是否在时间维度拼接前一日全天分时K线（约240根）到当日K线序列前，
     # 使 return_1/5/15/60、波动率等跨日特征在开盘时刻即有完整前日上下文，
     # 而非仅用前日尾盘30根预热。解决「开盘时刻状态无当日信息、只能开盘秒买赌方向」：
     # 模型可对比「今日当前价 vs 前日各时段」判断当日强弱再决定买卖时点。
-    # 注意：状态维度不变（8/10），但特征值基于更长的跨日序列，权重需重新训练
+    # 注意：状态维度不变（8/9），但特征值基于更长的跨日序列，权重需重新训练
     use_prev_day_features: bool = False
 
     # ── 1D-CNN 形态编码器（序列建模）──
@@ -164,6 +180,7 @@ class RLConfig:
             "RL_EPSILON_START": ("epsilon_start", "float"),
             "RL_EPSILON_END": ("epsilon_end", "float"),
             "RL_EPSILON_DECAY": ("epsilon_decay", "float"),
+            "RL_EPSILON_ANNEAL_RATIO": ("epsilon_anneal_ratio", "float"),
             "RL_REPLAY_BUFFER_SIZE": ("replay_buffer_size", "int"),
             "RL_TARGET_UPDATE_FREQ": ("target_update_freq", "int"),
             "RL_DQN_DOUBLE": ("dqn_double", "bool"),
@@ -184,6 +201,7 @@ class RLConfig:
             "RL_MAX_VAL_DAYS": ("max_val_days", "int"),
             "RL_EARLY_STOPPING_PATIENCE": ("early_stopping_patience", "int"),
             "RL_REWARD_CLIP": ("reward_clip", "float"),
+            "RL_MIN_TRADED_DAY_RATIO": ("min_traded_day_ratio", "float"),
             "RL_MODEL_DIR": ("model_dir", "str"),
             "RL_SAVE_BEST_ONLY": ("save_best_only", "bool"),
             "RL_USE_SIGNAL_SCORES": ("use_signal_scores", "bool"),
@@ -241,14 +259,21 @@ class RLConfig:
 
     @property
     def state_dim(self) -> int:
-        """状态空间维度：基础 8 维 + 可选规则买卖点得分 2 维
+        """状态空间维度：基础 8 维 + 可选规则买卖点得分 signal_state_dims 维
 
         基础 8 维 = OHLCV(5, 相对前收的百分比 / 相对均量倍数) + 时间编码(1: 距收盘剩余比例)
                     + 仓位状态(2: 底仓比例 / 有符号净敞口)
         市场时序信息（动量、波动率、形态）由 CNN 编码器承担，不占 state 维度；
         前日K线时间拼接同样不改变维度，只扩展 CNN 窗口的历史上下文。
+
+        先验维度默认 1：买点必备「主力吸筹活跃」(absorption>0)、卖点必备「主力出货活跃」
+        (absorption<0)，二者结构性互斥（见 SignalEvaluator.evaluate_buy/evaluate_sell 的
+        前置门槛），买卖分不可能同时为正，故 1 维有符号值「买分−卖分」即可无损表达；
+        与启用几条规则、权重多少无关。signal_state_dims=2 仅为兼容旧 10 维 checkpoint。
         """
-        return 10 if self.use_signal_scores else 8
+        if not self.use_signal_scores:
+            return 8
+        return 8 + self.signal_state_dims
 
     @property
     def action_dim(self) -> int:

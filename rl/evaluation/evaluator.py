@@ -68,6 +68,8 @@ class RLEvaluator:
                     "win_rate": 0.0,
                     "max_drawdown": 0.0,
                     "total_trades": 0,
+                    "traded_day_ratio": 0.0,
+                    "avg_trades_per_day": 0.0,
                 },
             }
 
@@ -263,10 +265,20 @@ class RLEvaluator:
         # 总交易次数
         total_trades = sum(s["trade_count"] for s in daily_summaries)
 
+        # 交易活跃度：策略退化为「不交易」时，日收益几乎全为 0，而 sharpe 的分母
+        # （日收益标准差 + 1e-8）趋零会给出虚高值（实测 98% 零交易日时 sharpe=1.23
+        # 却只有 +0.03% 总收益），使 trainer 的 best 选择被退化模型骗走。
+        # 这里显式暴露活跃度供选优侧做门槛判断，不影响 sharpe 本身的计算口径。
+        active_days = int(np.sum(returns != 0))
+        traded_day_ratio = float(active_days / max(len(returns), 1))
+        avg_trades_per_day = float(total_trades / max(len(daily_summaries), 1))
+
         return {
             "sharpe_ratio": sharpe,
             "total_return": total_return,
             "win_rate": win_rate,
             "max_drawdown": max_drawdown,
             "total_trades": total_trades,
+            "traded_day_ratio": traded_day_ratio,
+            "avg_trades_per_day": avg_trades_per_day,
         }

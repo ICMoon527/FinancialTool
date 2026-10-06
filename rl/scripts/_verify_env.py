@@ -9,8 +9,11 @@
    —— 全天总收益与真实 T+1 账目（买入收盘强平 + 底仓收盘买回）完全一致
 5. 尾盘仅保留 3 份底仓
 6. reward 口径：r = Δ已实现收益 − λ·Δ敞口² + 稠密终态惩罚（收盘前 window 根内每根
-   -κ·leftover²/window），逐场景独立重算比对
+   -κ·leftover²/window，leftover 只数「未配对」当日买入），逐场景独立重算比对
+7. 做空守卫只拦纯开空：能配对的卖出（正T 平仓）不受守卫约束，配对不上的纯开空才拦
+8. 先验买卖点默认压成 1 维有符号净信号（买/卖分结构性互斥），signal_state_dims=2 仍兼容 10 维
 """
+import dataclasses
 import os
 import sys
 from datetime import date
@@ -63,13 +66,14 @@ def exposure():
 def terminal_penalty():
     """本步的稠密终态惩罚：收盘前 window 根K线内每根计提 -κ·leftover²/window
 
-    须在 env.step() 之后调用（读取本步推进后的 _step 与 _today_bought）。
+    须在 env.step() 之后调用（读取本步推进后的 _step 与 _pending_buys）。
+    leftover 只数「未配对」的当日买入（已配对=已平仓，不再计入惩罚）。
     注意：本脚本的合成日仅 30 根K线（≤ window=30），故整段 episode 都落在收盘窗口内、
     每一步剩余敞口都被计提；真实交易日约 240 根时只有最后 window 根受影响。
     """
     episode_len = min(len(klines), env.MAX_STEPS)
     bars_left = episode_len - env.current_step
-    leftover = len(env._today_bought)
+    leftover = env._unpaired_buy_count()
     window = max(1, cfg.reward_terminal_window)
     if leftover > 0 and 1 <= bars_left <= window:
         return -cfg.reward_terminal_coef * leftover**2 / window
@@ -189,5 +193,66 @@ print(f"  realized_pnl={env._realized_pnl:.6f}, 期望={expected_s5:.6f}")
 assert abs(env._realized_pnl - expected_s5) < 1e-6
 assert env._base_position == 3, f"卖光后尾盘未恢复3份: {env._base_position}"
 print("  [OK] SELL3 一次卖光底仓，尾盘恢复3份，盈亏正确结算")
+
+# 场景6：做空守卫只拦「纯开空」——正T 平仓不受守卫约束
+# 本脚本全局关闭了守卫（RL_SHORT_GUARD_ENABLED=false）以便核对账目，
+# 此处单独构造一个开启守卫的 env 来覆盖守卫分支。
+print("--- 场景6: 做空守卫只拦纯开空，配对平仓直接放行 ---")
+cfg_guard = dataclasses.replace(cfg, short_guard_enabled=True, short_down_margin=0.0)
+env = T0Environment(cfg_guard)
+env.reset(sample)
+skip_warmup()
+# 合成日开盘 9.99、价格场上行，越过预热后必然处于「价格 >= 开盘价」的强势状态，
+# 即旧实现下一律禁空的状态
+up_pct = (env._current_kline["Close"] / env._day_open - 1.0) * 100.0
+print(f"  当前 up_pct={up_pct:.3f}%（>=0 即旧实现下一律禁空）")
+assert up_pct >= 0.0, f"合成日应处于强势状态，实际 up_pct={up_pct:.3f}%"
+
+s, r, d, info = env.step(1)  # BUY1 -> 产生 1 份未配对当日买入
+assert env._unpaired_buy_count() == 1, f"应有1份未配对买入: {env._unpaired_buy_count()}"
+s, r, d, info = env.step(4)  # SELL1 -> 可配对，属正T 平仓，守卫应放行
+print(f"  SELL1(可与当日买入配对) valid={info['action_valid']}（期望 True）")
+assert info["action_valid"] is True, "正T 平仓不应被做空守卫拦截"
+assert env._unpaired_buy_count() == 0, "卖出后该买入应已配对平仓"
+s, r, d, info = env.step(4)  # SELL1 -> 无可配对份额，属纯开空，守卫应拦截
+print(f"  SELL1(纯开空) valid={info['action_valid']}（期望 False）")
+assert info["action_valid"] is False, "纯开空在强势状态下应被做空守卫拦截"
+print("  [OK] 守卫只拦纯开空份额，做T 的高卖平仓路径不再被封死")
+
+# 场景7：先验买卖点默认 1 维有符号净信号（买/卖分结构性互斥，无需买/卖分列 2 维）
+# 买点必备「主力吸筹活跃」(absorption>0)、卖点必备「主力出货活跃」(absorption<0)，
+# 二者互斥 → 买卖分不可能同时为正，1 维「买分−卖分」即可无损表达。
+print("--- 场景7: 先验净信号 1 维编码 + 买卖分互斥 ---")
+cfg_sig = dataclasses.replace(cfg, use_signal_scores=True, signal_state_dims=1)
+cfg_legacy = dataclasses.replace(cfg, use_signal_scores=True, signal_state_dims=2)
+assert cfg_sig.state_dim == 9, f"开启先验应为 9 维，实际 {cfg_sig.state_dim}"
+assert cfg_legacy.state_dim == 10, f"旧版先验应为 10 维，实际 {cfg_legacy.state_dim}"
+
+env_sig = T0Environment(cfg_sig)
+env_sig.reset(sample)
+while env_sig._is_warmup:
+    env_sig.step(0)
+st = env_sig._get_state()
+assert st.shape == (9,), f"开启先验的状态维度应为 9，实际 {st.shape}"
+
+exp_net = 0.0
+ind = env_sig._current_indicator
+if ind is not None:
+    buy_s, _, _, _, _ = env_sig._signal_evaluator.evaluate_buy(ind)
+    sell_s, _, _, _, _ = env_sig._signal_evaluator.evaluate_sell(ind)
+    buy_s, sell_s = float(buy_s), float(sell_s)
+    exp_net = buy_s / env_sig._signal_buy_max - sell_s / env_sig._signal_sell_max
+    assert not (buy_s > 0 and sell_s > 0), "买/卖分结构性互斥，不应同时为正"
+print(f"  买分/卖分净信号特征={float(st[8]):+.6f}（期望 {exp_net:+.6f}），且 |特征| ≤ 1")
+assert abs(float(st[8]) - exp_net) < 1e-6, f"净信号特征不符: {st[8]} vs {exp_net}"
+assert abs(float(st[8])) <= 1.0 + 1e-6, "净信号应落在 [-1,1]"
+
+# 旧版 2 维路径仍可用（兼容 10 维历史 checkpoint 的加载回放）
+env_old = T0Environment(cfg_legacy)
+env_old.reset(sample)
+while env_old._is_warmup:
+    env_old.step(0)
+assert env_old._get_state().shape == (10,), "signal_state_dims=2 应保持 10 维"
+print("  [OK] 先验默认 1 维有符号净信号；signal_state_dims=2 仍兼容旧 10 维")
 
 print("\n全部验证通过")

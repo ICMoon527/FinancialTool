@@ -10,8 +10,10 @@
 
 from __future__ import annotations
 
+import dataclasses
+import logging
 import random
-from typing import Dict, List, Tuple, TYPE_CHECKING
+from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 
 import numpy as np
 import torch
@@ -20,6 +22,8 @@ import torch.optim as optim
 
 from rl.algorithms.base import AbstractRLModel
 from rl.networks import create_dqn_network
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from rl.config import RLConfig
@@ -241,22 +245,29 @@ class DQNModel(AbstractRLModel):
 
     def __init__(self, config: "RLConfig"):
         super().__init__(config)
-        self.q_network = create_dqn_network(config).to(self.device)
-        self.target_network = create_dqn_network(config).to(self.device)
+        self._build()
+
+    def _build(self) -> None:
+        """按 self.config 构建网络/优化器/回放缓冲区
+
+        独立成方法以便 load 时按 checkpoint 反推的 state_dim 重建（见 load）。
+        """
+        self.q_network = create_dqn_network(self.config).to(self.device)
+        self.target_network = create_dqn_network(self.config).to(self.device)
         self.target_network.load_state_dict(self.q_network.state_dict())
-        self.optimizer = optim.Adam(self.q_network.parameters(), lr=config.learning_rate)
+        self.optimizer = optim.Adam(self.q_network.parameters(), lr=self.config.learning_rate)
         self.replay_buffer = PrioritizedReplayBuffer(
-            config.replay_buffer_size,
-            config.state_dim,
+            self.config.replay_buffer_size,
+            self.config.state_dim,
             self.device,
-            alpha=config.per_alpha,
-            beta_start=config.per_beta_start,
-            beta_end=config.per_beta_end,
-            eps=config.per_eps,
-            window_len=config.cnn_window if config.use_cnn_encoder else 0,
-            window_channels=config.cnn_in_channels,
+            alpha=self.config.per_alpha,
+            beta_start=self.config.per_beta_start,
+            beta_end=self.config.per_beta_end,
+            eps=self.config.per_eps,
+            window_len=self.config.cnn_window if self.config.use_cnn_encoder else 0,
+            window_channels=self.config.cnn_in_channels,
         )
-        self.epsilon = config.epsilon_start
+        self.epsilon = self.config.epsilon_start
         self._train_step_count = 0
         self._loss_fn = nn.MSELoss(reduction="none")
 
@@ -372,13 +383,32 @@ class DQNModel(AbstractRLModel):
             "td_error": float(td_errors.abs().mean().item()),
         }
 
-    def decay_epsilon(self) -> None:
-        """每个 episode 结束后衰减一次探索率（ε 按 episode 衰减，而非按K线步）
+    def decay_epsilon(self, episode: int = 0, total_episodes: int = 0) -> None:
+        """按训练进度线性退火探索率（ε 每个 episode 更新一次，episode 内保持不变）
 
-        使探索率在单个 episode 内保持不变，随训练轮次逐步下降，
-        避免按步衰减导致探索过早结束。
+        在「前 epsilon_anneal_ratio × total_episodes」轮内从 epsilon_start 线性降到
+        epsilon_end，之后固定为 epsilon_end，为训练后段留出纯利用阶段。
+
+        旧实现是每轮 ε × epsilon_decay 的指数衰减：decay=0.99 时约第 458 轮就触底
+        0.01，3000 轮训练里后 85% 轮次纯利用。本任务的成本结构决定「不交易 = reward 0」
+        是一个强局部最优，agent 早期偶然锁进去后再无探索机会翻盘，故改为与总轮数绑定
+        的线性退火。未传 total_episodes（如单元测试直接调用）时退回原指数衰减。
         """
-        self.epsilon = max(self.config.epsilon_end, self.epsilon * self.config.epsilon_decay)
+        if total_episodes > 0:
+            ratio = max(1e-6, self.config.epsilon_anneal_ratio)
+            progress = (episode + 1) / total_episodes
+            if progress >= ratio:
+                self.epsilon = self.config.epsilon_end
+            else:
+                frac = progress / ratio
+                self.epsilon = (
+                    self.config.epsilon_start
+                    + frac * (self.config.epsilon_end - self.config.epsilon_start)
+                )
+        else:
+            self.epsilon = max(
+                self.config.epsilon_end, self.epsilon * self.config.epsilon_decay
+            )
 
     def save(self, path: str) -> None:
         """保存模型到指定路径（含 PER 缓冲区，支持断点续训）"""
@@ -389,6 +419,9 @@ class DQNModel(AbstractRLModel):
                 "optimizer": self.optimizer.state_dict(),
                 "epsilon": self.epsilon,
                 "train_step": self._train_step_count,
+                # 状态维度元数据：加载时据此对齐网络（旧 checkpoint 无此字段，改用权重形状反推）
+                "state_dim": self.config.state_dim,
+                "signal_state_dims": self.config.signal_state_dims,
                 # 优先级经验回放缓冲区（断点续训用）
                 "replay_buffer": (
                     self.replay_buffer.serialize() if len(self.replay_buffer) > 0 else None
@@ -397,8 +430,35 @@ class DQNModel(AbstractRLModel):
             path,
         )
 
+    def _checkpoint_state_dim(self, checkpoint: Dict) -> Optional[int]:
+        """反推 checkpoint 训练时的 state_dim（用于兼容先验维度不同的历史模型）
+
+        优先读 save 时写入的元数据；旧 checkpoint 无该字段，则按网络首层输入维反推：
+        - CNN 编码器：state 与形态向量拼接后进 shared，首层输入 = state_dim + cnn_out_dim
+        - Dueling MLP：shared 首层输入 = state_dim
+        - 朴素 MLP：net 首层输入 = state_dim
+        无法识别时返回 None，调用方回退到当前 config（保持旧行为）。
+        """
+        dim = checkpoint.get("state_dim")
+        if isinstance(dim, int) and dim > 0:
+            return dim
+        sd = checkpoint.get("q_network") or {}
+        if self.config.use_cnn_encoder:
+            w = sd.get("shared.0.weight")
+            return (int(w.shape[1]) - self.config.cnn_out_dim) if w is not None else None
+        if "shared.0.weight" in sd:
+            return int(sd["shared.0.weight"].shape[1])
+        if "net.0.weight" in sd:
+            return int(sd["net.0.weight"].shape[1])
+        return None
+
     def load(self, path: str) -> None:
         """从指定路径加载模型（自动恢复 PER 缓冲区，若存在）
+
+        状态维度对齐：先验买卖点编码存在 1 维（净信号，现用）与 2 维（买/卖分列，旧版）
+        两代，目录名无法区分，故按 checkpoint 反推真实 state_dim，与当前 config 不一致时
+        按反推值就地重建网络再加载。这样旧 10 维模型仍可评估/回放，且加载后 self.config
+        已被更新为与权重匹配的口径（调用方应改用 model.config 构建环境，保证 state_dim 一致）。
 
         设备无关加载：checkpoint 可能由 GPU/CPU 进程保存（旧版 --no-gpu 因
         CUDA_VISIBLE_DEVICES="" 失效而实际仍在 GPU 保存），统一先 map_location='cpu'
@@ -407,6 +467,19 @@ class DQNModel(AbstractRLModel):
         torch.cuda.device_count() is 0。
         """
         checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+        ckpt_dim = self._checkpoint_state_dim(checkpoint)
+        if ckpt_dim is not None and ckpt_dim != self.config.state_dim:
+            # 仅先验维度可变（基础 8 维固定）：8=无先验，9/10=先验 1/2 维
+            self.config = dataclasses.replace(
+                self.config,
+                use_signal_scores=ckpt_dim > 8,
+                signal_state_dims=max(1, ckpt_dim - 8),
+            )
+            logger.info(
+                f"checkpoint state_dim={ckpt_dim} 与配置 {self.config.state_dim} 不一致，"
+                f"已按 checkpoint 重建网络（先验 {self.config.signal_state_dims} 维）"
+            )
+            self._build()
         self.q_network.load_state_dict(checkpoint["q_network"])
         self.target_network.load_state_dict(checkpoint["target_network"])
         # 迁移到当前设备（Module.to 就地修改参数并返回 self）

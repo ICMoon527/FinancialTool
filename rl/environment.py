@@ -5,6 +5,10 @@
 - 底仓管理：初始 3 份底仓，尾盘强制恢复为 3 份（卖出的底仓按收盘价买回补齐）
 - 动作空间：0=HOLD, 1~3=BUY1/2/3, 4~6=SELL1/2/3（一次可买卖多份；当日累计买入 ≤ 3 份，卖出 ≤ 底仓）
 - T+1 规则：当天买入的份额不可当天卖出，SELL1/2/3 只卖底仓（先卖后买），尾盘按收盘价买回补齐 3 份
+- 做空守卫（short_guard_enabled）：只拦「配对不上的纯开空份额」（默认要求当日价格已跌破开盘价）。
+  能与未配对当日买入配对的份额属正T 平仓，卖出后由该买入补齐物理持仓（净敞口不变），
+  不构成净做空、不携带暴力拉升的尾部风险，故**不受守卫约束**——否则做T 的高卖平仓路径
+  会被一刀切封死，策略退化为「日内择时买入 + 赌收盘」的方向性押注。
 - 未配对的当日买入尾盘强制平仓结算，仅保留 3 份底仓（维持现金流，防止一直买入/卖出）
 - 预热期：前 warmup_steps 步强制 HOLD + reward=0
 - 每个交易日为一个独立 episode
@@ -16,8 +20,10 @@
 - λ·开仓敞口²：开仓惩罚（λ=reward_lambda），仅对本步「净新增」的日内敞口一次性收取
   （库存=agent可控的日内双向敞口=当日买入+先卖后买，不含恒定底仓）。改为开仓时收取而非
   逐steps持仓，避免「持有多日寸」在约240步/天的高频累加下被罚成最大负项、淹没做T信号。
-- terminal_constraint：收盘仍有未平当日买入时惩罚 -κ·leftover²（κ=reward_terminal_coef），
-  鼓励日内 SELL 配对平仓而非拖到收盘强平。稠密化：不再只在最后一根K线一次性计提，
+- terminal_constraint：收盘仍有「未平仓」当日买入时惩罚 -κ·leftover²（κ=reward_terminal_coef），
+  鼓励日内 SELL 配对平仓而非拖到收盘强平。**leftover 只数未配对的当日买入**
+  （已配对即已平仓，不再计入），否则「买满 3 份并成功高卖平掉」与「一直拿着不平」
+  会被罚同样的 -κ·3²，只有「当天完全不买」才免罚，反而把模型推向不交易。稠密化：不再只在最后一根K线一次性计提，
   而是平摊到收盘前 reward_terminal_window 根K线逐根计提（每根 -κ·leftover²/window，
   窗口内累积仍恰为 -κ·leftover²）。总强度不变，但携带该约束的样本数从 1 增至 window，
   Q 值无需再靠 220 步反向传播去覆盖（旧实现实测仍有 31% 交易日以 3 份未平仓收尾）
@@ -93,9 +99,8 @@ class T0Environment:
 
         # 指标计算（阈值/周期取自 YAML，回退 IntradayIndicatorEngine 类默认值）
         self._indicator_engine = indicator_engine or IntradayIndicatorEngine(signal_config)
-        # max_window=500：容纳「前日全天(约240根) + 当日全天(约240根)」的跨日K线拼接，
-        # 保证开盘时 return_1/5/15/60、波动率等特征能看到完整前日上下文，
-        # 且盘中不因裁剪挤掉前日数据导致中期特征断档
+        # K线缓冲（初始值仅为占位，reset 时按「预热+当日」实际长度动态分配窗口，
+        # 避免固定 500 截断导致指标失真与 CNN 前日/当日归属错位）
         self._data_buffer = IntradayDataBuffer(max_window=500)
 
         # 规则买卖点评分器（use_signal_scores=True 时为状态特征提供人工先验，权重取自 YAML）
@@ -126,6 +131,10 @@ class T0Environment:
         # 当前K线数据（由 step 更新）
         self._current_kline: Optional[Dict] = None
         self._current_indicator: Optional[IndicatorSnapshot] = None
+        # 指标预计算结果（use_signal_scores=True 时启用）：reset 时对「预热+当日」一次性
+        # 算完全天指标快照，step 内按 _step 直接取行，避免每步对整段缓冲重算 9 个指标族
+        # （实测单日 267 步从约 16s 降到约 0.2s）。None = 未启用或不适用，回退逐步重算。
+        self._precomputed_indicators: Optional[List[IndicatorSnapshot]] = None
 
         # K线历史（用于密集奖励计算和引用）
         self._klines: List[Dict] = []
@@ -345,16 +354,23 @@ class T0Environment:
         # 加载样本
         self._klines = sample.get("klines", [])
 
-        # 预热指标：时间维度拼接前日K线（优先前日全天，兜底前日尾盘30根），
-        # 使 return_1/5/15/60、波动率等特征在开盘时刻即包含前日上下文
-        self._data_buffer = IntradayDataBuffer(max_window=500)
+        # 预热K线：时间维度拼接前日K线（优先前日全天，兜底前日尾盘30根），
+        # 使 state/CNN 在开盘时刻即包含前日上下文
+        warmup_klines = prev_day_full_klines or prev_day_klines
+
+        # 窗口需容纳「预热 + 当日」全量：旧值固定 500，而实际预热(约267根)+当日(约267根)
+        # =534 会被截断——VWAP/均价偏离(deviation_pct)、均线等按窗口累计的指标失真
+        # （实测尾盘 deviation_pct 偏差达 0.185 个百分点、macd 布尔信号翻转），且 CNN
+        # 形态窗口用「缓冲内下标」判定前日/当日归属，截断后整体错位、当日K线被误标为前日。
+        # 按实际长度动态分配后不截断，同时使「按日预计算」与「逐步重算」严格等价。
+        need = len(warmup_klines or []) + len(self._klines) + 10
+        self._data_buffer = IntradayDataBuffer(max_window=max(500, need))
         self._warmup_bar_count = 0
         # 锁定前日收盘价作为形态窗口的归一化基准：
         # 旧实现按「窗口长度是否覆盖预热段」动态选取基准（len(df)=60 < 240 时
         # 回退为窗口首根收盘），导致基准随窗口滚动每步变化、同一根K线数值不稳定，
         # CNN 看到的是漂移的分布。锁定后整个交易日基准恒定。
         self._prev_close_ref = 0.0
-        warmup_klines = prev_day_full_klines or prev_day_klines
         if warmup_klines:
             self._data_buffer.warmup(warmup_klines)
             self._warmup_bar_count = len(warmup_klines)
@@ -363,6 +379,13 @@ class T0Environment:
             self._is_warmup = False  # 有前日数据，无需 episode 内预热
         else:
             self._is_warmup = True  # 无前日数据，需要 episode 内预热
+
+        # 指标预计算：一次性算完「预热 + 当日全天」快照，step 内按 _step 直接取行。
+        # 仅在启用信号先验时必要（否则 _update_indicators 短路，不做任何指标计算）。
+        if self.config.use_signal_scores and self._klines:
+            self._precomputed_indicators = self._precompute_indicators(warmup_klines)
+        else:
+            self._precomputed_indicators = None
 
         # 推进到第一根K线
         if self._klines:
@@ -444,11 +467,13 @@ class T0Environment:
         #    旧实现仅在最后一根K线一次性计提 -κ·leftover²，属稀疏终态信号：整个 episode
         #    只有 1 步携带该信息，Q 值要靠 220 步反向传播才能覆盖，实测仍有 31% 交易日
         #    「满仓 3 份不平」。现把同一惩罚平摊到「收盘前 reward_terminal_window 根K线」
-        #    逐根计提（每根 -κ·leftover²/window）：窗口内累积仍恰为 -κ·leftover²（总强度
+        #    （每根 -κ·leftover²/window）：窗口内累积仍恰为 -κ·leftover²（总强度
         #    不变，不改变最优策略），但尾盘每一步都产生负 reward，梯度信号样本数从 1 → window。
+        #    leftover 只数「未配对」的当日买入：已配对的买入在 SELL 时即已平仓，
+        #    若仍计入惩罚，模型成功高卖平仓反而照罚 -κ·3²，「不买」才是唯一免罚选项。
         episode_len = min(len(self._klines), self.MAX_STEPS)  # 实际 episode 长度（短交易日按实际K线数）
         bars_left = episode_len - self._step                  # 距收盘剩余K线数（0=已到最后一根）
-        leftover = len(self._today_bought)                    # 未平当日买入数（_force_close 会清空，先捕获）
+        leftover = self._unpaired_buy_count()                 # 未平当日买入数（_force_close 会清空，先捕获）
         window = max(1, self.config.reward_terminal_window)
         terminal_constraint = 0.0
         if leftover > 0 and 1 <= bars_left <= window:
@@ -495,10 +520,10 @@ class T0Environment:
     # ═══════════════════════════════════════════════
 
     def _get_state(self) -> np.ndarray:
-        """构建状态向量（基础 8 维；use_signal_scores 时 10 维），所有特征股票无关
+        """构建状态向量（基础 8 维；use_signal_scores 时 9 维），所有特征股票无关
 
         组成：OHLCV(5, 相对前收的百分比 / 相对均量倍数) + 时间编码(1: 距收盘剩余比例)
-              + 仓位状态(2: 底仓比例/有符号净敞口) [+ 规则买卖点得分(2)]
+              + 仓位状态(2: 底仓比例/有符号净敞口) [+ 规则买卖点净信号(1: 买分−卖分)]
 
         设计分工：市场时序信息（动量、波动率、形态）全部由 CNN 编码器承担，
         state 只保留 CNN 看不到的「账户状态」与决策紧迫度。已移除：
@@ -566,13 +591,17 @@ class T0Environment:
             net_exposure / self.MAX_TODAY_BUY,
         ])
 
-        # ── 规则买卖点得分 (2维，use_signal_scores=True 时启用) ──
+        # ── 规则买卖点得分（use_signal_scores=True 时启用，默认 1 维）──
         # 直接复用分时做T页面同款 SignalEvaluator 规则引擎的原始得分（权重取自
         # intraday_t0_config.yaml，随前端调整自动变化），作为人工先验注入状态；
         # 引力场部分不参与（环境无参考线数据）。
-        # 除以「当前权重满分」归一化到 0~1，避免用户改权重后特征量纲漂移
+        # 买点必备「主力吸筹活跃」(absorption>0)、卖点必备「主力出货活跃」(absorption<0)，
+        # 二者结构性互斥（见 evaluate_buy/evaluate_sell 的前置门槛），买卖分不可能同时为正，
+        # 故默认压成 1 维有符号净信号「买分−卖分」：>0 有买点、<0 有卖点、=0 无信号，
+        # 且保留强度（各自除以当前权重满分后落在 [0,1]，相减后落在 [-1,1]），无损且更省参数。
+        # signal_state_dims=2 为旧 10 维 checkpoint 的兼容路径（买/卖分列），仅供加载回放。
         if self.config.use_signal_scores:
-            buy_score = sell_score = 0.0
+            buy_feat = sell_feat = 0.0
             ind = self._current_indicator
             if ind is not None:
                 # 取完整返回值以拿到 weight_details（各规则触发/贡献），供 signal_report 记录
@@ -580,12 +609,16 @@ class T0Environment:
                 sell_score, _, _, _, sell_details = self._signal_evaluator.evaluate_sell(ind)
                 buy_score = float(buy_score)
                 sell_score = float(sell_score)
+                # 除以「当前权重满分」归一化到 0~1，避免用户改权重后特征量纲漂移
+                buy_feat = buy_score / self._signal_buy_max
+                sell_feat = sell_score / self._signal_sell_max
                 self._accumulate_signal_stats(
                     buy_score, sell_score, buy_details, sell_details, ind
                 )
-            features.extend(
-                [buy_score / self._signal_buy_max, sell_score / self._signal_sell_max]
-            )
+            if self.config.signal_state_dims >= 2:
+                features.extend([buy_feat, sell_feat])
+            else:
+                features.append(buy_feat - sell_feat)
 
         return np.array(features, dtype=np.float32)
 
@@ -612,10 +645,14 @@ class T0Environment:
             n = self.SELL_AMOUNTS[action]
             if n > self._base_position:
                 return False, self.HOLD
-            # 空头尾部风险抑制：只在「当日已回落跌破开盘价」的弱势环境允许卖底仓做空，
-            # 逢强势（price >= open）一律禁空。基线证实开盘价附近做空遇暴力拉升会被
-            # 收盘强平买回造成单笔 -8% 灾难损失，故必须要求当日已确认弱势才可做空。
-            if self.config.short_guard_enabled and self._day_open > 0:
+            # 空头尾部风险抑制：只拦「配对不上的纯开空份额」。本次卖出中能与未配对当日买入
+            # 配对的份额属正T 平仓，卖出后由该买入补齐物理持仓（底仓-1、当日买入+1，
+            # 净敞口不变），不构成净做空，因而**不携带**「先卖后遇暴力拉升 → 收盘买回巨亏」
+            # 的尾部风险（该风险只存在于纯开空份额：卖出价 10、收盘 11 时单笔 -9.19%）。
+            # 旧实现一刀切拦掉所有「价格 >= 开盘价」的卖出（该状态占 58.9% 的步），
+            # 把做T 的高卖平仓路径一并封死，是策略退化为方向性押注的根因。
+            short_leg = n - self._unpaired_buy_count()
+            if short_leg > 0 and self.config.short_guard_enabled and self._day_open > 0:
                 cur = self._current_kline.get("Close", 0.0) if self._current_kline else 0.0
                 up_pct = (cur / self._day_open - 1.0) * 100.0
                 if up_pct >= -self.config.short_down_margin:
@@ -774,6 +811,15 @@ class T0Environment:
     #  内部辅助方法
     # ═══════════════════════════════════════════════
 
+    def _unpaired_buy_count(self) -> int:
+        """尚未平仓的当日买入份数
+
+        SELL 平仓时会给对应的当日买入写 paired_at（见 _execute_action），故「已配对」
+        等价于「已平仓」。做空守卫判断与终态惩罚都必须以「未配对」为准：已平仓的买入
+        不应再计入敞口，也不应再被终态惩罚重复惩罚。守卫与 reward 共用此方法以保证口径一致。
+        """
+        return sum(1 for b in self._pending_buys if b.get("paired_at") is None)
+
     @property
     def kline_window(self) -> np.ndarray:
         """时间序列拼接的形态窗口，形状 (cnn_window, cnn_in_channels)
@@ -836,21 +882,29 @@ class T0Environment:
             self._current_kline = self._klines[self._step]
 
     def _update_indicators(self) -> None:
-        """将当前K线 feed 到指标引擎，更新 _current_indicator"""
+        """更新当前K线的指标快照（优先取预计算结果，兜底逐步重算）"""
         if not self._current_kline:
             self._current_indicator = None
             return
 
-        # Feed K线到数据缓冲区
+        # Feed K线到数据缓冲区（state 的均量、CNN 形态窗口仍需完整K线序列）
         self._data_buffer.append(self._current_kline)
 
-        # 原始基线（use_signal_scores=False）：状态仅用 OHLCV/return/vol，
+        # 原始基线（use_signal_scores=False）：状态仅用 OHLCV/vol，
         # 无需计算技术指标，跳过以节省每步开销
         if not self.config.use_signal_scores:
             self._current_indicator = None
             return
 
-        # 计算指标：复用策略侧「分时做T页面」同一套引擎与快照构造函数，彻底同源
+        # 预计算路径：reset 时已对「预热+当日」算完全天快照，第 _step 步直接取行。
+        # 指标全部因果（逐 bar 校验 53 字段×267 步与逐步重算完全一致），故数学等价。
+        pre = self._precomputed_indicators
+        if pre is not None:
+            idx = self._step
+            self._current_indicator = pre[idx] if 0 <= idx < len(pre) else IndicatorSnapshot()
+            return
+
+        # 兜底：逐步重算（预计算不可用或计算异常时为 None）
         data = self._data_buffer.data
         if len(data) < 5:
             self._current_indicator = IndicatorSnapshot()
@@ -870,6 +924,61 @@ class T0Environment:
         except Exception as e:
             logger.debug("指标计算异常: %s", e)
             self._current_indicator = IndicatorSnapshot()
+
+    def _precompute_indicators(
+        self, warmup_klines: Optional[List[Dict]] = None
+    ) -> Optional[List[IndicatorSnapshot]]:
+        """一次性计算「预热 + 当日全天」的技术指标快照（按日预计算）
+
+        技术指标全部只依赖「当前及更早」的K线（已逐 bar 校验：53 个字段 × 267 步与
+        逐步重算完全一致，故可在数学上合并）。把「每步 calculate_all」合并为「每日一次」：
+        第 t 步直接取第 warmup_rows + t 行的快照，与逐步重算严格等价，
+        单日指标开销从约 16s 降到约 0.2s。
+
+        与 reset 中 _data_buffer 使用同一窗口口径（不截断），保证两条路径结果一致。
+
+        Args:
+            warmup_klines: 预热K线（前日全天，或前日尾盘30根）；None/空表示无预热
+
+        Returns:
+            长度 = len(self._klines) 的快照列表（索引 = step 序号）；
+            计算异常时返回 None，交由 _update_indicators 逐步重算兜底。
+        """
+        warmup = warmup_klines or []
+        W = len(warmup)
+        N = len(self._klines)
+        if N == 0:
+            return []
+
+        buf = IntradayDataBuffer(max_window=W + N + 10)
+        if warmup:
+            buf.warmup(warmup)
+        for k in self._klines:
+            buf.append(k)
+
+        data = buf.data
+        if len(data) < 5:
+            return [IndicatorSnapshot() for _ in range(N)]
+
+        try:
+            df = self._indicator_engine.calculate_all(data, warmup_rows=W)
+        except Exception as e:
+            logger.debug("指标预计算异常，回退逐步重算: %s", e)
+            return None
+        if df.empty:
+            return [IndicatorSnapshot() for _ in range(N)]
+
+        snaps: List[IndicatorSnapshot] = []
+        for t in range(N):
+            i = W + t
+            if i >= len(df):
+                snaps.append(IndicatorSnapshot())
+                continue
+            latest = df.iloc[i]
+            prev = df.iloc[i - 1] if i >= 1 else None
+            prev2 = df.iloc[i - 2] if i >= 2 else None
+            snaps.append(build_indicator_snapshot(latest, prev, prev2))
+        return snaps
 
     def _update_price_stats(self) -> None:
         """记录当日开盘价（做空动量守卫 _parse_action 的参照基准）"""

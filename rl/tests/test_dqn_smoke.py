@@ -190,7 +190,12 @@ def test_config_loading():
     from rl.config import RLConfig
 
     config = RLConfig.from_env()
-    assert config.state_dim == 8, f"state_dim={config.state_dim}, expected 8"
+    # state_dim 随 RL_USE_SIGNAL_SCORES 变化（基础 8 维 + 规则买卖点净信号 1 维），
+    expected_state_dim = 9 if config.use_signal_scores else 8
+    assert config.state_dim == expected_state_dim, (
+        f"state_dim={config.state_dim}, expected {expected_state_dim} "
+        f"(use_signal_scores={config.use_signal_scores})"
+    )
     assert config.action_dim == 7, f"action_dim={config.action_dim}, expected 7"
     assert config.transaction_cost == 0.2, f"transaction_cost={config.transaction_cost}, expected 0.2（百分比刻度，一买一卖0.2%=0.2）"
     assert config.per_side_cost == 0.1, f"per_side_cost={config.per_side_cost}, expected 0.1（单边0.1%）"

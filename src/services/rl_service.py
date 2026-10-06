@@ -335,6 +335,9 @@ class RLService:
                 raise FileNotFoundError(f"模型权重文件缺失: {model_id}")
             loaded = self._create_model(model_info["config"])
             loaded.load(str(Path(ckpt_dir) / "model.pt"))
+            # 回写模型自身配置：load 会按 checkpoint 反推真实 state_dim（先验 1 维/旧版 2 维），
+            # 评估环境必须用同一口径构建，否则 state_dim 与权重不匹配
+            model_info["config"] = loaded.config
             model_info["model"] = loaded
             model = loaded
             logger.info(f"已从磁盘加载模型权重: {model_id}")
