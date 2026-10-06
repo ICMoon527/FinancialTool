@@ -194,7 +194,7 @@ class RLTrainer:
             # 4. 定期验证
             val_metrics = None
             if self.dataset.val_samples and (episode + 1) % self.config.validation_freq == 0:
-                val_metrics = self._validate()
+                val_metrics = self._validate(self.config.max_val_days)
                 self.metrics.val_sharpe_ratios.append(val_metrics["sharpe"])
                 self.metrics.val_returns.append(val_metrics["total_return"])
                 self.metrics.val_win_rates.append(val_metrics["win_rate"])
@@ -360,7 +360,7 @@ class RLTrainer:
 
         return total_reward, episode_length, train_metrics
 
-    def _validate(self, max_val_days: int = 100) -> Dict[str, float]:
+    def _validate(self, max_val_days: int) -> Dict[str, float]:
         """在验证集上评估模型，返回 Sharpe、总收益、胜率等
 
         Args:

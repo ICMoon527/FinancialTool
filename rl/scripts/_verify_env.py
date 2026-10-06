@@ -8,6 +8,8 @@
 4. 残余结算：已配对买入尾盘只结算（收盘价-配对卖出价），未配对按（收盘价-买入价）结算
    —— 全天总收益与真实 T+1 账目（买入收盘强平 + 底仓收盘买回）完全一致
 5. 尾盘仅保留 3 份底仓
+6. reward 口径：r = Δ已实现收益 − λ·Δ敞口² + 稠密终态惩罚（收盘前 window 根内每根
+   -κ·leftover²/window），逐场景独立重算比对
 """
 import os
 import sys
@@ -58,6 +60,22 @@ def exposure():
     return len(env._today_bought) + len(env._sold_short)
 
 
+def terminal_penalty():
+    """本步的稠密终态惩罚：收盘前 window 根K线内每根计提 -κ·leftover²/window
+
+    须在 env.step() 之后调用（读取本步推进后的 _step 与 _today_bought）。
+    注意：本脚本的合成日仅 30 根K线（≤ window=30），故整段 episode 都落在收盘窗口内、
+    每一步剩余敞口都被计提；真实交易日约 240 根时只有最后 window 根受影响。
+    """
+    episode_len = min(len(klines), env.MAX_STEPS)
+    bars_left = episode_len - env.current_step
+    leftover = len(env._today_bought)
+    window = max(1, cfg.reward_terminal_window)
+    if leftover > 0 and 1 <= bars_left <= window:
+        return -cfg.reward_terminal_coef * leftover**2 / window
+    return 0.0
+
+
 # 场景1：BUY2 + BUY1 满额，超额度无效
 print("--- 场景1: BUY2(动作2) + BUY1，超额度无效 ---")
 skip_warmup()
@@ -85,8 +103,11 @@ sell_price = 10.40
 pair_gain = 2 * ((sell_price - 10.25) / 10.25 * 100 - cfg.transaction_cost)
 # 开仓惩罚：本步新增敞口（先卖后买做空 2 份）一次性收 λ·Δexposure²
 inv_pen = cfg.reward_lambda * max(0, exposure() - exp_before) ** 2
-expected_r = pair_gain - inv_pen
-print(f"  期望 reward = 配对收益 {pair_gain:.6f} - 开仓惩罚 {inv_pen:.6f} = {expected_r:.6f}")
+# 稠密终态惩罚：本步仍有 3 份未平当日买入且处在收盘窗口内
+term_pen = terminal_penalty()
+expected_r = pair_gain - inv_pen + term_pen
+print(f"  期望 reward = 配对收益 {pair_gain:.6f} - 开仓惩罚 {inv_pen:.6f} "
+      f"+ 终态惩罚 {term_pen:.6f} = {expected_r:.6f}")
 assert abs(r - expected_r) < 1e-4, f"SELL2 奖励不符: {r:.6f} vs {expected_r:.6f}"
 assert env._base_position == 1, f"T+1：应卖2份底仓: {env._base_position}"
 assert len(env._sold_short) == 2
@@ -103,7 +124,7 @@ s, r, d, info = env.step(4)  # SELL1 at kline[9]=10.45
 sell_price2 = 10.45
 pair_gain2 = (sell_price2 - 10.30) / 10.30 * 100 - cfg.transaction_cost
 inv_pen2 = cfg.reward_lambda * max(0, exposure() - exp_before) ** 2
-expected_r2 = pair_gain2 - inv_pen2
+expected_r2 = pair_gain2 - inv_pen2 + terminal_penalty()
 print(f"  SELL1 reward={r:.6f}, valid={info['action_valid']} (期望 {expected_r2:.6f})")
 assert abs(r - expected_r2) < 1e-4
 assert env._base_position == 0 and len(env._sold_short) == 3
@@ -149,9 +170,10 @@ s, r, d, info = env.step(6)  # SELL3
 print(f"  SELL3 reward={r:.6f}, valid={info['action_valid']}")
 print_pos("SELL3后")
 assert info["action_valid"] is True
-# 无当日买入可配对 → 无已实现收益，reward 仅含本步新增敞口的开仓惩罚
+# 无当日买入可配对 → 无已实现收益，reward 仅含本步新增敞口的开仓惩罚与终态项（后者此时为 0）
 inv_pen5 = cfg.reward_lambda * max(0, exposure() - exp_before) ** 2
-assert abs(r - (-inv_pen5)) < 1e-9, f"SELL3 应只产生开仓惩罚 -{inv_pen5:.6f}，实际 {r:.6f}"
+expected_r5 = -inv_pen5 + terminal_penalty()
+assert abs(r - expected_r5) < 1e-9, f"SELL3 应只产生开仓惩罚 -{inv_pen5:.6f}，实际 {r:.6f}"
 assert env._base_position == 0 and len(env._sold_short) == 3
 sold_prices = list(env._sold_short)  # 在尾盘强平前记录卖出价
 steps = 0

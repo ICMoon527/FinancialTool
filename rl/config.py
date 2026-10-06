@@ -67,9 +67,14 @@ class RLConfig:
     # inventory：总持仓份数（底仓 3 + 当日买入 0~3）
     reward_lambda: float = 0.01          # 库存惩罚系数 λ（λ·inventory²，抑制过度建仓）
     reward_terminal_coef: float = 0.5    # 终态约束系数 κ（收盘仍有未平当日买入时 -κ·leftover²）
+    # 终态约束稠密化窗口：把 κ·leftover² 平摊到「收盘前 N 根K线」逐根计提
+    # （每根 -κ·leftover²/window，窗口内累积仍恰为 -κ·leftover²）。总强度不变，
+    # 只把「1 个终态样本」变成「N 个尾盘样本」，让 Q 值更快学到尾盘必须平仓。
+    reward_terminal_window: int = 30
 
     # ── 训练控制 ──
     validation_freq: int = 50            # 每 N 个 episode 验证一次
+    max_val_days: int = 100              # 每次验证抽样的验证日上限（抽样越多 best 选择越稳，但单次验证越慢）
     early_stopping_patience: int = 15    # 连续 N 次验证未提升则停止（验证指标为真实做T收益，耐心加大减少噪声误触发）
     reward_clip: float = 5.0             # reward 裁剪范围 [-5, 5]
 
@@ -170,11 +175,13 @@ class RLConfig:
             "RL_PER_EPS": ("per_eps", "float"),
             "RL_REWARD_LAMBDA": ("reward_lambda", "float"),
             "RL_REWARD_TERMINAL_COEF": ("reward_terminal_coef", "float"),
+            "RL_REWARD_TERMINAL_WINDOW": ("reward_terminal_window", "int"),
             "RL_PPO_CLIP_EPSILON": ("ppo_clip_epsilon", "float"),
             "RL_PPO_GAE_LAMBDA": ("ppo_gae_lambda", "float"),
             "RL_PPO_ENTROPY_COEF": ("ppo_entropy_coef", "float"),
             "RL_PPO_VALUE_COEF": ("ppo_value_coef", "float"),
             "RL_VALIDATION_FREQ": ("validation_freq", "int"),
+            "RL_MAX_VAL_DAYS": ("max_val_days", "int"),
             "RL_EARLY_STOPPING_PATIENCE": ("early_stopping_patience", "int"),
             "RL_REWARD_CLIP": ("reward_clip", "float"),
             "RL_MODEL_DIR": ("model_dir", "str"),

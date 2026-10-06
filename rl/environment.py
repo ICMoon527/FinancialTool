@@ -17,7 +17,10 @@
   （库存=agent可控的日内双向敞口=当日买入+先卖后买，不含恒定底仓）。改为开仓时收取而非
   逐steps持仓，避免「持有多日寸」在约240步/天的高频累加下被罚成最大负项、淹没做T信号。
 - terminal_constraint：收盘仍有未平当日买入时惩罚 -κ·leftover²（κ=reward_terminal_coef），
-  鼓励日内 SELL 配对平仓而非拖到收盘强平
+  鼓励日内 SELL 配对平仓而非拖到收盘强平。稠密化：不再只在最后一根K线一次性计提，
+  而是平摊到收盘前 reward_terminal_window 根K线逐根计提（每根 -κ·leftover²/window，
+  窗口内累积仍恰为 -κ·leftover²）。总强度不变，但携带该约束的样本数从 1 增至 window，
+  Q 值无需再靠 220 步反向传播去覆盖（旧实现实测仍有 31% 交易日以 3 份未平仓收尾）
 
 性能簿记（不参与 reward）：_realized_pnl 仍按真实 T+1 账目精确结算当日做T已实现收益，
 供训练验证与评估输出真实绩效数字。
@@ -117,14 +120,8 @@ class T0Environment:
 
         # 当日价格统计
         self._day_open: float = 0.0
-        self._day_high: float = 0.0
-        self._day_low: float = float("inf")
-        self._prev_close: float = 0.0
         # 形态窗口的固定归一化基准（前日收盘价，reset 时锁定）
         self._prev_close_ref: float = 0.0
-
-        # 单步交易成本累计（reward 的 cost 项：每笔成交单边佣金+滑点）
-        self._step_cost: float = 0.0
 
         # 当前K线数据（由 step 更新）
         self._current_kline: Optional[Dict] = None
@@ -137,10 +134,6 @@ class T0Environment:
         self._trades: List[Dict] = []          # 完整交易记录
         self._pending_buys: List[Dict] = []    # 未配对的买入记录（FIFO）
         self._sold_short: List[float] = []     # 先卖后买：已卖出底仓的卖出价（尾盘买回补齐3份底仓）
-
-        # 当前 episode 样本信息
-        self._current_stock_code: str = ""
-        self._current_date: str = ""
 
         # 预热数据计数（用于 MACD_Bar_Sum 从当日第一根K线开始累加）
         self._warmup_bar_count: int = 0
@@ -333,11 +326,10 @@ class T0Environment:
         self._today_bought = []
         self._realized_pnl = 0.0
         self._total_reward = 0.0
-        self._step_cost = 0.0
 
-        # 重置价格统计
-        self._day_high = 0.0
-        self._day_low = float("inf")
+        # 重置当日价格统计：做空动量守卫（_parse_action）按「当日相对开盘价」判定强弱，
+        # 不重置会残留上一 episode 的开盘价，使守卫长期用错基准（_day_open 仅在 ==0 时赋值）
+        self._day_open = 0.0
 
         # 重置环境状态
         self._step = 0
@@ -352,9 +344,6 @@ class T0Environment:
 
         # 加载样本
         self._klines = sample.get("klines", [])
-        self._current_stock_code = str(sample.get("stock_code", ""))
-        if hasattr(sample.get("date"), "isoformat"):
-            self._current_date = sample["date"].isoformat()
 
         # 预热指标：时间维度拼接前日K线（优先前日全天，兜底前日尾盘30根），
         # 使 return_1/5/15/60、波动率等特征在开盘时刻即包含前日上下文
@@ -372,8 +361,6 @@ class T0Environment:
             latest = self._data_buffer.get_latest_price()
             self._prev_close_ref = float(latest) if latest else 0.0
             self._is_warmup = False  # 有前日数据，无需 episode 内预热
-            # 用前日数据预计算指标初始状态
-            self._precompute_indicators_from_buffer()
         else:
             self._is_warmup = True  # 无前日数据，需要 episode 内预热
 
@@ -427,9 +414,7 @@ class T0Environment:
         # ── 正常交易期 ──
         self._is_warmup = False
 
-        # 0. 记录动作前状态（奖励计算用：本步成交价 = 当前K线收盘价）
-        prev_close = self._current_kline["Close"] if self._current_kline else 0.0
-        self._step_cost = 0.0
+        # 0. 记录动作前状态（奖励计算用）
         # 记录本步动作前敞口（用于开仓惩罚：只罚「新开仓」增量，不再逐step罚持仓）
         exp_before = len(self._today_bought) + len(self._sold_short)
         # R2：记录动作前已实现收益，用于计算本步「已实现收益增量」reward
@@ -440,7 +425,7 @@ class T0Environment:
         info["action_valid"] = is_valid
         info["action_applied"] = applied_action
 
-        # 2. 执行动作（交易成本在 _execute_action 内累计到 _step_cost）
+        # 2. 执行动作（交易成本在 _execute_action 内随成交直接计入 _realized_pnl）
         if is_valid and applied_action != self.HOLD:
             self._execute_action(applied_action)
 
@@ -455,13 +440,23 @@ class T0Environment:
         # 切断「先弱后强」下收盘强平造成单笔 -8% 灾难的尾部风险
         self._check_short_stop()
 
-        # 4. 终态约束（奖励 r 的 terminal_constraint 项）与收盘强平簿记
+        # 4. 终态约束（稠密化）+ 收盘强平簿记
+        #    旧实现仅在最后一根K线一次性计提 -κ·leftover²，属稀疏终态信号：整个 episode
+        #    只有 1 步携带该信息，Q 值要靠 220 步反向传播才能覆盖，实测仍有 31% 交易日
+        #    「满仓 3 份不平」。现把同一惩罚平摊到「收盘前 reward_terminal_window 根K线」
+        #    逐根计提（每根 -κ·leftover²/window）：窗口内累积仍恰为 -κ·leftover²（总强度
+        #    不变，不改变最优策略），但尾盘每一步都产生负 reward，梯度信号样本数从 1 → window。
+        episode_len = min(len(self._klines), self.MAX_STEPS)  # 实际 episode 长度（短交易日按实际K线数）
+        bars_left = episode_len - self._step                  # 距收盘剩余K线数（0=已到最后一根）
+        leftover = len(self._today_bought)                    # 未平当日买入数（_force_close 会清空，先捕获）
+        window = max(1, self.config.reward_terminal_window)
         terminal_constraint = 0.0
-        if self._step >= len(self._klines) or self._step >= self.MAX_STEPS:
+        if leftover > 0 and 1 <= bars_left <= window:
+            terminal_constraint = (
+                -self.config.reward_terminal_coef * leftover**2 / window
+            )
+        if self._step >= episode_len:
             self._done = True
-            # 先捕获未平当日买入数（_force_close 会清空），再强平结算
-            leftover = len(self._today_bought)
-            terminal_constraint = -self.config.reward_terminal_coef * leftover**2
             self._force_close()
 
         # 5. 奖励计算：r = Δrealized_pnl - λ·Δexposure² + terminal_constraint
@@ -628,10 +623,13 @@ class T0Environment:
             return True, action
         return False, self.HOLD
 
-    def _execute_action(self, action: int) -> float:
-        """执行交易动作，返回本轮已实现盈亏（T+1 下 SELL 卖底仓的盈亏延后到尾盘买回时结算）"""
+    def _execute_action(self, action: int) -> None:
+        """执行交易动作（T+1 下 SELL 卖底仓的盈亏延后到尾盘买回时结算）
+
+        已实现盈亏与交易成本均直接累加到 _realized_pnl，不再向外返回值。
+        """
         if not self._current_kline:
-            return 0.0
+            return
 
         price = self._current_kline["Close"]
         timestamp = self._klines[self._step]["timestamp"] if self._step < len(self._klines) else ""
@@ -639,8 +637,6 @@ class T0Environment:
         if action in self.BUY_AMOUNTS:
             # 一次买入 N 份（N=1/2/3），当日累计买入 ≤ MAX_TODAY_BUY
             n = self.BUY_AMOUNTS[action]
-            # reward 的 cost 项：单边买入成本（佣金+滑点，每份）
-            self._step_cost += n * self.config.per_side_cost
             for _ in range(n):
                 self._today_bought.append(price)
                 self._pending_buys.append({
@@ -656,13 +652,11 @@ class T0Environment:
                     "pnl": 0.0,
                 })
 
-            return 0.0
+            return
 
         elif action in self.SELL_AMOUNTS:
             # T+1：当天买入不可卖出，SELL 只卖底仓（先卖后买），尾盘按收盘价买回补齐 3 份底仓
             n = self.SELL_AMOUNTS[action]
-            # reward 的 cost 项：单边卖出成本（佣金+滑点，每份）
-            self._step_cost += n * self.config.per_side_cost
             total_reward = 0.0
             for _ in range(n):
                 # 奖励配对：若有未配对的当日买入，按（卖出价-买入成本）立即计入做T收益，
@@ -689,9 +683,6 @@ class T0Environment:
                 "price": price,
                 "pnl": total_reward,
             })
-            return total_reward
-
-        return 0.0
 
     # ═══════════════════════════════════════════════
     #  奖励函数
@@ -720,8 +711,6 @@ class T0Environment:
                 # 止损买回：先卖后买，卖出价低于买回价则亏损，计入已实现做T收益
                 gross_return = (sell_price - cur_price) / cur_price * 100 - self.config.transaction_cost
                 self._realized_pnl += gross_return
-                # reward cost 项：买回单边成本
-                self._step_cost += self.config.per_side_cost
                 # 已买回一份底仓 → 底仓恢复 1 份
                 self._base_position += 1
                 self._trades.append({
@@ -734,20 +723,19 @@ class T0Environment:
                 remaining.append(sell_price)
         self._sold_short = remaining
 
-    def _force_close(self) -> float:
+    def _force_close(self) -> None:
         """收盘强制平仓，使用收盘价，仅保留 3 份底仓
 
         1. 当日买入（pending_buys）全部强平结算（先买后卖/收盘平）；
         2. 先卖后买（sold_short）按收盘价买回补齐底仓到 3 份（卖出价高于买回价则赚）。
 
-        Returns:
-            平仓奖励（仅作簿记，新奖励机制下 reward 的终态约束由 terminal_constraint 承担）
+        结算结果与成本均直接累加到 _realized_pnl；「收盘仍有未平当日买入」的惩罚
+        由 step() 的 terminal_constraint 承担（见 reward_terminal_window）。
         """
         if not self._current_kline:
-            return 0.0
+            return
 
         close_price = self._current_kline["Close"]
-        close_reward = 0.0
 
         # 1. 强平所有当日买入（当日买入尾盘必须平掉，仅保留 3 份底仓）
         if self._pending_buys:
@@ -766,13 +754,8 @@ class T0Environment:
                         gross_return = (close_price - ref_price) / ref_price * 100 - self.config.transaction_cost
                     total_pnl += gross_return
             self._realized_pnl += total_pnl
-            n_pending = len(self._pending_buys)
-            # reward 的 cost 项：强平卖出成本（每份单边）
-            self._step_cost += n_pending * self.config.per_side_cost
             self._pending_buys = []
             self._today_bought = []  # 当日买入已全部强平，同步清空（保持 total_position = 底仓）
-            # 小惩罚：鼓励日内 SELL 配对实现做T，而非拖到收盘
-            close_reward += -0.1 * n_pending
 
         # 2. 先卖后买：按收盘价买回卖出的底仓，恢复底仓到 3 份
         if self._sold_short:
@@ -783,13 +766,9 @@ class T0Environment:
                     gross_return = (sell_price - close_price) / close_price * 100
                     total_pnl += gross_return - self.config.transaction_cost
             self._realized_pnl += total_pnl
-            # reward 的 cost 项：买回底仓成本（每份单边）
-            self._step_cost += len(self._sold_short) * self.config.per_side_cost
             self._sold_short = []
             # 恢复底仓到 MAX_BASE_POSITION（3 份）
             self._base_position = self.MAX_BASE_POSITION
-
-        return close_reward
 
     # ═══════════════════════════════════════════════
     #  内部辅助方法
@@ -893,24 +872,12 @@ class T0Environment:
             self._current_indicator = IndicatorSnapshot()
 
     def _update_price_stats(self) -> None:
-        """更新当日价格统计"""
+        """记录当日开盘价（做空动量守卫 _parse_action 的参照基准）"""
         if not self._current_kline:
             return
         price = self._current_kline["Close"]
-        if self._day_high < price:
-            self._day_high = price
-        if price < self._day_low:
-            self._day_low = price
         if self._day_open == 0.0:
             self._day_open = self._current_kline.get("Open", price)
-
-    def _precompute_indicators_from_buffer(self) -> None:
-        """用前日数据预计算指标初始状态（已通过 warmup 加载）"""
-        data = self._data_buffer.data
-        if data.empty:
-            return
-        # 创建一个临时 IndicatorSnapshot 作为初始状态
-        self._current_indicator = IndicatorSnapshot()
 
     # ═══════════════════════════════════════════════
     #  属性
@@ -920,16 +887,6 @@ class T0Environment:
     def total_position(self) -> int:
         """总持仓份数 = 底仓 + 当日买入"""
         return self._base_position + len(self._today_bought)
-
-    @property
-    def can_buy(self) -> bool:
-        """是否还能买入（当日买入 < 3 份）"""
-        return len(self._today_bought) < self.MAX_TODAY_BUY
-
-    @property
-    def can_sell(self) -> bool:
-        """是否还能卖出（T+1：当天买入不可卖出，可卖 = 底仓 > 0）"""
-        return self._base_position > 0
 
     @property
     def done(self) -> bool:
